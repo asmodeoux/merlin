@@ -1,6 +1,12 @@
 # Merlin
 
-> A closed-loop reflexive belief market for trading alpha. Sources submit structured claims; the system resolves them against market data; reputation updates feed back into future weighting.
+> **Merlin ranks crypto KOLs and traders by the regret of their alpha calls, paper-traded against live market data.** A Telegram bot ingests structured trade theses, virtually opens positions at the moment of the message, virtually closes them at the user's chosen horizon, and feeds the resulting regret back into a public leaderboard.
+
+**By Day 30:** TG bot live, ≥ 20 invited sources, ≥ 200 resolved claims, leaderboard sanity check passes.
+**By Day 60:** belief graph online (semantic hypothesis clustering, Twitter as a second source kind, public landing page).
+**By Day 90:** Pro Dashboard, Polymarket signal, anti-sybil defenses, ≥ 1 paid pilot in writing.
+
+Concrete user-flow example in [`docs/MVP_SPEC.md`](./docs/MVP_SPEC.md) §0.
 
 ## Quick orientation
 
