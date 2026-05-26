@@ -1,0 +1,47 @@
+# merlin_core — pure-Python core (domain entities, use cases, ports, wire contracts).
+#
+# Layer rules (enforced by [tool.importlinter] in the root pyproject.toml):
+#   - domain     : stdlib only
+#   - application: imports domain + ports (Protocols)
+#   - contracts  : imports stdlib + pydantic only
+#
+# No I/O. No FastAPI. No Telegram. No SQLAlchemy. No httpx. The same
+# `merlin_core.contracts` module is the wire format used by both the API
+# server (`merlin_api`) and the Python SDK (`merlin_client`) — single source
+# of truth for "what shape is a Claim?".
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "merlin-core"
+version = "0.1.0"
+description = "Merlin pure-Python core — domain, application, contracts."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Merlin Team" }]
+dependencies = [
+    # pydantic is the only third-party dep — used in contracts/ for wire
+    # schemas. domain/ and application/ remain stdlib-only (enforced by
+    # import-linter).
+    "pydantic>=2.9,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
+    "hypothesis>=6.115",
+    "syrupy>=4.7",
+]
+
+# Two-layer flat layout: the inner `merlin_core/` directory IS the
+# importable package. Hatchling picks it up via the conventional
+# `packages = [...]` config — no `sources` rewrites, which keeps
+# editable installs (`uv sync`) working. See ADR (q) in
+# docs/ARCHITECTURE.md for why we backed out of the prefix-add trick.
+[tool.hatch.build.targets.wheel]
+packages = ["merlin_core"]

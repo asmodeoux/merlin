@@ -1,0 +1,395 @@
+# Root workspace coordinator for the Merlin polyglot monorepo.
+#
+# This file does NOT declare a `[project]` table — it is not a buildable
+# package itself. It exists to (a) declare the uv workspace, (b) hold all
+# shared tool configuration (ruff/mypy/pytest/coverage/import-linter), and
+# (c) pin Python tooling versions for the whole repo.
+#
+# Each workspace member (apps/*, packages/python/*) ships its own
+# pyproject.toml with its own [project] + [build-system] + deps. See
+# docs/ARCHITECTURE.md for the rationale.
+
+[tool.uv.workspace]
+members = ["apps/*", "packages/python/*"]
+
+# Workspace members reference each other by name. uv resolves these
+# against [tool.uv.workspace] members declared above.
+[tool.uv.sources]
+merlin-core = { workspace = true }
+merlin-infrastructure = { workspace = true }
+merlin-client = { workspace = true }
+merlin-api = { workspace = true }
+merlin-bot = { workspace = true }
+merlin-worker = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# Workspace-level dev tooling (PEP 735 dependency-groups).
+#
+# These are the tools that run *across* the whole workspace — pre-commit,
+# ruff/mypy/import-linter binaries, pytest plumbing shared by every member,
+# etc. uv installs the `dev` group by default on `uv sync`, so contributors
+# get the full toolchain with a single command.
+#
+# Per-package dev deps (pytest-httpx for the API, freezegun for merlin_core,
+# etc.) stay in each member's [project.optional-dependencies] `dev` extra.
+# ---------------------------------------------------------------------------
+[dependency-groups]
+dev = [
+    "pre-commit>=4",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
+    "pytest-xdist>=3.6",
+    "hypothesis>=6.115",
+    "pip-audit>=2.7",
+]
+
+# ---------------------------------------------------------------------------
+# ruff — linter + formatter (replaces black + flake8 + isort + many plugins)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    "**/alembic/versions/*",
+    "**/__pycache__/*",
+    "docs/openapi.json",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "D",    # pydocstyle
+    "PL",   # pylint (subset)
+    "RUF",  # ruff-specific
+    "S",    # flake8-bandit (security)
+    "ASYNC",
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "TID",  # flake8-tidy-imports
+]
+ignore = [
+    "D203",   # 1 blank line before class docstring (conflicts with D211)
+    "D213",   # multi-line summary on second line (conflicts with D212)
+    "PLR0913", # too many arguments (FastAPI deps + Pydantic models trip this constantly)
+    "S101",   # assert used (pytest needs it)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests don't need docstrings, bandit checks, or "magic value" warnings, and
+# smoke tests legitimately import inside functions (testing the import itself
+# is the point — top-level imports would defeat the test).
+"**/tests/**/*.py" = ["D", "S", "PLR2004", "PLC0415"]
+"**/conftest.py" = ["D"]
+"**/__init__.py" = ["D104"]
+# Scripts do dynamic imports of Settings classes / FastAPI apps. The
+# "import at top of file" rule doesn't fit a CLI-style entry point.
+"scripts/*.py" = ["PLC0415"]
+"apps/api/scripts/*.py" = ["PLC0415"]
+# FastAPI requires `Depends(...)` calls as default arguments — that's the
+# entire dependency-injection mechanism. B008 fights the framework here.
+# Lazy imports inside route handlers / health probes break circular-import
+# risks; allowed in the api layer.
+"apps/api/merlin_api/**/*.py" = ["B008", "PLC0415"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# mypy — type checking. --strict on merlin_core/api/client/worker (MVP §8.1
+# mandates strict on /score + /resolve; resolution math lives in the worker).
+# Soft strict on merlin_infrastructure + merlin_bot (heavy I/O glue).
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+show_error_codes = true
+# Polyglot-monorepo layout: each app/package ships its own inner Python
+# package (apps/api/merlin_api/, packages/python/merlin_core/merlin_core/,
+# etc.). Without an explicit `mypy_path`, mypy can resolve the same file
+# under two module names (e.g. apps.api.merlin_api.health AND merlin_api.health),
+# which is fatal. We list each inner-package PARENT here so mypy treats
+# the inner-package name (`merlin_api`, `merlin_core`, ...) as the canonical
+# module path. ADR (q) in docs/ARCHITECTURE.md covers the layout rationale.
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = [
+    "$MYPY_CONFIG_FILE_DIR/apps/api",
+    "$MYPY_CONFIG_FILE_DIR/apps/bot",
+    "$MYPY_CONFIG_FILE_DIR/apps/worker",
+    "$MYPY_CONFIG_FILE_DIR/packages/python/merlin_core",
+    "$MYPY_CONFIG_FILE_DIR/packages/python/merlin_infrastructure",
+    "$MYPY_CONFIG_FILE_DIR/packages/python/merlin_client",
+]
+exclude = [
+    "alembic/versions/",
+    "build/",
+    "dist/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "merlin_core.*",
+    "merlin_api.*",
+    "merlin_client.*",
+    "merlin_worker.*",
+]
+strict = true
+
+[[tool.mypy.overrides]]
+module = [
+    "merlin_infrastructure.*",
+    "merlin_bot.*",
+]
+# Soft strict — same flags minus the most disruptive ones for I/O glue.
+disallow_any_generics = false
+warn_return_any = false
+
+[[tool.mypy.overrides]]
+# Untyped third-party packages — silence missing-imports rather than tracking
+# stubs we don't control. Add modules here as they get imported; `pgvector`
+# joins this list in Sprint 1 when the SQLAlchemy model layer goes live.
+module = [
+    "rq.*",
+    "telegram.*",
+]
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------------------------------------------------------------------------
+# pytest — async by default; markers declared so `pytest -m fast` and friends
+# don't trigger "unknown marker" warnings (we treat warnings as errors).
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = [
+    "apps/api/tests",
+    "apps/bot/tests",
+    "apps/worker/tests",
+    "packages/python/merlin_core/tests",
+    "packages/python/merlin_infrastructure/tests",
+    "packages/python/merlin_client/tests",
+]
+filterwarnings = [
+    "error",
+    # Allowed third-party deprecations land here when they appear.
+]
+markers = [
+    "fast: pre-commit fast subset (no I/O)",
+    "integration: needs Postgres + Redis",
+    "snapshot: syrupy snapshot tests (OpenAPI, text rendering)",
+    "append_only: append-only invariants suite",
+    "slow: takes > 1s",
+]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    # `importlib` mode avoids the "same-named tests package collected
+    # twice" error that's standard in any monorepo with per-app `tests/`
+    # directories. Pair this with NO `__init__.py` files under `tests/`.
+    "--import-mode=importlib",
+]
+
+# ---------------------------------------------------------------------------
+# coverage — per-package gates run in CI separately. No global fail_under
+# because that would mask the ramped per-package thresholds (e.g. a 70%
+# merlin_bot gate would silently fail an 85% global gate).
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = [
+    "apps/api/merlin_api",
+    "apps/bot/merlin_bot",
+    "apps/worker/merlin_worker",
+    "packages/python/merlin_core/merlin_core",
+    "packages/python/merlin_infrastructure/merlin_infrastructure",
+    "packages/python/merlin_client/merlin_client",
+]
+omit = [
+    "**/tests/**",
+    "**/alembic/**",
+    "**/__init__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+# ---------------------------------------------------------------------------
+# import-linter — enforce the hexagonal layer rules from docs/ARCHITECTURE.md.
+# Hard fail in CI on any violation.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+# Required when contracts forbid third-party modules (`fastapi`, `telegram`).
+include_external_packages = true
+root_packages = [
+    "merlin_core",
+    "merlin_infrastructure",
+    "merlin_client",
+    "merlin_api",
+    "merlin_bot",
+    "merlin_worker",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_core.domain is pure (stdlib + typing only)"
+type = "forbidden"
+source_modules = ["merlin_core.domain"]
+forbidden_modules = [
+    "sqlalchemy",
+    "fastapi",
+    "telegram",
+    "httpx",
+    "redis",
+    "rq",
+    "pydantic",
+    "merlin_core.application",
+    "merlin_core.contracts",
+    "merlin_infrastructure",
+    "merlin_client",
+    "merlin_api",
+    "merlin_bot",
+    "merlin_worker",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_core.application depends only on merlin_core.domain + its own ports"
+type = "forbidden"
+source_modules = ["merlin_core.application"]
+forbidden_modules = [
+    "sqlalchemy",
+    "fastapi",
+    "telegram",
+    "httpx",
+    "redis",
+    "rq",
+    "merlin_infrastructure",
+    "merlin_client",
+    "merlin_api",
+    "merlin_bot",
+    "merlin_worker",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_core.contracts is stdlib + pydantic only"
+type = "forbidden"
+source_modules = ["merlin_core.contracts"]
+forbidden_modules = [
+    "sqlalchemy",
+    "fastapi",
+    "telegram",
+    "httpx",
+    "redis",
+    "rq",
+    "merlin_core.domain",
+    "merlin_core.application",
+    "merlin_infrastructure",
+    "merlin_client",
+    "merlin_api",
+    "merlin_bot",
+    "merlin_worker",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_infrastructure has no fastapi / telegram"
+type = "forbidden"
+source_modules = ["merlin_infrastructure"]
+forbidden_modules = [
+    "fastapi",
+    "telegram",
+    "merlin_api",
+    "merlin_bot",
+    "merlin_worker",
+    "merlin_client",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_client imports only merlin_core.contracts + httpx"
+type = "forbidden"
+source_modules = ["merlin_client"]
+forbidden_modules = [
+    "sqlalchemy",
+    "fastapi",
+    "telegram",
+    "redis",
+    "rq",
+    "merlin_core.domain",
+    "merlin_core.application",
+    "merlin_infrastructure",
+    "merlin_api",
+    "merlin_bot",
+    "merlin_worker",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_api has no telegram"
+type = "forbidden"
+source_modules = ["merlin_api"]
+forbidden_modules = [
+    "telegram",
+    "merlin_bot",
+    "merlin_worker",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_bot only imports merlin_client + merlin_core.contracts"
+type = "forbidden"
+source_modules = ["merlin_bot"]
+forbidden_modules = [
+    "sqlalchemy",
+    "fastapi",
+    "merlin_core.domain",
+    "merlin_core.application",
+    "merlin_infrastructure",
+    "merlin_api",
+    "merlin_worker",
+]
+
+[[tool.importlinter.contracts]]
+name = "merlin_worker has no fastapi / telegram"
+type = "forbidden"
+source_modules = ["merlin_worker"]
+forbidden_modules = [
+    "fastapi",
+    "telegram",
+    "merlin_api",
+    "merlin_bot",
+    "merlin_client",
+]

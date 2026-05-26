@@ -1,0 +1,48 @@
+# merlin-api — FastAPI HTTP server, the canonical /v1 API surface.
+#
+# `sentry-sdk[fastapi]` lives here (not in `merlin_infrastructure`) so the
+# FastAPI integration doesn't leak into the bot/worker container images.
+# See ADR in docs/ARCHITECTURE.md.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "merlin-api"
+version = "0.1.0"
+description = "Merlin API — FastAPI server, the canonical /v1 surface."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Merlin Team" }]
+dependencies = [
+    "merlin-core",
+    "merlin-infrastructure",
+    # fastapi 0.136.3 was tampered with (MAL-2026-4750 — a 'fastar' typosquat
+    # dep was injected into the [standard] extra on 2026-05-23). We don't use
+    # `fastapi[standard]` so we weren't exploited, but ship clean anyway.
+    "fastapi>=0.115,<1,!=0.136.3",
+    "uvicorn[standard]>=0.32,<1",
+    "pydantic-settings>=2.6,<3",
+    # FastAPI integration extra lives in the api app, not in
+    # merlin-infrastructure, so the bot/worker images stay slim.
+    "sentry-sdk[fastapi]>=2.18,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
+    "pytest-httpx>=0.34",
+    "httpx>=0.28",
+    "syrupy>=4.7",
+    "testcontainers[postgres,redis]>=4.8",
+    "debugpy>=1.8",
+]
+
+# Apps use the conventional Hatchling two-layer shape: project root +
+# inner `merlin_api/` Python package. No `sources` mapping needed.
+[tool.hatch.build.targets.wheel]
+packages = ["merlin_api"]

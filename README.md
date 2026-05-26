@@ -21,6 +21,38 @@ If you're new to this repo, read the docs in this order:
 ## Authorship & decision rules
 
 
+## Monorepo layout
+
+Merlin is a **polyglot monorepo**. Today everything is Python; a React frontend lands in Phase 2 against the same `/v1/*` API surface.
+
+```
+apps/        api/  bot/  worker/   ← deployable services (one Dockerfile each)
+packages/    python/                ← shared Python libs (core, infrastructure, client)
+deploy/      docker-compose dev + test, custom postgres-dev (pgvector + pg_cron)
+scripts/     env_check.py, bootstrap_github_settings.sh
+docs/        ARCHITECTURE, MVP_SPEC, RUNBOOK, REPO_SETTINGS, openapi.json
+```
+
+Key cross-links:
+
+- **[`AGENTS.md`](./AGENTS.md)** — operational guide for AI agents and human contributors. Layer rules, the 5-step bot↔API ritual, what NOT to do.
+- **[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)** — repo layout, hexagonal layers, ADRs (a–q), multi-frontend strategy, sequence diagrams.
+- **[`docs/openapi.json`](./docs/openapi.json)** — committed OpenAPI 3.1 snapshot. Snapshot test catches drift; `make openapi` regenerates.
+- **[`docs/RUNBOOK.md`](./docs/RUNBOOK.md)** — operational playbook (stub; Sprint 4 fills pre-launch).
+- **[`docs/REPO_SETTINGS.md`](./docs/REPO_SETTINGS.md)** — GitHub bootstrap checklist + `scripts/bootstrap_github_settings.sh`.
+- **[`SECURITY.md`](./SECURITY.md)** — vuln disclosure + v0 security baseline.
+
+## Dev loop
+
+```bash
+make install-frozen   # uv sync --frozen --all-extras
+make dev-up           # postgres + redis + api/bot/worker, hot reload + debugpy 5678/5679/5680
+make ci               # full local CI parity: ruff, mypy, import-linter, pytest, coverage
+make docker-test      # prod images + integration suite (same images Fly ships)
+```
+
+VS Code: `.vscode/launch.json` ships "Attach to API/Bot/Worker (Docker debugpy)" entries grouped under **2_apps_docker** and one-shot test runners under **3_tests**.
+
 ## Status
 
-Pre-code. All documents in this repo are working drafts. **DECISIONS Critical pass complete 2026-05-25 — Sprint 1 is unblocked.** First commit of source code lands on **Day 1 of Sprint 1**.
+Scaffolded; Sprint 1 fills business code. `make ci` green after the first `uv sync` regenerates `uv.lock` + `docs/openapi.json`.

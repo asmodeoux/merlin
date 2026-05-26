@@ -1,0 +1,208 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    // ===================================================================
+    // 1) Local processes (uv-run direct, no Docker)
+    // ===================================================================
+    {
+      "name": "🚀 Debug API (local uvicorn)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "merlin_api.app:app",
+        "--reload",
+        "--host", "127.0.0.1",
+        "--port", "8000"
+      ],
+      "envFile": "${workspaceFolder}/apps/api/.env",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "1_apps_local",
+        "order": 1
+      }
+    },
+    {
+      "name": "🤖 Debug Bot (local polling)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "merlin_bot.main",
+      "envFile": "${workspaceFolder}/apps/bot/.env",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "1_apps_local",
+        "order": 2
+      }
+    },
+    {
+      "name": "⚙️ Debug Worker (local RQ)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "merlin_worker.main",
+      "envFile": "${workspaceFolder}/apps/worker/.env",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "1_apps_local",
+        "order": 3
+      }
+    },
+
+    // ===================================================================
+    // 2) Docker debugpy attaches
+    // ===================================================================
+    {
+      "name": "🎯 Attach to API (Docker debugpy 5678)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": { "host": "localhost", "port": 5678 },
+      "pathMappings": [
+        { "localRoot": "${workspaceFolder}", "remoteRoot": "/app" }
+      ],
+      "justMyCode": false,
+      "presentation": {
+        "group": "2_apps_docker",
+        "order": 1
+      }
+    },
+    {
+      "name": "🎯 Attach to Bot (Docker debugpy 5679)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": { "host": "localhost", "port": 5679 },
+      "pathMappings": [
+        { "localRoot": "${workspaceFolder}", "remoteRoot": "/app" }
+      ],
+      "justMyCode": false,
+      "presentation": {
+        "group": "2_apps_docker",
+        "order": 2
+      }
+    },
+    {
+      "name": "🎯 Attach to Worker (Docker debugpy 5680)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": { "host": "localhost", "port": 5680 },
+      "pathMappings": [
+        { "localRoot": "${workspaceFolder}", "remoteRoot": "/app" }
+      ],
+      "justMyCode": false,
+      "presentation": {
+        "group": "2_apps_docker",
+        "order": 3
+      }
+    },
+
+    // ===================================================================
+    // 3) Test launchers
+    // ===================================================================
+    {
+      "name": "🧪 Pytest — Current file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "3_tests",
+        "order": 1
+      }
+    },
+    {
+      "name": "🧪 Pytest — API tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["apps/api/tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "3_tests",
+        "order": 2
+      }
+    },
+    {
+      "name": "🧪 Pytest — Bot tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["apps/bot/tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "3_tests",
+        "order": 3
+      }
+    },
+    {
+      "name": "🧪 Pytest — Worker tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["apps/worker/tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "3_tests",
+        "order": 4
+      }
+    },
+    {
+      "name": "🧪 Pytest — merlin_core tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["packages/python/merlin_core/tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "3_tests",
+        "order": 5
+      }
+    },
+    {
+      "name": "🧪 Pytest — merlin_client tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["packages/python/merlin_client/tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "3_tests",
+        "order": 6
+      }
+    },
+    {
+      "name": "🧪 Pytest — merlin_infrastructure tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["packages/python/merlin_infrastructure/tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "presentation": {
+        "group": "3_tests",
+        "order": 7
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "🎯 Attach to all Docker apps",
+      "configurations": [
+        "🎯 Attach to API (Docker debugpy 5678)",
+        "🎯 Attach to Bot (Docker debugpy 5679)",
+        "🎯 Attach to Worker (Docker debugpy 5680)"
+      ],
+      "presentation": {
+        "group": "2_apps_docker",
+        "order": 4
+      }
+    }
+  ]
+}

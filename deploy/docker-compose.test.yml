@@ -1,0 +1,104 @@
+# Test compose — prod-target images for api/bot/worker + a runner
+# sidecar that drives pytest tests/integration against them. Runner's
+# exit code is the compose exit code (--exit-code-from runner).
+#
+# `make docker-test` is the entry point. Used by .github/workflows/docker-test.yml.
+
+name: merlin-test
+
+services:
+  postgres:
+    build:
+      context: ./postgres-dev
+    environment:
+      POSTGRES_USER: merlin
+      POSTGRES_PASSWORD: merlin
+      POSTGRES_DB: merlin
+    command:
+      [
+        "postgres",
+        "-c", "shared_preload_libraries=pg_cron",
+        "-c", "cron.database_name=merlin",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U merlin -d merlin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  merlin-api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      target: prod
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://merlin:merlin@postgres:5432/merlin
+      REDIS_URL: redis://redis:6379/0
+      MERLIN_API_INTERNAL_TOKEN: test-internal-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  merlin-bot:
+    build:
+      context: ..
+      dockerfile: apps/bot/Dockerfile
+      target: prod
+    environment:
+      ENVIRONMENT: test
+      TELEGRAM_BOT_TOKEN: ""  # disabled in tests
+      MERLIN_API_BASE_URL: http://merlin-api:8000
+      MERLIN_API_INTERNAL_TOKEN: test-internal-token
+      REDIS_URL: redis://redis:6379/1
+    depends_on:
+      - merlin-api
+
+  merlin-worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+      target: prod
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://merlin:merlin@postgres:5432/merlin
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  runner:
+    # Reuses the API prod image — it has merlin_core +
+    # merlin_infrastructure installed which is what the integration
+    # tests import. Mounting tests/ from the host keeps the prod image
+    # itself test-free.
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      target: dev   # dev target includes pytest + testcontainers
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://merlin:merlin@postgres:5432/merlin
+      REDIS_URL: redis://redis:6379/0
+      MERLIN_API_BASE_URL: http://merlin-api:8000
+      MERLIN_API_INTERNAL_TOKEN: test-internal-token
+    depends_on:
+      merlin-api: {condition: service_started}
+      merlin-bot: {condition: service_started}
+      merlin-worker: {condition: service_started}
+    volumes:
+      - ../apps:/app/apps:ro
+      - ../packages:/app/packages:ro
+    command: ["uv", "run", "pytest", "-m", "integration", "-v"]

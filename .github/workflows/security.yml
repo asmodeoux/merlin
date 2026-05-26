@@ -1,0 +1,76 @@
+# Security — v0 scanner stack: gitleaks (secrets), pip-audit (Python
+# advisories), Dependency Review (blocks moderate+ on PR). osv-scanner +
+# trufflehog deferred to Phase 2 (overlap with pip-audit / gitleaks
+# respectively). See docs/ARCHITECTURE.md §13.
+
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily 06:00 UTC — catches advisories published after we merged.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------
+  # gitleaks — secret scanning over the full history (push) or the PR diff
+  # (pull_request). Push protection is enabled at the repo level too (see
+  # docs/REPO_SETTINGS.md); this is the defense-in-depth.
+  # ---------------------------------------------------------------------
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------
+  # pip-audit — Python-package CVE scan against the frozen uv.lock.
+  # ---------------------------------------------------------------------
+  pip-audit:
+    name: pip-audit (Python advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.7"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --all-extras
+      - name: Audit installed packages
+        run: |
+          uv export --format requirements-txt --no-hashes --all-extras \
+            | uv run pip-audit -r /dev/stdin --strict
+
+  # ---------------------------------------------------------------------
+  # Dependency Review — blocks PRs that introduce moderate+ advisories or
+  # GPL/AGPL licenses (Phase 2 may relax). Only runs on pull_request.
+  # ---------------------------------------------------------------------
+  dependency-review:
+    name: dependency review (PR diff)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          # GPL/AGPL deferred — Phase 2 may relax to allow specific
+          # tooling. Curate the deny list deliberately.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0
+          comment-summary-in-pr: on-failure

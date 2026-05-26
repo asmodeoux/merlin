@@ -1,0 +1,89 @@
+# Pre-commit hooks — fast subset of `make ci`. Heavy checks (integration,
+# coverage, openapi snapshot drift, pip-audit) run in CI only; this hook runs
+# in <5s for the median commit so it doesn't slow the dev loop.
+#
+# Install:  uv run pre-commit install
+# Run all:  uv run pre-commit run --all-files
+
+default_language_version:
+  python: python3.12
+
+repos:
+  # ---------------------------------------------------------------------------
+  # ruff — lint + format. Replaces black/flake8/isort.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # ---------------------------------------------------------------------------
+  # gitleaks — secret scanning before push.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # ---------------------------------------------------------------------------
+  # Local hooks — wrap `make` targets so the dev loop and CI run identical code.
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (typecheck)
+        # Use `make type` so the inner-package paths stay in sync with
+        # the Makefile (avoids mypy's "source file found twice" error
+        # when both apps/ and apps/api/merlin_api/ would be valid module
+        # roots — see docs/ARCHITECTURE.md ADR (q)).
+        entry: make type
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+
+      - id: import-linter
+        name: import-linter (hexagonal layer rules)
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        # Only run when source moves; the contract is stable.
+        files: ^(apps|packages)/.*\.py$
+
+      - id: pytest-fast
+        name: pytest (fast subset)
+        entry: uv run pytest -m fast --no-cov -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: openapi-check
+        name: openapi snapshot drift
+        entry: make openapi-check
+        language: system
+        pass_filenames: false
+        files: ^(apps/api/|packages/python/merlin_core/merlin_core/contracts/).*
+
+      - id: env-check
+        name: .env.example parity with Settings
+        entry: make env-check
+        language: system
+        pass_filenames: false
+        files: ^(apps/.*/(\.env\.example|merlin_.*/config\.py))$
+
+  # ---------------------------------------------------------------------------
+  # Misc — file hygiene.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$  # markdown trailing whitespace is meaningful (line break)
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: detect-private-key

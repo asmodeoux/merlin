@@ -1,0 +1,211 @@
+# CI — full quality gate. Path-filtered so a bot-only PR doesn't run the
+# api integration suite. Sequential gates inside each job mean the
+# cheapest checks (ruff, mypy) fail-fast before the slowest (pytest +
+# coverage). See docs/ARCHITECTURE.md §12 for the policy.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Top-of-file default permissions — read-only. Individual jobs widen
+# only where they must (none widen at v0).
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.5.7"
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      bot: ${{ steps.filter.outputs.bot }}
+      worker: ${{ steps.filter.outputs.worker }}
+      packages: ${{ steps.filter.outputs.packages }}
+      root: ${{ steps.filter.outputs.root }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'apps/api/**'
+              - 'packages/python/**'
+            bot:
+              - 'apps/bot/**'
+              - 'packages/python/merlin_core/**'
+              - 'packages/python/merlin_client/**'
+            worker:
+              - 'apps/worker/**'
+              - 'packages/python/merlin_core/**'
+              - 'packages/python/merlin_infrastructure/**'
+            packages:
+              - 'packages/python/**'
+            root:
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'Makefile'
+              - '.github/workflows/**'
+              - 'docs/openapi.json'
+
+  lint-format-types-layers:
+    name: Lint / format / mypy / import-linter
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.root == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.bot == 'true' || needs.changes.outputs.worker == 'true' || needs.changes.outputs.packages == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --all-extras
+      - run: uv lock --check
+      - run: uv run ruff check apps packages scripts
+      - run: uv run ruff format --check apps packages scripts
+      - run: make type
+      - run: uv run lint-imports
+      - run: make openapi-check
+      - run: make env-check
+
+  test-api:
+    name: API tests
+    runs-on: ubuntu-latest
+    needs: [changes, lint-format-types-layers]
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.root == 'true'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: merlin
+          POSTGRES_PASSWORD: merlin
+          POSTGRES_DB: merlin
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U merlin -d merlin"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://merlin:merlin@localhost:5432/merlin
+      REDIS_URL: redis://localhost:6379/0
+      MERLIN_API_INTERNAL_TOKEN: test-internal-token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --package merlin-api --extra dev
+      - run: uv run pytest apps/api/tests --cov=apps/api/merlin_api --cov-report=xml --cov-fail-under=85
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-api
+          path: coverage.xml
+
+  test-bot:
+    name: Bot tests
+    runs-on: ubuntu-latest
+    needs: [changes, lint-format-types-layers]
+    if: needs.changes.outputs.bot == 'true' || needs.changes.outputs.root == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --package merlin-bot --extra dev
+      - run: uv run pytest apps/bot/tests --cov=apps/bot/merlin_bot --cov-report=xml --cov-fail-under=70
+
+  test-worker:
+    name: Worker tests
+    runs-on: ubuntu-latest
+    needs: [changes, lint-format-types-layers]
+    if: needs.changes.outputs.worker == 'true' || needs.changes.outputs.root == 'true'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: {POSTGRES_USER: merlin, POSTGRES_PASSWORD: merlin, POSTGRES_DB: merlin}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U merlin -d merlin"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://merlin:merlin@localhost:5432/merlin
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --package merlin-worker --extra dev
+      - run: uv run pytest apps/worker/tests --cov=apps/worker/merlin_worker --cov-report=xml --cov-fail-under=80
+
+  test-packages:
+    name: Package tests (core / infra / client)
+    runs-on: ubuntu-latest
+    needs: [changes, lint-format-types-layers]
+    if: needs.changes.outputs.packages == 'true' || needs.changes.outputs.root == 'true'
+    strategy:
+      matrix:
+        package:
+          - {slug: merlin_core,         pkg: merlin-core,         fail_under: 90}
+          - {slug: merlin_infrastructure, pkg: merlin-infrastructure, fail_under: 80}
+          - {slug: merlin_client,       pkg: merlin-client,       fail_under: 85}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --package ${{ matrix.package.pkg }} --extra dev
+      - run: |
+          uv run pytest packages/python/${{ matrix.package.slug }}/tests \
+            --cov=packages/python/${{ matrix.package.slug }}/${{ matrix.package.slug }} \
+            --cov-report=xml \
+            --cov-fail-under=${{ matrix.package.fail_under }}
+
+  ci-summary:
+    name: CI summary
+    runs-on: ubuntu-latest
+    needs: [lint-format-types-layers, test-api, test-bot, test-worker, test-packages]
+    if: always()
+    steps:
+      - name: All gates green
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "::error::One or more CI jobs failed."
+            exit 1
+          fi
+          echo "All CI gates green."

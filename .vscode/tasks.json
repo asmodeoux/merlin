@@ -1,0 +1,110 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    // ===================================================================
+    // Install
+    // ===================================================================
+    {
+      "label": "📦 Install: uv sync (writable)",
+      "type": "shell",
+      "command": "make install",
+      "group": "build",
+      "presentation": { "panel": "shared", "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔒 Install: uv sync --frozen (CI parity)",
+      "type": "shell",
+      "command": "make install-frozen",
+      "group": "build",
+      "presentation": { "panel": "shared", "reveal": "always" },
+      "problemMatcher": []
+    },
+
+    // ===================================================================
+    // Docker
+    // ===================================================================
+    { "label": "🐳 Docker: Up (dev compose)", "type": "shell", "command": "make dev-up", "problemMatcher": [] },
+    { "label": "🐳 Docker: Down", "type": "shell", "command": "make dev-down", "problemMatcher": [] },
+    { "label": "🐳 Docker: Logs (tail)", "type": "shell", "command": "make dev-logs", "problemMatcher": [], "presentation": { "reveal": "always" } },
+    { "label": "🐳 Docker: Rebuild (no cache)", "type": "shell", "command": "make dev-rebuild", "problemMatcher": [] },
+    { "label": "🐳 Docker: Run integration suite (prod images)", "type": "shell", "command": "make docker-test", "problemMatcher": [] },
+
+    // ===================================================================
+    // Tests
+    // ===================================================================
+    { "label": "🧪 Tests: All", "type": "shell", "command": "make test", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: Unit only", "type": "shell", "command": "make test-unit", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: Integration only", "type": "shell", "command": "make test-int", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: Snapshot (syrupy)", "type": "shell", "command": "make test-snapshot", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: API", "type": "shell", "command": "make test-api", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: Bot", "type": "shell", "command": "make test-bot", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: Worker", "type": "shell", "command": "make test-worker", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: merlin_core", "type": "shell", "command": "make test-core", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: merlin_infrastructure", "type": "shell", "command": "make test-infra", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: merlin_client", "type": "shell", "command": "make test-client", "group": "test", "problemMatcher": [] },
+
+    // ===================================================================
+    // Coverage
+    // ===================================================================
+    { "label": "📊 Coverage: Run + report", "type": "shell", "command": "make cov", "problemMatcher": [] },
+    { "label": "📊 Coverage: HTML report (open)", "type": "shell", "command": "make cov-html", "problemMatcher": [] },
+
+    // ===================================================================
+    // OpenAPI
+    // ===================================================================
+    { "label": "📜 OpenAPI: Regenerate snapshot", "type": "shell", "command": "make openapi", "problemMatcher": [] },
+    { "label": "📜 OpenAPI: Check (fail on drift)", "type": "shell", "command": "make openapi-check", "problemMatcher": [] },
+
+    // ===================================================================
+    // Lint / format
+    // ===================================================================
+    { "label": "🧹 Lint: ruff check", "type": "shell", "command": "make lint", "group": "build", "problemMatcher": [] },
+    { "label": "🧹 Lint: import-linter (layer rules)", "type": "shell", "command": "make layers", "group": "build", "problemMatcher": [] },
+    { "label": "🧹 Lint: mypy", "type": "shell", "command": "make type", "group": "build", "problemMatcher": [] },
+    { "label": "🪶 Format: ruff format (write)", "type": "shell", "command": "make format", "problemMatcher": [] },
+    { "label": "🪶 Format: ruff format --check", "type": "shell", "command": "make format-check", "problemMatcher": [] },
+
+    // ===================================================================
+    // Security
+    // ===================================================================
+    { "label": "🔐 Security: pip-audit", "type": "shell", "command": "make pip-audit", "problemMatcher": [] },
+    { "label": "🔐 Security: gitleaks", "type": "shell", "command": "make gitleaks", "problemMatcher": [] },
+
+    // ===================================================================
+    // DB
+    // ===================================================================
+    { "label": "🗄️ DB: Migrate (alembic upgrade head)", "type": "shell", "command": "make db-migrate", "problemMatcher": [] },
+    {
+      "label": "🗄️ DB: New revision (--autogenerate)",
+      "type": "shell",
+      "command": "make db-revision m='${input:revisionMessage}'",
+      "problemMatcher": []
+    },
+    { "label": "🗄️ DB: Current revision", "type": "shell", "command": "make db-current", "problemMatcher": [] },
+    { "label": "🗄️ DB: Reset (drop + migrate)", "type": "shell", "command": "make db-reset", "problemMatcher": [] },
+
+    // ===================================================================
+    // CI
+    // ===================================================================
+    { "label": "🚦 CI: Full local parity", "type": "shell", "command": "make ci", "group": "build", "problemMatcher": [] },
+    { "label": "🚦 CI: Fast subset (no integration / audit)", "type": "shell", "command": "make ci-fast", "group": "build", "problemMatcher": [] },
+
+    // ===================================================================
+    // Env
+    // ===================================================================
+    { "label": "📝 Env: Check parity (.env.example ↔ Settings)", "type": "shell", "command": "make env-check", "problemMatcher": [] },
+
+    // ===================================================================
+    // Clean
+    // ===================================================================
+    { "label": "🧼 Clean: Caches + artifacts", "type": "shell", "command": "make clean", "problemMatcher": [] }
+  ],
+  "inputs": [
+    {
+      "id": "revisionMessage",
+      "type": "promptString",
+      "description": "Migration message (e.g. 'add outcome table')"
+    }
+  ]
+}

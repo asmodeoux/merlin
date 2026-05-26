@@ -1,0 +1,21 @@
+# fly.toml for merlin-worker.
+
+app = "merlin-worker"
+primary_region = "iad"
+kill_signal = "SIGINT"
+kill_timeout = "60s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[build.args]
+  TARGET = "prod"
+
+[env]
+  ENVIRONMENT = "prod"
+  LOG_LEVEL   = "INFO"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus     = 1
+  memory   = "256mb"

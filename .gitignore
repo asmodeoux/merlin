@@ -1,0 +1,76 @@
+# Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.installed.cfg
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual envs -------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version.local
+
+# uv -----------------------------------------------------------------------
+# NOTE: uv.lock is NOT ignored — committed at workspace root.
+.uv/
+
+# Testing / coverage -------------------------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+
+# mypy / type checkers -----------------------------------------------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# IDE / editors ------------------------------------------------------------
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.cursor/
+# NOTE: .vscode/ IS checked in (launch.json + tasks.json are part of the repo).
+
+# Environment / secrets ----------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.secrets/
+
+# Fly.io -------------------------------------------------------------------
+.fly/
+
+# Docker -------------------------------------------------------------------
+docker-compose.override.yml
+
+# OS -----------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# NOTE: docs/openapi.json is NOT ignored — committed as the canonical
+# API-surface snapshot. Snapshot test catches drift.

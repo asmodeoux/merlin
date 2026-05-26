@@ -1,0 +1,164 @@
+{
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "description": "Liveness response.",
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "ReadyResponse": {
+        "description": "Readiness response.",
+        "properties": {
+          "checks": {
+            "additionalProperties": {
+              "enum": [
+                "ok",
+                "fail"
+              ],
+              "type": "string"
+            },
+            "title": "Checks",
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "not_ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "checks"
+        ],
+        "title": "ReadyResponse",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "HMAC bearer token for service-to-service requests (MERLIN_API_INTERNAL_TOKEN). Phase 2 adds a JWT scheme for the React frontend.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "contact": {
+      "name": "Merlin Team"
+    },
+    "description": "The canonical Merlin API. The Telegram bot is one client; the future React frontend and Pro Dashboard hit the same /v1 routes. See docs/ARCHITECTURE.md.",
+    "license": {
+      "name": "Proprietary"
+    },
+    "title": "Merlin API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "Cheap check used by Fly's restart healthcheck. No DB or Redis required.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [],
+        "summary": "Liveness probe \u2014 process is up.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "Returns 200 when DB + Redis are reachable, 503 otherwise so the load balancer can drain traffic. No auth \u2014 same rationale as /health.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "Ready."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "One or more dependencies unreachable."
+          }
+        },
+        "security": [],
+        "summary": "Readiness probe \u2014 process can serve traffic.",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "description": "Liveness + readiness probes (un-versioned).",
+      "name": "health"
+    },
+    {
+      "description": "Telegram-sourced contributors.",
+      "name": "sources"
+    },
+    {
+      "description": "Alpha submissions.",
+      "name": "claims"
+    },
+    {
+      "description": "Leaderboards + windowed views.",
+      "name": "board"
+    },
+    {
+      "description": "Invite issuance + redemption.",
+      "name": "invites"
+    },
+    {
+      "description": "Admin-only overrides + audit views.",
+      "name": "admin"
+    }
+  ]
+}

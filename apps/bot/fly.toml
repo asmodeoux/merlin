@@ -1,0 +1,27 @@
+# fly.toml for merlin-bot.
+#
+# v0 runs in polling mode (single instance — TG forbids concurrent
+# polling for the same token). Phase 2 may flip to webhook mode for
+# horizontal scaling; the prod Dockerfile already exposes 8080 for that
+# transition.
+
+app = "merlin-bot"
+primary_region = "iad"
+kill_signal = "SIGINT"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[build.args]
+  TARGET = "prod"
+
+[env]
+  ENVIRONMENT   = "prod"
+  LOG_LEVEL     = "INFO"
+  TELEGRAM_MODE = "polling"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus     = 1
+  memory   = "256mb"

@@ -1,0 +1,42 @@
+# merlin-worker — RQ worker for resolution + background work.
+#
+# Sync (RQ); MVP §8.1 ADR (e) — simpler than async dramatiq/arq, sufficient
+# for v0.
+#
+# Forbidden imports (enforced by [tool.importlinter]): `fastapi`,
+# `telegram`, `merlin_api`, `merlin_bot`, `merlin_client`.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "merlin-worker"
+version = "0.1.0"
+description = "Merlin background worker — RQ + merlin_core + merlin_infrastructure."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Merlin Team" }]
+dependencies = [
+    "merlin-core",
+    "merlin-infrastructure",
+    "redis>=5.2,<6",
+    "rq>=2.0,<3",
+    "pydantic-settings>=2.6,<3",
+    "sentry-sdk>=2.18,<3",  # bare; no FastAPI extra
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
+    "testcontainers[postgres,redis]>=4.8",
+    "syrupy>=4.7",
+    "watchdog>=6",
+    "debugpy>=1.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["merlin_worker"]

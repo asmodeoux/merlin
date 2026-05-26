@@ -1,0 +1,102 @@
+# Dev compose — hot reload + debugpy on api/bot/worker, custom postgres
+# (pgvector + pg_cron), redis. Volume mounts for source so edits land
+# without rebuilds. `make dev-up` is the entry point.
+
+name: merlin-dev
+
+services:
+  postgres:
+    build:
+      context: ./postgres-dev
+    environment:
+      POSTGRES_USER: merlin
+      POSTGRES_PASSWORD: merlin
+      POSTGRES_DB: merlin
+    command:
+      [
+        "postgres",
+        "-c", "config_file=/etc/postgresql/postgresql.conf",
+        "-c", "shared_preload_libraries=pg_cron",
+        "-c", "cron.database_name=merlin",
+      ]
+    ports:
+      - "5432:5432"
+    volumes:
+      - merlin_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U merlin -d merlin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  merlin-api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    env_file: ../apps/api/.env.example
+    environment:
+      DATABASE_URL: postgresql+asyncpg://merlin:merlin@postgres:5432/merlin
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"   # FastAPI
+      - "5678:5678"   # debugpy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../apps/api:/app/apps/api
+      - ../packages/python:/app/packages/python
+
+  merlin-bot:
+    build:
+      context: ..
+      dockerfile: apps/bot/Dockerfile
+      target: dev
+    env_file: ../apps/bot/.env.example
+    environment:
+      MERLIN_API_BASE_URL: http://merlin-api:8000
+      REDIS_URL: redis://redis:6379/1
+    ports:
+      - "5679:5679"   # debugpy
+    depends_on:
+      - merlin-api
+      - redis
+    volumes:
+      - ../apps/bot:/app/apps/bot
+      - ../packages/python:/app/packages/python
+
+  merlin-worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+      target: dev
+    env_file: ../apps/worker/.env.example
+    environment:
+      DATABASE_URL: postgresql+asyncpg://merlin:merlin@postgres:5432/merlin
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "5680:5680"   # debugpy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../apps/worker:/app/apps/worker
+      - ../packages/python:/app/packages/python
+
+volumes:
+  merlin_pg_data:

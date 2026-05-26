@@ -1,0 +1,36 @@
+# merlin_client — async httpx SDK for the Merlin /v1 API.
+#
+# This is the package the bot (and future Python integrations) import to
+# talk to the API. It depends only on `merlin_core.contracts` for wire
+# types and `httpx` for transport — no SQLAlchemy, no FastAPI, no
+# Telegram (enforced by [tool.importlinter] in the root pyproject.toml).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "merlin-client"
+version = "0.1.0"
+description = "Async HTTP client for the Merlin API (used by merlin_bot and other internal services)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Merlin Team" }]
+dependencies = [
+    "merlin-core",
+    "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
+    "pytest-httpx>=0.34",  # mock the API without a live server
+    "syrupy>=4.7",
+]
+
+# Two-layer flat layout — see ADR (q) in docs/ARCHITECTURE.md.
+[tool.hatch.build.targets.wheel]
+packages = ["merlin_client"]

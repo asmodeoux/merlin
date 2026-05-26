@@ -1,0 +1,56 @@
+# Dependabot — Python (uv) + GitHub Actions.
+#
+# Cooldown windows mirror the "Sprint-1 stability" principle: don't
+# auto-PR a release until the broader community has had a beat to spot
+# regressions.
+#
+#   default-days = 7      # everything below
+#   semver-major-days = 30  # majors get extra soak time
+#   semver-minor-days = 7
+#   semver-patch-days = 3
+
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "deps"
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      production-deps:
+        applies-to: version-updates
+        patterns: ["*"]
+        exclude-patterns: ["pytest*", "ruff*", "mypy*", "syrupy*", "hypothesis*"]
+      dev-deps:
+        applies-to: version-updates
+        patterns: ["pytest*", "ruff*", "mypy*", "syrupy*", "hypothesis*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "ci"
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
