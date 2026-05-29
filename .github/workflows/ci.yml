@@ -80,6 +80,7 @@ jobs:
       - run: uv run lint-imports
       - run: make openapi-check
       - run: make env-check
+      - run: make docs-check
 
   test-api:
     name: API tests

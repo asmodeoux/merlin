@@ -20,6 +20,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APPS_DIR = REPO_ROOT / "apps"
 ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*=", re.MULTILINE)
+# Catches values wrapped in surrounding quotes: KEY="value" or KEY='value'.
+# Pydantic-settings reads those as part of the value, which silently breaks
+# auth keys, bot tokens, anything sensitive — and the failure mode at
+# runtime ("User not found", "Unauthorized") points away from the
+# real cause. We refuse the build until the quotes come off.
+QUOTED_VALUE_RE = re.compile(
+    r'^([A-Z][A-Z0-9_]*)=(["\']).*\2\s*$',
+    re.MULTILINE,
+)
 
 # (slug under apps/, dotted Settings module relative to merlin_<slug>/).
 APPS: tuple[tuple[str, str], ...] = (
@@ -33,6 +42,18 @@ def _read_env_example_keys(path: Path) -> set[str]:
     """Extract every uppercase KEY= entry from a .env file."""
     text = path.read_text(encoding="utf-8")
     return {match.group(1) for match in ENV_KEY_RE.finditer(text)}
+
+
+def _find_quoted_values(path: Path) -> list[str]:
+    """Return the keys whose values are wrapped in matching quotes.
+
+    Pydantic-settings (and most ``.env`` loaders) treat the quote
+    characters as part of the value — silently breaking secrets like
+    ``OPENROUTER_API_KEY="sk-or-..."`` with a runtime "User not found"
+    that points away from the real cause.
+    """
+    text = path.read_text(encoding="utf-8")
+    return [match.group(1) for match in QUOTED_VALUE_RE.finditer(text)]
 
 
 def _read_settings_fields(module_path: str) -> set[str]:
@@ -72,6 +93,20 @@ def _check(slug: str, settings_module: str) -> list[str]:
             f"  apps/{slug}: apps/{slug}/.env.example key `{key}` has no "
             f"matching field in {settings_module}.Settings"
         )
+
+    # Quote-wrapping check — only on the developer's local .env (the
+    # `.env.example` files committed to git use blank values, so they're
+    # never affected). Skipped silently if the file doesn't exist (CI).
+    local_env = APPS_DIR / slug / ".env"
+    if local_env.exists():
+        quoted = _find_quoted_values(local_env)
+        for key in quoted:
+            errors.append(
+                f"  apps/{slug}/.env: `{key}` value is wrapped in quotes — "
+                "pydantic-settings reads the quotes as part of the value. "
+                "Remove the surrounding \" or ' marks."
+            )
+
     return errors
 
 

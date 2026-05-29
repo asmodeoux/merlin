@@ -4,6 +4,27 @@ Pure-Python core of the Merlin platform. Houses the **domain** (entities,
 value objects, regret math), **application** (use cases + ports as
 Protocols), and **contracts** (Pydantic wire schemas).
 
+## Ports (Sprint 1)
+
+The hexagonal boundary between core and `merlin_infrastructure`:
+
+- `ClaimDrafterPort.draft(text)` → `ClaimDraft` — LLM-driven freeform
+  extraction (Q-028 PROPOSED).
+- `MarketDataPort.search_assets / get_asset_metadata / get_price_at`
+  — CoinGecko proxy (single market-data source, Q-026 LOCKED).
+- `JobQueuePort.enqueue_at / enqueue / cancel` — Redis-backed
+  scheduling. Resolution rides on `enqueue_at(t_resolve, …)`;
+  reputation rides on `enqueue(…)` enqueued by the resolver
+  (Q-029 PROPOSED).
+- `NotifierPort.notify_user(tg_user_id, text)` — outbound Telegram
+  notifications. Worker calls this directly on outcome write.
+
+## Use cases (Sprint 1)
+
+- `submit_claim` — asset resolve + hypothesis insert + claim insert +
+  event insert + attribution + `enqueue_at(t_resolve)`. One transaction,
+  zero infrastructure imports.
+
 ## Layer rules
 
 Enforced by `import-linter` (`[tool.importlinter]` in the root

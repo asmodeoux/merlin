@@ -1,16 +1,20 @@
-"""Cron-style scheduler bindings.
+"""Scheduler bindings — intentionally empty at v0.
 
-Resolution-due dispatch is fired by Postgres `pg_cron` (MVP §8.1 — the
-daily reputation recompute at 00:05 UTC). Other scheduled work lives
-here, dispatched via RQ Scheduler in Sprint 1.
+The worker has **no scheduled jobs** at v0. Everything is reactive:
 
-Planned schedules (Sprint 1):
+- Resolution: ``POST /claims`` calls ``queue.enqueue_at(t_resolve, ...)``.
+  RQ Scheduler holds the job in Redis. No periodic dispatcher; no
+  ``pg_cron``; no events-table scan (Q-029).
+- Reputation: ``resolve_outcome`` enqueues ``recompute_source_reputation``
+  for the affected source the moment the outcome lands. Q-029 proposal.
+- Invite expiry: the redemption handler in ``POST /invites/redeem``
+  checks ``expires_at`` at consume time. No sweeper.
+- Failed-job retries: RQ's built-in ``Retry(max=3, interval=[60, 300, 900])``
+  policy + the failed-jobs registry covers MVP §12.1. Operators rerun
+  via ``make admin-rerun CLAIM_ID=...``; no sweep job.
 
-- ``sweep_resolution_failed`` — every 5 minutes. Retries Events stuck
-  in ``resolution_failed`` per MVP §12.1.
-- ``expire_invites`` — daily 00:00 UTC. Invite TTL sweep.
-
-The asset catalog has **no** scheduled sync — assets materialise lazily
-during the bot's `/alpha` flow via ``POST /v1/assets/resolve``
-(Q-027).
+This module exists so the conventional ``apps/worker/merlin_worker/schedules``
+import path resolves and a Sprint-2 cron primitive can be added here
+without breaking the worker's package layout. Until then, it's a
+documentation stub.
 """

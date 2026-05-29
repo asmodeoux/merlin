@@ -13,7 +13,6 @@ from __future__ import annotations
 import datetime as dt
 from typing import TYPE_CHECKING
 
-from telegram.constants import ParseMode
 from telegram.ext import AIORateLimiter, Application, ApplicationBuilder, Defaults
 
 from merlin_bot.api_dependency import attach_client
@@ -26,20 +25,27 @@ if TYPE_CHECKING:
     pass
 
 
-async def _post_init(application: Application) -> None:
-    """post_init — runs after the Application starts but before polling."""
-    await register_commands(application)
-
-
 def build_application(settings: Settings) -> Application:
     """Construct a fully-wired PTB v21 Application."""
+
+    async def _post_init(application: Application) -> None:
+        """Runs after the Application starts but before polling."""
+        await register_commands(application, settings=settings)
+
     builder: ApplicationBuilder = (
         ApplicationBuilder()
         .token(settings.telegram_bot_token)
         .rate_limiter(AIORateLimiter())
         .defaults(
+            # Plain-text by default. The bot voice rules (plan §6) keep
+            # every user-facing string formatting-free; opting into
+            # MarkdownV2 globally would force every `.`, `(`, `)`, `-`,
+            # `!` to be escaped per the Telegram Bot API spec, and any
+            # missed escape returns ``Bad Request: can't parse entities``
+            # to the user. Handlers that genuinely need formatting can
+            # pass ``parse_mode=ParseMode.MARKDOWN_V2`` per-message.
             Defaults(
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=None,
                 tzinfo=dt.UTC,
                 block=False,
             )
@@ -50,11 +56,18 @@ def build_application(settings: Settings) -> Application:
 
     application: Application = builder.build()
 
-    # Sprint 1: register handlers
-    #   application.add_handler(CommandHandler("start", handlers.start.on_start))
-    #   application.add_handler(ConversationHandler(...))
-    #   application.add_handler(CallbackQueryHandler(...))
-    #   ...
+    # Register handlers. ``/help`` is registered first as a standalone
+    # CommandHandler so it's reachable from inside any conversation —
+    # PTB matches CommandHandlers ahead of state-matched MessageHandlers
+    # when the message starts with ``/``. Onboarding and ``/alpha``
+    # (ConversationHandlers) follow.
+    from merlin_bot.handlers.alpha import build_handler as build_alpha_handler
+    from merlin_bot.handlers.help import build_handler as build_help_handler
+    from merlin_bot.handlers.start import build_handler as build_start_handler
+
+    application.add_handler(build_help_handler())
+    application.add_handler(build_start_handler())
+    application.add_handler(build_alpha_handler())
 
     application.add_error_handler(on_error)
 

@@ -4,11 +4,12 @@ Deployment + local-compose assets.
 
 ## `postgres-dev/` — custom Postgres dev image
 
-`pgvector/pgvector:pg16` + `pg_cron`. MVP §8.1 requires `pg_cron` for
-the daily reputation recompute at 00:05 UTC, but the upstream pgvector
-image doesn't ship it.
+`pgvector/pgvector:pg16` only. Q-029
+drops `pg_cron` from the v0 stack (Q-029): scheduling is RQ Scheduler
+`enqueue_at`, reputation recompute is reactive on outcome write. No
+extension other than `vector` is required.
 
-Both extensions are enabled on first start via
+`vector` is enabled on first start via
 `init.d/01-enable-extensions.sh` (idempotent `CREATE EXTENSION IF NOT
 EXISTS`).
 

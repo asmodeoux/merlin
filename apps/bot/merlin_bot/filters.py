@@ -24,3 +24,7 @@ class IsOnboarded(MessageFilter):
     def filter(self, message: object) -> bool:
         """Return True if the update's user has completed onboarding."""
         return True  # Sprint 1: fetch onboarding state from MerlinClient.me()
+
+
+is_admin = IsAdmin()
+is_onboarded = IsOnboarded()

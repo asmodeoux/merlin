@@ -5,6 +5,24 @@ fills the procedures with real commands and verified recovery times
 pre-launch.** Each section header below maps to a MVP §12 scenario; the
 TODO callouts list the gaps Sprint 4 must close.
 
+## 0. "Is the dev stack alive?" — `make dev-verify`
+
+Use whenever you're not sure if your local environment is functional
+(stale containers, env-var drift, port collisions). One command, ≤ 30s,
+named failure modes:
+
+```bash
+make dev-verify
+```
+
+The script (`scripts/dev_verify.sh`) brings up `deploy/docker-compose.dev.yml`,
+waits for the postgres + redis healthchecks, polls `http://localhost:8000/health`
++ `/ready`, greps the bot and worker logs for their startup lines, and
+prints a clickable URL block. On any failure it dumps the last 50 lines
+of the failing service's logs and exits 1.
+
+VS Code: **🚀 Verify Dev Stack (full launch + healthcheck)** task.
+
 ## 1. DB restore from Fly Postgres snapshot
 
 Reference: MVP §12.8.
@@ -58,10 +76,14 @@ retry window.
 **TODO Sprint 4:**
 
 - Query the outstanding set:
-  `SELECT * FROM claims WHERE resolution_state = 'failed' AND resolve_due_at < now() - interval '24 hours';`
-- Manual re-enqueue:
-  `uv run python -m merlin_worker.cli requeue --claim-id <id>`.
+  `SELECT * FROM events WHERE status = 'resolution_failed' AND t_resolve < now() - interval '24 hours';`
+- Manual re-enqueue (post-RQ-Retry exhaustion):
+  `make admin-rerun CLAIM_ID=<id>` — single one-shot enqueue, no sweeper.
 - Document the criteria for permanent failure (admin override required).
+- Note: there is no periodic "resolution-failed sweep" worker (Q-029
+  PROPOSED). RQ's built-in `Retry(max=3, interval=[60,300,900])` handles
+  the automatic retries; this section is for the human-driven rerun path
+  after those exhaust.
 
 ## 5. Override audit trail walkthrough
 

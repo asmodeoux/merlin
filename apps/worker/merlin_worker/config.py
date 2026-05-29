@@ -42,15 +42,28 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------
     # External APIs (market data)
     #
-    # CoinGecko Demo is the single market-data source per Q-026.
-    # The free tier doesn't require
-    # an API key; if we later upgrade to Analyst ($129/mo) we'll add
-    # `coingecko_api_key` here and switch to `https://pro-api.coingecko.com`.
+    # CoinGecko is the single market-data source per Q-026.
+    # The env var is named without
+    # the ``_DEMO_`` suffix so the same name carries forward to paid
+    # tiers — the base URL discriminates the tier
+    # (``api.coingecko.com`` vs. ``pro-api.coingecko.com``).
     # -------------------------------------------------------------------
-    coingecko_base_url: str = Field(default="https://api.coingecko.com")
-    coingecko_demo_api_key: str = Field(
+    coingecko_base_url: str = Field(default="https://api.coingecko.com/api/v3")
+    coingecko_api_key: str = Field(
         default="",
-        description="Optional Demo-tier key. Empty = anonymous (lower rate limit).",
+        description=(
+            "CoinGecko API key. Empty falls back to anonymous public tier "
+            "(rate-limited). Same env var works across Demo / Analyst / "
+            "Pro tiers — the base URL discriminates."
+        ),
+    )
+
+    # -------------------------------------------------------------------
+    # Telegram (worker sends outcome notifications directly — plan §3)
+    # -------------------------------------------------------------------
+    telegram_bot_token: str = Field(
+        default="",
+        description="Bot API token used for outbound resolution notifications.",
     )
 
     # -------------------------------------------------------------------

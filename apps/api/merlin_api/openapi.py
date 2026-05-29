@@ -1,8 +1,13 @@
 """OpenAPI metadata + security schemes.
 
-Single `bearerAuth` scheme in v0 (HMAC bearer for service-to-service).
-Phase 2 adds a second JWT scheme for the React frontend. We declare only
+Single `bearerAuth` scheme (HMAC bearer for service-to-service).
+Phase 2 adds a second JWT scheme for a React frontend. We declare only
 what we actually validate today — the OpenAPI document stays honest.
+
+Versioning policy: no URL prefix at v0. The OpenAPI ``info.version``
+field is the canonical API version marker — bumped manually when the
+contract changes; CI's snapshot diff catches drift. See the bot-flow
+plan §6 and ADR (s) in ``docs/ARCHITECTURE.md``.
 """
 
 from __future__ import annotations
@@ -54,8 +59,8 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
         openapi_version="3.1.0",
         description=(
             "The canonical Merlin API. The Telegram bot is one client; "
-            "the future React frontend and Pro Dashboard hit the same "
-            "/v1 routes. See docs/ARCHITECTURE.md."
+            "future surfaces (React frontend, Pro Dashboard) hit the same "
+            "flat routes. See docs/ARCHITECTURE.md."
         ),
         routes=app.routes,
         tags=TAGS_METADATA,
@@ -68,9 +73,9 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
     security_schemes = components.setdefault("securitySchemes", {})
     security_schemes.update(SECURITY_SCHEMES)
 
-    # Default security applied to every /v1 route (health/ready stay open).
-    # Per-route overrides win — handlers can declare `dependencies=[]` to
-    # opt out for, e.g., a public Phase-2 landing-page endpoint.
+    # Default security applied to every business route. Health and
+    # readiness probes opt out via ``openapi_extra={"security": []}``
+    # on their route decorators (see merlin_api.health).
     schema["security"] = [{"bearerAuth": []}]
 
     app.openapi_schema = schema

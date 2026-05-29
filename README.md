@@ -23,12 +23,12 @@ If you're new to this repo, read the docs in this order:
 
 ## Monorepo layout
 
-Merlin is a **polyglot monorepo**. Today everything is Python; a React frontend lands in Phase 2 against the same `/v1/*` API surface.
+Merlin is a **polyglot monorepo**. Today everything is Python; a React frontend lands in Phase 2 against the same flat API surface (no URL versioning at v0 — the OpenAPI `info.version` is the canonical version marker).
 
 ```
 apps/        api/  bot/  worker/   ← deployable services (one Dockerfile each)
 packages/    python/                ← shared Python libs (core, infrastructure, client)
-deploy/      docker-compose dev + test, custom postgres-dev (pgvector + pg_cron)
+deploy/      docker-compose dev + test, custom postgres-dev (pgvector)
 scripts/     env_check.py, bootstrap_github_settings.sh
 docs/        ARCHITECTURE, MVP_SPEC, RUNBOOK, REPO_SETTINGS, openapi.json
 ```
@@ -47,7 +47,9 @@ Key cross-links:
 ```bash
 make install-frozen   # uv sync --frozen --all-extras
 make dev-up           # postgres + redis + api/bot/worker, hot reload + debugpy 5678/5679/5680
-make ci               # full local CI parity: ruff, mypy, import-linter, pytest, coverage
+make dev-verify       # one-button "is the stack alive" — boots compose, polls /health + /ready,
+                      # greps bot+worker startup lines, prints clickable URLs (≤ 30s on a fresh checkout)
+make ci               # full local CI parity: ruff, mypy, import-linter, pytest, coverage, docs-check
 make docker-test      # prod images + integration suite (same images Fly ships)
 ```
 

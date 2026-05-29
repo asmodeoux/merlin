@@ -6,24 +6,32 @@ by `merlin_api.main` (runtime) and `tests/conftest.py` (in-process via
 
 Layout:
 
-- `/health`, `/ready`         — un-versioned, no auth (probes)
-- `/v1/<resource>/...`        — business routes, HMAC bearer required
-- `/openapi.json`, `/docs`, `/redoc` — schema + UIs
+- `/health`, `/ready`           — no auth (probes)
+- `/invites`, `/me`, `/board`,
+  `/assets`, `/claims`          — flat business routes, HMAC bearer required
+- `/openapi.json`, `/docs`,
+  `/redoc`                      — schema + UIs
+
+No URL versioning at v0 — see the bot-flow plan §6 and ADR (s) in
+``docs/ARCHITECTURE.md``. The OpenAPI ``info.version`` field
+(``Settings.api_version``) is the canonical version marker; bumped
+manually when the contract changes; CI's snapshot diff catches drift.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import Depends, FastAPI
 
 from merlin_api import __version__, health
 from merlin_api.auth import require_internal_token
 from merlin_api.deps import get_settings
 from merlin_api.errors import register_exception_handlers
 from merlin_api.openapi import build_openapi
+from merlin_api.routes import assets, board, claims, invites, me
 
 
 def create_app() -> FastAPI:
-    """Build a FastAPI instance with health probes + the /v1 router mounted."""
+    """Build a FastAPI instance with health probes + flat business routes."""
     settings = get_settings()
 
     app = FastAPI(
@@ -36,17 +44,18 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # /health, /ready — un-versioned, no auth (probes).
+    # /health, /ready — no auth (probes).
     app.include_router(health.router)
 
-    # /v1/* — every business route lives here. The `dependencies=` on the
-    # router applies the HMAC bearer to all child routes by default.
-    v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_internal_token)])
-    # Sprint 1: import and include resource routers here.
-    #   v1.include_router(routes.claims.router)
-    #   v1.include_router(routes.board.router)
-    #   ...
-    app.include_router(v1)
+    # Business routes — flat, HMAC bearer required by default. Each
+    # router module declares its own paths; the dependency below
+    # applies to every business route at once.
+    auth_dep = [Depends(require_internal_token)]
+    app.include_router(invites.router, dependencies=auth_dep)
+    app.include_router(me.router, dependencies=auth_dep)
+    app.include_router(board.router, dependencies=auth_dep)
+    app.include_router(assets.router, dependencies=auth_dep)
+    app.include_router(claims.router, dependencies=auth_dep)
 
     register_exception_handlers(app)
     app.openapi = lambda: build_openapi(app)  # type: ignore[method-assign]

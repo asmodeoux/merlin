@@ -58,7 +58,60 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
 
     # -------------------------------------------------------------------
+    # LLM (OpenRouter — single freeform-LLM ingest path, Q-028 proposal)
+    # -------------------------------------------------------------------
+    openrouter_api_key: str = Field(
+        default="",
+        description="OpenRouter bearer token; empty disables the freeform path.",
+    )
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description="OpenRouter API base URL.",
+    )
+    llm_primary_model: str = Field(
+        default="openai/gpt-5-mini",
+        description="First-choice OpenRouter model slug.",
+    )
+    llm_fallback_model: str = Field(
+        default="google/gemini-3.5-flash",
+        description="Fallback model when the primary returns 5xx.",
+    )
+    llm_monthly_usd_budget: float = Field(
+        default=30.0,
+        ge=0.0,
+        description=(
+            "Soft monthly USD cap; when exceeded the API short-circuits "
+            "freeform drafts and the bot falls back to the button form."
+        ),
+    )
+
+    # -------------------------------------------------------------------
+    # Market data (CoinGecko — single source per Q-026)
+    # -------------------------------------------------------------------
+    coingecko_api_key: str = Field(
+        default="",
+        description=(
+            "CoinGecko API key. Empty falls back to anonymous public tier "
+            "(rate-limited). Same env var carries forward to paid tiers — "
+            "the base URL discriminates the tier."
+        ),
+    )
+    coingecko_base_url: str = Field(
+        default="https://api.coingecko.com/api/v3",
+        description="CoinGecko REST base URL.",
+    )
+
+    # -------------------------------------------------------------------
+    # Telegram (notifier in the worker; this default is here so the API
+    # can ship the same Settings shape to `make env-check`).
+    # -------------------------------------------------------------------
+    telegram_bot_token: str = Field(
+        default="",
+        description="Bot API token. Worker uses this for outbound notifications.",
+    )
+
+    # -------------------------------------------------------------------
     # API metadata (surfaced in OpenAPI)
     # -------------------------------------------------------------------
     api_title: str = Field(default="Merlin API")
-    api_version: str = Field(default="0.1.0")
+    api_version: str = Field(default="0.2.0")

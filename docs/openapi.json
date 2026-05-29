@@ -1,6 +1,382 @@
 {
   "components": {
     "schemas": {
+      "AssetCandidateDTO": {
+        "description": "One row in the response to ``GET /assets/search``.\n\nMirrors the domain ``AssetCandidate`` shape but lives in\n``contracts`` because Pydantic is forbidden in ``domain``.",
+        "properties": {
+          "coingecko_id": {
+            "title": "Coingecko Id",
+            "type": "string"
+          },
+          "market_cap_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Cap Rank"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "coingecko_id",
+          "symbol",
+          "name"
+        ],
+        "title": "AssetCandidateDTO",
+        "type": "object"
+      },
+      "AssetResolution": {
+        "description": "Response of ``POST /assets/resolve``.",
+        "properties": {
+          "asset_id": {
+            "format": "uuid",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "coingecko_id": {
+            "title": "Coingecko Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "coingecko_id",
+          "symbol",
+          "name"
+        ],
+        "title": "AssetResolution",
+        "type": "object"
+      },
+      "AssetSearchResponse": {
+        "description": "Top-N candidates for a user query, ordered by market-cap rank.",
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/AssetCandidateDTO"
+            },
+            "title": "Candidates",
+            "type": "array"
+          }
+        },
+        "title": "AssetSearchResponse",
+        "type": "object"
+      },
+      "BoardEntry": {
+        "description": "One leaderboard row.\n\nNo \"regret\" / \"simulated_size\" / \"belief_score\" surface \u2014 the bot\nvoice rules forbid them. Reputation is rendered as plain calibration\n+ accuracy percentages.",
+        "properties": {
+          "accuracy_pct": {
+            "title": "Accuracy Pct",
+            "type": "number"
+          },
+          "calls_correct": {
+            "title": "Calls Correct",
+            "type": "integer"
+          },
+          "calls_resolved": {
+            "title": "Calls Resolved",
+            "type": "integer"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "last_call_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Call At"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rank",
+          "display_name",
+          "calls_resolved",
+          "calls_correct",
+          "accuracy_pct"
+        ],
+        "title": "BoardEntry",
+        "type": "object"
+      },
+      "BoardResponse": {
+        "description": "``GET /board`` response.",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/BoardEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "window": {
+            "default": "all_time",
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "title": "BoardResponse",
+        "type": "object"
+      },
+      "ClaimDraftRequest": {
+        "description": "Body of ``POST /claims/draft`` \u2014 freeform LLM extraction.",
+        "properties": {
+          "text": {
+            "description": "Raw user message; may be empty.",
+            "maxLength": 4000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ClaimDraftRequest",
+        "type": "object"
+      },
+      "ClaimDraftResponse": {
+        "description": "Response of ``POST /claims/draft`` \u2014 prefilled fields + asset candidates.",
+        "properties": {
+          "asset_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/AssetCandidateDTO"
+            },
+            "title": "Asset Candidates",
+            "type": "array"
+          },
+          "asset_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Query"
+          },
+          "conviction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conviction"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "extracted_fields": {
+            "$ref": "#/components/schemas/ExtractedFieldsDTO"
+          },
+          "horizon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon"
+          },
+          "parse_metadata": {
+            "$ref": "#/components/schemas/ParseMetadataDTO"
+          },
+          "thesis_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thesis Text"
+          }
+        },
+        "required": [
+          "parse_metadata"
+        ],
+        "title": "ClaimDraftResponse",
+        "type": "object"
+      },
+      "ClaimResponse": {
+        "description": "What ``POST /claims`` returns on success and ``GET /claims/{id}`` returns.\n\nDoes **not** surface the v0 simulated conviction-to-dollar mapping\nor any internal scoring fields. The user sees their own attested\ninputs back, plus the claim id and the resolve date.",
+        "properties": {
+          "asset_symbol": {
+            "title": "Asset Symbol",
+            "type": "string"
+          },
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "conviction": {
+            "title": "Conviction",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "extracted_fields": {
+            "$ref": "#/components/schemas/ExtractedFieldsDTO"
+          },
+          "horizon": {
+            "title": "Horizon",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "parse_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParseMetadataDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolves_at": {
+            "format": "date-time",
+            "title": "Resolves At",
+            "type": "string"
+          },
+          "submitted_at": {
+            "format": "date-time",
+            "title": "Submitted At",
+            "type": "string"
+          },
+          "thesis_text": {
+            "title": "Thesis Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id",
+          "asset_symbol",
+          "direction",
+          "horizon",
+          "conviction",
+          "thesis_text",
+          "submitted_at",
+          "resolves_at",
+          "extracted_fields"
+        ],
+        "title": "ClaimResponse",
+        "type": "object"
+      },
+      "ExtractedFieldsDTO": {
+        "additionalProperties": true,
+        "description": "User-attested intent the v0 verifier doesn't score.\n\nFrozen at claim commit per MVP \u00a715 invariant 17. The bot does\n**not** surface low-confidence fields on the preview \u2014 they live\nhere for the record.",
+        "properties": {
+          "calendar_date_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calendar Date Hint"
+          },
+          "named_entities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Named Entities",
+            "type": "array"
+          },
+          "rumour_referenced": {
+            "default": false,
+            "title": "Rumour Referenced",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "target_price_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price Usd"
+          }
+        },
+        "title": "ExtractedFieldsDTO",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
       "HealthResponse": {
         "description": "Liveness response.",
         "properties": {
@@ -19,6 +395,169 @@
           "version"
         ],
         "title": "HealthResponse",
+        "type": "object"
+      },
+      "MeResponse": {
+        "description": "``GET /me`` payload \u2014 open calls, resolved calls, headline stats.\n\nHeadline stats are plain English / plain percent. No \"regret\",\nno \"simulated PnL\", no version markers.",
+        "properties": {
+          "accuracy_pct": {
+            "default": 0.0,
+            "title": "Accuracy Pct",
+            "type": "number"
+          },
+          "calls_open": {
+            "items": {
+              "$ref": "#/components/schemas/OpenCallEntry"
+            },
+            "title": "Calls Open",
+            "type": "array"
+          },
+          "calls_resolved_recent": {
+            "items": {
+              "$ref": "#/components/schemas/ResolvedCallEntry"
+            },
+            "title": "Calls Resolved Recent",
+            "type": "array"
+          },
+          "calls_resolved_total": {
+            "default": 0,
+            "title": "Calls Resolved Total",
+            "type": "integer"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank"
+          }
+        },
+        "title": "MeResponse",
+        "type": "object"
+      },
+      "OpenCallEntry": {
+        "description": "One open call on ``/me`` \u2014 what the user is waiting on.",
+        "properties": {
+          "asset_symbol": {
+            "title": "Asset Symbol",
+            "type": "string"
+          },
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "horizon": {
+            "title": "Horizon",
+            "type": "string"
+          },
+          "resolves_at": {
+            "format": "date-time",
+            "title": "Resolves At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id",
+          "asset_symbol",
+          "direction",
+          "horizon",
+          "resolves_at"
+        ],
+        "title": "OpenCallEntry",
+        "type": "object"
+      },
+      "ParseMetadataDTO": {
+        "additionalProperties": true,
+        "description": "Audit trail of how a claim was constructed.\n\n``raw_user_turns[0]`` is the original freeform message and is\nimmutable. ``model``, ``model_version``, and ``prompt_hash``\ntogether identify the LLM call exactly so re-runs are auditable.",
+        "properties": {
+          "confidences": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Confidences",
+            "type": "object"
+          },
+          "extracted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted At"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Version"
+          },
+          "parsed_via": {
+            "title": "Parsed Via",
+            "type": "string"
+          },
+          "prompt_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Hash"
+          },
+          "raw_user_turns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw User Turns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "parsed_via"
+        ],
+        "title": "ParseMetadataDTO",
         "type": "object"
       },
       "ReadyResponse": {
@@ -50,6 +589,214 @@
         ],
         "title": "ReadyResponse",
         "type": "object"
+      },
+      "RedeemInviteRequest": {
+        "description": "Body of ``POST /invites/redeem``.\n\nBot sends this after the user pastes their code.",
+        "properties": {
+          "code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "tg_handle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tg Handle"
+          },
+          "tg_user_id": {
+            "title": "Tg User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "tg_user_id"
+        ],
+        "title": "RedeemInviteRequest",
+        "type": "object"
+      },
+      "RedeemInviteResponse": {
+        "description": "Response: opaque ``source_id`` + next-step hint.\n\n``display_name_prompt`` is True iff the source row was just created\nand the bot should ask the user for a leaderboard name.",
+        "properties": {
+          "display_name_prompt": {
+            "default": true,
+            "title": "Display Name Prompt",
+            "type": "boolean"
+          },
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id"
+        ],
+        "title": "RedeemInviteResponse",
+        "type": "object"
+      },
+      "ResolveAssetRequest": {
+        "description": "Body of ``POST /assets/resolve``.\n\nThe bot sends this after the user picks one candidate. The API\nconfirms the id against CoinGecko (defence vs. forged ids), then\nINSERT-or-fetches the local ``assets`` row.",
+        "properties": {
+          "coingecko_id": {
+            "minLength": 1,
+            "title": "Coingecko Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "coingecko_id"
+        ],
+        "title": "ResolveAssetRequest",
+        "type": "object"
+      },
+      "ResolvedCallEntry": {
+        "description": "One resolved call on ``/me``.",
+        "properties": {
+          "asset_symbol": {
+            "title": "Asset Symbol",
+            "type": "string"
+          },
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "horizon": {
+            "title": "Horizon",
+            "type": "string"
+          },
+          "observed_return_pct": {
+            "title": "Observed Return Pct",
+            "type": "number"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "title": "Resolved At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id",
+          "asset_symbol",
+          "direction",
+          "horizon",
+          "resolved_at",
+          "observed_return_pct"
+        ],
+        "title": "ResolvedCallEntry",
+        "type": "object"
+      },
+      "SubmitClaimRequest": {
+        "description": "Body of ``POST /claims`` \u2014 atomic commit.\n\nThe bot composes this from the preview state (LLM-prefilled fields,\npossibly edited by the user, plus the final asset selection).",
+        "properties": {
+          "coingecko_id": {
+            "minLength": 1,
+            "title": "Coingecko Id",
+            "type": "string"
+          },
+          "conviction": {
+            "title": "Conviction",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "extracted_fields": {
+            "$ref": "#/components/schemas/ExtractedFieldsDTO"
+          },
+          "horizon": {
+            "title": "Horizon",
+            "type": "string"
+          },
+          "parse_metadata": {
+            "$ref": "#/components/schemas/ParseMetadataDTO"
+          },
+          "thesis_text": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Thesis Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "coingecko_id",
+          "direction",
+          "horizon",
+          "conviction",
+          "thesis_text",
+          "parse_metadata"
+        ],
+        "title": "SubmitClaimRequest",
+        "type": "object"
+      },
+      "UpdateMeRequest": {
+        "description": "Body of ``PATCH /me``.",
+        "properties": {
+          "display_name": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "UpdateMeRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -64,15 +811,380 @@
     "contact": {
       "name": "Merlin Team"
     },
-    "description": "The canonical Merlin API. The Telegram bot is one client; the future React frontend and Pro Dashboard hit the same /v1 routes. See docs/ARCHITECTURE.md.",
+    "description": "The canonical Merlin API. The Telegram bot is one client; future surfaces (React frontend, Pro Dashboard) hit the same flat routes. See docs/ARCHITECTURE.md.",
     "license": {
       "name": "Proprietary"
     },
     "title": "Merlin API",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/assets/resolve": {
+      "post": {
+        "description": "The bot calls this after the user picks one of the search candidates. The API confirms the id against CoinGecko (defence vs. forged ids) and materialises the local ``assets`` row. Same coingecko_id \u2192 same asset_id (deterministic UUID5).",
+        "operationId": "resolve_asset_assets_resolve_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveAssetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetResolution"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "INSERT-or-fetch an asset row by coingecko_id.",
+        "tags": [
+          "assets"
+        ]
+      }
+    },
+    "/assets/search": {
+      "get": {
+        "description": "Proxies CoinGecko ``/search`` and returns the top-5 candidates ordered by market-cap rank. Drives the bot's asset-picker on the ``/alpha`` flow (Q-027 lazy asset resolution).",
+        "operationId": "search_assets_assets_search_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search candidate assets for a freeform query.",
+        "tags": [
+          "assets"
+        ]
+      }
+    },
+    "/board": {
+      "get": {
+        "description": "User-facing only: rank, display name, calls resolved, accuracy percent, last call date. No belief score, no simulated PnL, no version markers.",
+        "operationId": "get_board_board_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "default": "all_time",
+              "pattern": "^(all_time|30d|7d)$",
+              "title": "Window",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Leaderboard \u2014 top-N sources by accuracy over a window.",
+        "tags": [
+          "board"
+        ]
+      }
+    },
+    "/claims": {
+      "post": {
+        "description": "Five INSERTs + one RQ ``enqueue_at`` inside a single transaction. Returns the persisted claim with its resolve date. Idempotent against duplicate submissions by ``(source, asset, t0, horizon)``.",
+        "operationId": "submit_claim_claims_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit a claim (atomic commit + scheduled resolution).",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/claims/draft": {
+      "post": {
+        "description": "Stateless. One LLM call, optionally one CoinGecko ``/search`` call. Returns a prefilled draft for the bot to render on its preview. On any LLM failure, returns 503 \u2014 the bot then falls back to the button form.",
+        "operationId": "draft_claim_claims_draft_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimDraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "LLM unavailable; bot should fall back to the button flow."
+          }
+        },
+        "summary": "Freeform-LLM claim extraction (no DB writes).",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/claims/{claim_id}": {
+      "get": {
+        "description": "Returns the user-visible shape of a claim: verbatim thesis, resolve date, outcome if resolved. No internal scoring fields.",
+        "operationId": "get_claim_claims__claim_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch a claim by id.",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
     "/health": {
       "get": {
         "description": "Cheap check used by Fly's restart healthcheck. No DB or Redis required.",
@@ -93,6 +1205,167 @@
         "summary": "Liveness probe \u2014 process is up.",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/invites/redeem": {
+      "post": {
+        "description": "Single transaction: validate invite, INSERT ``sources`` (zeroed Admiralty: ``reliability='F'``, ``credibility=6``), INSERT ``source_identity``, UPDATE ``invites`` redeemed. Returns the new ``source_id`` and a hint to prompt for display name. Unknown / expired codes 404.",
+        "operationId": "redeem_invite_invites_redeem_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemInviteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedeemInviteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Redeem an invite code (atomic \u2014 INSERT sources + UPDATE invites).",
+        "tags": [
+          "invites"
+        ]
+      }
+    },
+    "/me": {
+      "get": {
+        "description": "User-visible only: open calls (asset + direction + resolve date), recent resolved calls with plain-percent returns, accuracy. No internal scoring fields, no version markers.",
+        "operationId": "get_me_me_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Current source's open + resolved calls and headline stats.",
+        "tags": [
+          "sources"
+        ]
+      },
+      "patch": {
+        "description": "Idempotent \u2014 calling with the same name is a no-op. The display name has a 40-character soft cap; the bot trims user input before sending.",
+        "operationId": "update_me_me_patch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set the display name shown on the leaderboard.",
+        "tags": [
+          "sources"
         ]
       }
     },

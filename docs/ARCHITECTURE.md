@@ -4,9 +4,11 @@
 > (`api`, `bot`, `worker`) plus three shared Python packages (`core`,
 > `infrastructure`, `client`) live in `apps/` and `packages/python/`.
 > The bot talks to the API over HTTP; the worker writes to the DB
-> directly. A future React frontend plugs into the same `/v1/*` surface
-> via OpenAPI-generated TypeScript types. Hexagonal layering is enforced
-> by `import-linter`. Dev loop is docker-compose with hot reload and
+> directly. A future React frontend plugs into the same flat API
+> surface via OpenAPI-generated TypeScript types — no URL versioning
+> at v0, the OpenAPI `info.version` field is the canonical version
+> marker (plan §6, ADR (s) below). Hexagonal layering is enforced by
+> `import-linter`. Dev loop is docker-compose with hot reload and
 > debugpy on every service.
 
 ---
@@ -18,7 +20,7 @@
 │ Telegram Bot API    │ <───polling──> │  merlin-bot          │
 └─────────────────────┘                │  (PTB v21)           │
                                        │                      │
-                                       │  HTTP /v1/* (HMAC)   │
+                                       │  HTTP (HMAC bearer)  │
                                        │                      ▼
                                        │           ┌────────────────────┐
                                        │           │  merlin-api        │
@@ -30,20 +32,20 @@
                                        │             ▼               ▼
                                        │       ┌──────────┐    ┌──────────┐
                                        │       │ Postgres │    │  Redis   │
-                                       │       │ pgvector │    │  RQ      │
-                                       │       │ pg_cron  │    │          │
+                                       │       │ pgvector │    │  RQ +    │
+                                       │       │          │    │  RQ Sched│
                                        │       └────▲─────┘    └────▲─────┘
                                        │            │               │
                                        │            │               │
                                        │            │               │
                                        │       ┌────┴──────────────-┴────┐
                                        │       │  merlin-worker          │
-                                       │       │  (RQ + CoinGecko Demo)  │
+                                       │       │  (RQ + CoinGecko)       │
                                        └─────> │                         │
                                                └─────────────────────────┘
 
-(future) merlin-web (React) ──▶  same /v1/* surface, JWT auth (Phase 2)
-(future) merlin-pro (Dashboard) ──▶  same /v1/* surface
+(future) merlin-web (React) ──▶  same flat API surface, JWT auth (Phase 2)
+(future) merlin-pro (Dashboard) ──▶  same flat API surface
 ```
 
 ## 2. Layer model
@@ -132,7 +134,7 @@ CI runs `lint-imports` as a hard gate.
 │       │   └── merlin_infrastructure/      # importable package
 │       └── merlin_client/           # same shape
 ├── deploy/
-│   ├── postgres-dev/           # custom pgvector + pg_cron image
+│   ├── postgres-dev/           # custom pgvector image (no pg_cron — Q-029)
 │   ├── docker-compose.dev.yml
 │   ├── docker-compose.test.yml
 │   └── README.md
@@ -208,7 +210,7 @@ Today the bot is the only frontend. Tomorrow there will be three:
    live at `packages/ts/openapi-client/` and `apps/web/`. Auth via JWT
    (the second security scheme we add to OpenAPI; HMAC stays for
    service-to-service).
-3. **Pro dashboard** (Phase 3). Same `/v1/*` surface, same OpenAPI
+3. **Pro dashboard** (Phase 3). Same flat API surface, same OpenAPI
    client, separate React app. May share components from `apps/web` via
    a `packages/ts/ui/` shared lib.
 
@@ -226,7 +228,7 @@ User                Bot              merlin_client    API              DB
  │── select BTC ────▶│                     │            │                │
  │                   │ ...                 │            │                │
  │── thesis text ───▶│                     │            │                │
- │                   │── POST /v1/claims ─▶│            │                │
+ │                   │── POST /claims ────▶│            │                │
  │                   │                     │── auth ──▶│                 │
  │                   │                     │            │── INSERT ────▶│
  │                   │                     │            │◀── id ─────────│
@@ -249,7 +251,7 @@ User                Bot              merlin_client    API              DB
   drift in CI; `make openapi-check` runs the same diff locally.
 - Future React frontend regenerates a TypeScript client from
   `docs/openapi.json` via `openapi-typescript` and ships it as
-  `packages/ts/openapi-client/`. Same `/v1/*` surface, same types, no
+  `packages/ts/openapi-client/`. Same flat surface, same types, no
   hand-written client.
 
 ## 9. PTB v21 bot structure
@@ -347,13 +349,16 @@ repo. Key conventions:
 | h   | Per-app .env.example; no root one. `scripts/env_check.py` enforces parity with Settings.       | 2026-05  |
 | i   | Three Dockerfile targets per app: base / dev / prod. Fly pins TARGET=prod via `[build.args]`.  | 2026-05  |
 | j   | Tests live with the app/package they test. No top-level `tests/` directory.                    | 2026-05  |
-| k   | pg_cron required for daily reputation recompute (MVP §8.1). Custom postgres-dev image adds it. | 2026-05  |
+| k   | ~~pg_cron required for daily reputation recompute (MVP §8.1).~~ **Superseded by Q-029 (PROPOSED):** drop `pg_cron`, recompute reputation reactively on outcome write, schedule resolution via RQ Scheduler `enqueue_at`. Custom postgres-dev image keeps `pgvector` only. | 2026-05  |
 | l   | Alembic migrations co-located with `merlin_infrastructure`. The package that owns the models. | 2026-05  |
 | m   | uv (not Poetry / pip-tools). Speed + native workspace support.                                 | 2026-05  |
 | n   | Dependabot cooldown 7-day default. Catches first-week regressions before our auto-PRs land.    | 2026-05  |
 | o   | gitleaks + pip-audit + Dependency Review as the v0 scanner stack. osv-scanner / trufflehog Ph2| 2026-05  |
 | p   | Renovate noted as Dependabot fallback. Only flip if Dependabot's cooldown story regresses.    | 2026-05  |
 | q   | Two-layer flat package layout (`packages/python/merlin_X/merlin_X/`). Single-layer rejected — see long form. | 2026-05  |
+| r   | **No URL versioning at v0.** Bot and API are co-deployed by the same team; the OpenAPI `info.version` is the canonical version marker. Add `/v1/` only when a partner-facing surface lands. | 2026-05  |
+| s   | **Freeform-LLM claim ingest (Q-028 PROPOSED).** Default `/alpha` path: one OpenRouter call per draft, `temperature=0`, JSON-schema constrained. Domain dataclass `ClaimDraft` + ports `ClaimDrafterPort` / `JobQueuePort` / `NotifierPort`. Three new JSONB columns on `claims` (`parsed_via` / `extracted_fields` / `parse_metadata`); §15 invariant 17 freezes `extracted_fields` at commit. | 2026-05  |
+| t   | **Reactive reputation, Redis-only scheduling (Q-029 PROPOSED).** Drop `pg_cron`. Resolution = `queue.enqueue_at(t_resolve, …)`. Reputation = enqueued by the resolver on outcome write. Invite expiry = check at redeem time. `apps/worker/merlin_worker/schedules/` is intentionally empty at v0. | 2026-05  |
 
 ADR (q) — long form:
 

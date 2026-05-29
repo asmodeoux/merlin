@@ -1,24 +1,49 @@
-"""/alpha ConversationHandler — one file per step + a wiring module.
+"""``/alpha`` ConversationHandler — freeform-first claim capture (Q-028).
 
-Sprint 1 ships:
-- `states.py`      — IntEnum of conversation states
-- `conversation.py` — ConversationHandler factory
-- `step_asset.py`  — search-driven asset selection (Q-027 lazy resolve):
-    1. User types a query (e.g. "render").
-    2. Bot calls `MerlinClient.search_assets(query)` → API proxies
-       CoinGecko's `/search` endpoint.
-    3. Top 5 candidates rendered as inline-keyboard buttons.
-    4. On pick, bot calls `MerlinClient.resolve_asset(coingecko_id)` →
-       API INSERT-or-fetches the local `assets` row and returns
-       `asset_id`. Conversation advances.
+Two entry points, one downstream path:
 
-  The bot's asset picker is **stateless about which assets exist
-  locally** — the user's query goes straight to CoinGecko's universe.
-  No top-N hardcoded list, no pre-seed catalog.
+- **Freeform.** User types anything that isn't a command. Bot calls
+  ``POST /claims/draft`` with the raw text. The LLM extracts a
+  prefilled ``ClaimDraft`` (asset query + direction + horizon +
+  conviction + thesis + extracted_fields + confidences). The bot
+  proxies the ``asset_candidates`` from CoinGecko's ``/search`` for
+  ambiguous queries.
+- **``/alpha`` command.** Bot shows "Describe a bet or tap to use
+  buttons" and waits. An empty / no-text reply enters the deterministic
+  button flow directly.
 
-- `step_direction.py` — long/short
-- `step_horizon.py` — 1h / 4h / 1d
-- `step_conviction.py` — low / med / high
-- `step_thesis.py` — free-text thesis
-- `step_preview.py` — confirm + POST to API
+Both paths converge on **`step_preview.py`** — the prefilled summary
+card. From the preview the user can:
+
+- ``Confirm`` → bot composes the ``SubmitClaimRequest`` and POSTs to
+  ``/claims``. Sends back the receipt (calendar resolve date, no
+  internal scoring fields).
+- ``Edit asset/direction/horizon/conviction/thesis`` → bot re-enters
+  the matching button step inline, then returns to the preview with
+  the field overwritten.
+- ``Cancel`` → drop the draft from PTB memory. Zero DB writes.
+
+If ``POST /claims/draft`` fails (LLM 5xx, OpenRouter rate-limited,
+budget exceeded), the bot transparently enters the button flow
+starting at the asset step. **No fallback paths in any downstream
+component** — the rest of the system never sees whether the claim
+came from LLM or buttons (it sees ``parse_metadata.parsed_via`` if
+it cares).
+
+Submodules:
+
+- ``states.py`` — IntEnum of conversation states.
+- ``conversation.py`` — ``ConversationHandler`` factory wiring everything.
+- ``step_freeform.py`` — entry point that calls the LLM.
+- ``step_preview.py`` — renders prefilled fields, Confirm/Edit/Cancel.
+- ``step_asset.py`` — search-driven asset picker (Q-027 lazy resolve).
+  Reachable as both the form-flow start and the "Edit asset" inline
+  re-entry.
+- ``step_direction.py`` / ``step_horizon.py`` / ``step_conviction.py``
+  / ``step_thesis.py`` — single-question form steps. Reachable inline
+  from the preview's "Edit X" buttons.
 """
+
+from merlin_bot.handlers.alpha.conversation import build_handler
+
+__all__ = ["build_handler"]

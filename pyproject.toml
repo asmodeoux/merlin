@@ -99,6 +99,17 @@ ignore = [
 # Lazy imports inside route handlers / health probes break circular-import
 # risks; allowed in the api layer.
 "apps/api/merlin_api/**/*.py" = ["B008", "PLC0415"]
+# Bot and worker register handlers / jobs that import infrastructure
+# adapters inside functions to keep cold-start fast and avoid pulling
+# httpx + redis on module import for unrelated tests.
+"apps/bot/merlin_bot/**/*.py" = ["PLC0415"]
+"apps/worker/merlin_worker/**/*.py" = ["PLC0415"]
+# HTTP-status-code numeric literals (404 / 429 / 500) read more clearly
+# than `status.HTTP_404_NOT_FOUND` in adapter branches; same convention
+# as the bot handler's `e.status_code == 404` check. Constants would
+# add noise without catching real bugs.
+"packages/python/merlin_infrastructure/merlin_infrastructure/**/*.py" = ["PLR2004"]
+"apps/bot/merlin_bot/handlers/**/*.py" = ["PLR2004"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -141,6 +152,7 @@ mypy_path = [
     "$MYPY_CONFIG_FILE_DIR/packages/python/merlin_core",
     "$MYPY_CONFIG_FILE_DIR/packages/python/merlin_infrastructure",
     "$MYPY_CONFIG_FILE_DIR/packages/python/merlin_client",
+    "$MYPY_CONFIG_FILE_DIR/scripts",
 ]
 exclude = [
     "alembic/versions/",
@@ -194,6 +206,8 @@ testpaths = [
     "packages/python/merlin_core/tests",
     "packages/python/merlin_infrastructure/tests",
     "packages/python/merlin_client/tests",
+    "scripts/tests",
+    "tests/e2e",
 ]
 filterwarnings = [
     "error",

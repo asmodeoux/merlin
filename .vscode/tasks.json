@@ -29,6 +29,13 @@
     { "label": "🐳 Docker: Logs (tail)", "type": "shell", "command": "make dev-logs", "problemMatcher": [], "presentation": { "reveal": "always" } },
     { "label": "🐳 Docker: Rebuild (no cache)", "type": "shell", "command": "make dev-rebuild", "problemMatcher": [] },
     { "label": "🐳 Docker: Run integration suite (prod images)", "type": "shell", "command": "make docker-test", "problemMatcher": [] },
+    {
+      "label": "🚀 Verify Dev Stack (full launch + healthcheck)",
+      "type": "shell",
+      "command": "make dev-verify",
+      "presentation": { "panel": "shared", "clear": true, "reveal": "always", "focus": true },
+      "problemMatcher": []
+    },
 
     // ===================================================================
     // Tests
@@ -43,6 +50,7 @@
     { "label": "🧪 Tests: merlin_core", "type": "shell", "command": "make test-core", "group": "test", "problemMatcher": [] },
     { "label": "🧪 Tests: merlin_infrastructure", "type": "shell", "command": "make test-infra", "group": "test", "problemMatcher": [] },
     { "label": "🧪 Tests: merlin_client", "type": "shell", "command": "make test-client", "group": "test", "problemMatcher": [] },
+    { "label": "🧪 Tests: End-to-end", "type": "shell", "command": "make test-e2e", "group": "test", "problemMatcher": [] },
 
     // ===================================================================
     // Coverage

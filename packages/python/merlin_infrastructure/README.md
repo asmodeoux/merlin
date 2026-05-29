@@ -24,18 +24,19 @@ Enforced by `[tool.importlinter]` in the root `pyproject.toml`:
 
 ## Postgres extensions
 
-The dev DB ships with two Postgres extensions:
+The dev DB ships with one Postgres extension:
 
 - **`vector`** (pgvector) — used for the `vector(384)` similarity column
   on `claims` (embedding from
   `sentence-transformers/all-MiniLM-L6-v2`, 384-dim per MVP §8.1).
-- **`pg_cron`** — used for the daily reputation recompute at 00:05 UTC
-  (MVP §8.1, MVP §12).
 
-The upstream `pgvector/pgvector:pg16` image does NOT ship `pg_cron`. The
-custom image at `deploy/postgres-dev/Dockerfile` adds it. The matching
-Alembic migration declares both extensions in the initial revision so
-`CREATE EXTENSION IF NOT EXISTS ...` runs at migrate-time.
+Q-029 drops `pg_cron` from the v0
+stack. Resolution scheduling is `RQ Queue.enqueue_at(t_resolve, …)`
+and reputation recompute is reactive (enqueued by the resolver the
+moment an outcome lands). The custom image at
+`deploy/postgres-dev/Dockerfile` is therefore plain
+`pgvector/pgvector:pg16` with the `vector` extension on top — no
+`pg_cron` apt install, no `shared_preload_libraries` tweak (Q-029).
 
 ## Append-only invariants
 

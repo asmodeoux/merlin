@@ -170,7 +170,9 @@ GH_REPO=org/repo ./scripts/bootstrap_github_settings.sh
   `[rate-limiter, callback-data, job-queue, webhooks]`.
 - SQLAlchemy **>=2.0,<3**, asyncpg **>=0.30,<1**, alembic **>=1.14,<2**.
 - pgvector Python package **>=0.3,<1**; Postgres image
-  `pgvector/pgvector:pg16` + custom layer adding `pg_cron`.
+  `pgvector/pgvector:pg16` (no `pg_cron` at v0 — Q-029 [PROPOSED]
+  drops the daily reputation cron in favour of reactive on-outcome
+  enqueues. All scheduling is Redis-only via RQ Scheduler `enqueue_at`).
 - RQ **>=2.0,<3** + redis **>=5.2,<6**.
 - Pydantic **>=2.9,<3**, pydantic-settings **>=2.6,<3**.
 - ruff **0.7.4**, mypy via `uv run mypy`, import-linter via
@@ -183,8 +185,8 @@ GH_REPO=org/repo ./scripts/bootstrap_github_settings.sh
 Example: "show users their last claim's outcome."
 
 1. **Route** — `apps/api/merlin_api/routes/board.py` adds
-   `GET /v1/board/me/latest-outcome` (or extends the existing /me
-   route).
+   `GET /board/me/latest-outcome` (or extends the existing /me
+   route). Routes are flat — no URL versioning.
 2. **Schema** — `packages/python/merlin_core/merlin_core/contracts/board.py` adds
    `LatestOutcomeResponse(BaseModel)`.
 3. **Use case + port** — `merlin_core.application.use_cases.board` adds
@@ -219,10 +221,10 @@ Example: "show users their last claim's outcome."
   head; do not UPDATE the old row. MVP §15 invariant 6.
 - **Never default `pnl_if_ignored_usd` to NULL.** It is `0` until
   resolution sets a real value. MVP §15 invariant 3.
-- **Never run integration tests on a non-pgvector / non-pg_cron
-  Postgres.** The custom image at `deploy/postgres-dev/Dockerfile` is
-  used everywhere; the upstream `pgvector/pgvector:pg16` alone is
-  missing pg_cron.
+- **Never run integration tests on a non-pgvector Postgres.** The
+  custom image at `deploy/postgres-dev/Dockerfile` is used everywhere;
+  the upstream `pgvector/pgvector:pg16` alone is the right base. We
+  no longer ship `pg_cron` — all scheduling lives in Redis (Q-029).
 - **Never commit a secret.** GitHub Push Protection will block; if you
   see the warning, do **not** force-push around it — rotate the secret
   via `fly secrets set` first.

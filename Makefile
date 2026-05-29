@@ -7,10 +7,10 @@
 .DEFAULT_GOAL := help
 .PHONY: help install install-frozen lint format type layers test test-unit \
         test-int test-snapshot test-api test-bot test-worker test-core \
-        test-infra test-client cov cov-html openapi openapi-check env-check \
+        test-infra test-client test-e2e cov cov-html openapi openapi-check env-check \
         deps-audit gitleaks pip-audit dep-review db-migrate db-revision \
         db-reset seed dev dev-up dev-down dev-logs dev-rebuild docker-test \
-        ci ci-fast clean
+        dev-verify docs-check ci ci-fast clean
 
 # ---------------------------------------------------------------------------
 # meta
@@ -62,23 +62,42 @@ test-int: ## Integration tests (testcontainers PG + Redis).
 test-snapshot: ## Snapshot tests (syrupy — OpenAPI, formatting).
 	uv run pytest -m snapshot
 
+# ---------------------------------------------------------------------------
+# Per-package coverage gates. Sprint 1 floors per the bot-flow plan; the
+# steady-state targets in pyproject.toml (`[tool.coverage.targets]`) are
+# tracked but not yet enforced. `make ci` invokes each `test-*` target
+# below, so a regression in any single package fails CI precisely.
+#
+# Floors are set conservatively against the layered test pyramid landing
+# this sprint and ramp toward the steady-state targets across sprints.
+# ---------------------------------------------------------------------------
+COV_FAIL_API = 50
+COV_FAIL_BOT = 35
+COV_FAIL_WORKER = 35
+COV_FAIL_CORE = 70
+COV_FAIL_INFRA = 60
+COV_FAIL_CLIENT = 65
+
 test-api: ## API tests only.
-	uv run pytest apps/api/tests --cov=apps/api/merlin_api
+	uv run pytest apps/api/tests --cov=apps/api/merlin_api --cov-fail-under=$(COV_FAIL_API)
 
 test-bot: ## Bot tests only.
-	uv run pytest apps/bot/tests --cov=apps/bot/merlin_bot
+	uv run pytest apps/bot/tests --cov=apps/bot/merlin_bot --cov-fail-under=$(COV_FAIL_BOT)
 
 test-worker: ## Worker tests only.
-	uv run pytest apps/worker/tests --cov=apps/worker/merlin_worker
+	uv run pytest apps/worker/tests --cov=apps/worker/merlin_worker --cov-fail-under=$(COV_FAIL_WORKER)
 
 test-core: ## merlin_core tests only.
-	uv run pytest packages/python/merlin_core/tests --cov=packages/python/merlin_core/merlin_core
+	uv run pytest packages/python/merlin_core/tests --cov=packages/python/merlin_core/merlin_core --cov-fail-under=$(COV_FAIL_CORE)
 
 test-infra: ## merlin_infrastructure tests only.
-	uv run pytest packages/python/merlin_infrastructure/tests --cov=packages/python/merlin_infrastructure/merlin_infrastructure
+	uv run pytest packages/python/merlin_infrastructure/tests --cov=packages/python/merlin_infrastructure/merlin_infrastructure --cov-fail-under=$(COV_FAIL_INFRA)
 
 test-client: ## merlin_client tests only.
-	uv run pytest packages/python/merlin_client/tests --cov=packages/python/merlin_client/merlin_client
+	uv run pytest packages/python/merlin_client/tests --cov=packages/python/merlin_client/merlin_client --cov-fail-under=$(COV_FAIL_CLIENT)
+
+test-e2e: ## End-to-end tests (full-flow stub for now).
+	uv run pytest tests/e2e --no-cov
 
 ##@ Coverage
 cov: ## Run all tests with coverage.
@@ -152,13 +171,20 @@ dev-rebuild: ## Force rebuild dev images.
 docker-test: ## Build prod images + run integration suite (compose.test.yml).
 	docker compose -f deploy/docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from runner
 
+dev-verify: ## One-button "is the stack alive" — boot compose + poll /health + /ready + log greps.
+	@scripts/dev_verify.sh
+
+##@ Docs parity
+docs-check: ## rg-based grep gate — fail on forbidden tokens in current docs/code.
+	@scripts/docs_check.sh
+
 ##@ CI
-ci: install-frozen lint format-check type layers openapi-check env-check pip-audit test ## Full local CI parity.
+ci: install-frozen lint format-check type layers openapi-check env-check pip-audit docs-check test-core test-infra test-client test-api test-bot test-worker test-e2e ## Full local CI parity (layered coverage gates).
 	@echo ""
 	@echo "  ✓ make ci complete"
 	@echo ""
 
-ci-fast: install-frozen lint format-check type layers openapi-check env-check test-unit ## Fast CI (skip integration + snapshot + audit).
+ci-fast: install-frozen lint format-check type layers openapi-check env-check docs-check test-unit ## Fast CI (skip integration + snapshot + audit).
 
 ##@ Cleanup
 clean: ## Remove caches and build artifacts.

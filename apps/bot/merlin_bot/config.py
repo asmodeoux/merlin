@@ -7,10 +7,10 @@ same commit (`make env-check` enforces).
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -36,7 +36,10 @@ class Settings(BaseSettings):
         default="",
         description="BotFather token. Empty disables the bot (logs a warning).",
     )
-    telegram_admin_chat_ids: list[int] = Field(
+    # ``NoDecode`` opts out of pydantic-settings' default JSON pre-decode
+    # for complex types, so the env value reaches our ``field_validator``
+    # below as the raw string ("123,456" or just "123").
+    telegram_admin_chat_ids: Annotated[list[int], NoDecode] = Field(
         default_factory=list,
         description=(
             "Comma-separated admin chat IDs. Used for admin-scoped commands "
@@ -70,3 +73,18 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------
     sentry_dsn: str = Field(default="")
     sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @field_validator("telegram_admin_chat_ids", mode="before")
+    @classmethod
+    def _split_admin_chat_ids(cls, raw: Any) -> Any:
+        """Accept a comma-separated string ("123,456") or a single int.
+
+        pydantic-settings parses list-typed env vars as JSON by default;
+        we override with a friendlier syntax matching the .env.example
+        documentation ("comma-separated chat IDs").
+        """
+        if raw is None or raw == "":
+            return []
+        if isinstance(raw, str):
+            return [int(part) for part in raw.split(",") if part.strip()]
+        return raw

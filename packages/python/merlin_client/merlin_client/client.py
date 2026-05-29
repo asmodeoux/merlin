@@ -1,22 +1,18 @@
 """Async Merlin API client.
 
-v0 talks to the API over HTTP with an HMAC bearer token (read from the
-caller's environment as ``MERLIN_API_INTERNAL_TOKEN``). All routes live
-under ``/v1``; ``/health`` and ``/ready`` stay unversioned.
+Talks to the API over HTTP with an HMAC bearer token (read from the
+caller's environment as ``MERLIN_API_INTERNAL_TOKEN``). Routes are
+flat — no URL versioning (plan §6); the OpenAPI ``info.version``
+field is the canonical version marker, surfaced via ``GET /openapi.json``.
 
-Sprint 1 fills in per-resource methods. Planned surface:
+Per-resource methods:
 
-- ``submit_claim(...)``, ``get_claim(claim_id)``
-- ``get_board(...)``, ``get_me(source_id)``
-- ``redeem_invite(code)``
-- ``search_assets(query)`` — backs the bot's `/alpha` asset step.
-  Returns CoinGecko candidates (Q-027 lazy asset resolution).
-- ``resolve_asset(coingecko_id)`` — INSERT-or-fetch the local
-  ``assets`` row, returns ``asset_id``. Called after the user picks
-  one of the search candidates.
-
-The scaffold here ships the transport + auth wiring + the error shape so
-the bot can be wired against it at the same time the API routes land.
+- ``draft_claim(text)`` — Q-028 freeform LLM extraction (stateless).
+- ``submit_claim(...)``, ``get_claim(claim_id)`` — atomic commit + inspect.
+- ``get_board(window)``, ``get_me()``, ``update_me(display_name)``.
+- ``redeem_invite(code, tg_user_id, tg_handle)``.
+- ``search_assets(query)``, ``resolve_asset(coingecko_id)`` — backs the
+  bot's `/alpha` asset step (Q-027 lazy asset resolution).
 """
 
 from __future__ import annotations
@@ -33,19 +29,18 @@ USER_AGENT: str = "merlin-client/0.1.0"
 
 
 class MerlinClient:
-    """Async HTTP client for the Merlin /v1 API.
+    """Async HTTP client for the Merlin API (flat routes, no URL versioning).
 
     Usage:
 
         async with MerlinClient(base_url=..., token=...) as client:
-            # Sprint 1 — per-resource methods live here.
+            draft = await client.draft_claim("ETH long 14d strong")
             ...
 
     Args:
         base_url: Full base URL of the API (e.g. ``http://merlin-api:8000``
-            in dev, ``https://api.merlin.fly.dev`` in prod). The client
-            appends ``/v1/<resource>`` for business routes; pass the host
-            root, not the ``/v1`` prefix.
+            in dev, ``https://api.merlin.fly.dev`` in prod). Routes are
+            flat: ``/claims``, ``/me``, ``/board``, ``/assets/...``.
         token: HMAC bearer token (``MERLIN_API_INTERNAL_TOKEN``). Sent as
             ``Authorization: Bearer <token>`` on every request.
         timeout: Per-request timeout in seconds. Default 10s.
@@ -106,7 +101,95 @@ class MerlinClient:
         return await self._get("/ready")
 
     # -----------------------------------------------------------------------
-    # Internal request helpers — Sprint 1 builds per-resource methods on top.
+    # Invites
+    # -----------------------------------------------------------------------
+    async def redeem_invite(
+        self,
+        *,
+        code: str,
+        tg_user_id: int,
+        tg_handle: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /invites/redeem`` — atomic invite consumption."""
+        return await self._post(
+            "/invites/redeem",
+            json={
+                "code": code,
+                "tg_user_id": tg_user_id,
+                "tg_handle": tg_handle,
+            },
+        )
+
+    # -----------------------------------------------------------------------
+    # Sources / me
+    # -----------------------------------------------------------------------
+    async def get_me(self) -> dict[str, Any]:
+        """``GET /me`` — reputation snapshot."""
+        return await self._get("/me")
+
+    async def update_me(self, *, display_name: str) -> None:
+        """``PATCH /me`` — set leaderboard display name. Returns 204."""
+        try:
+            response = await self._client.patch(
+                "/me",
+                json={"display_name": display_name},
+            )
+        except httpx.TimeoutException as exc:
+            raise MerlinTimeoutError(str(exc)) from exc
+        if not response.is_success:
+            try:
+                detail = response.json()
+            except ValueError:
+                detail = response.text
+            raise MerlinHTTPError(
+                response.status_code,
+                response.reason_phrase or "HTTP error",
+                detail=detail,
+            )
+
+    # -----------------------------------------------------------------------
+    # Board
+    # -----------------------------------------------------------------------
+    async def get_board(self, *, window: str = "all_time") -> dict[str, Any]:
+        """``GET /board`` — leaderboard for the window."""
+        return await self._get("/board", params={"window": window})
+
+    # -----------------------------------------------------------------------
+    # Assets (Q-027 lazy resolution)
+    # -----------------------------------------------------------------------
+    async def search_assets(self, *, query: str) -> dict[str, Any]:
+        """``GET /assets/search`` — candidates for a freeform query."""
+        return await self._get("/assets/search", params={"q": query})
+
+    async def resolve_asset(self, *, coingecko_id: str) -> dict[str, Any]:
+        """``POST /assets/resolve`` — INSERT-or-fetch by coingecko_id."""
+        return await self._post(
+            "/assets/resolve",
+            json={"coingecko_id": coingecko_id},
+        )
+
+    # -----------------------------------------------------------------------
+    # Claims (Q-028 freeform LLM draft + atomic commit)
+    # -----------------------------------------------------------------------
+    async def draft_claim(self, *, text: str) -> dict[str, Any]:
+        """``POST /claims/draft`` — freeform LLM extraction; no DB writes."""
+        return await self._post("/claims/draft", json={"text": text})
+
+    async def submit_claim(self, *, payload: dict[str, Any]) -> dict[str, Any]:
+        """``POST /claims`` — atomic commit + scheduled resolution.
+
+        ``payload`` follows the ``SubmitClaimRequest`` Pydantic schema
+        in ``merlin_core.contracts.claims``. The bot composes this
+        from the preview state.
+        """
+        return await self._post("/claims", json=payload)
+
+    async def get_claim(self, *, claim_id: str) -> dict[str, Any]:
+        """``GET /claims/{id}`` — single claim shape (user-visible only)."""
+        return await self._get(f"/claims/{claim_id}")
+
+    # -----------------------------------------------------------------------
+    # Internal request helpers
     # -----------------------------------------------------------------------
     async def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         try:

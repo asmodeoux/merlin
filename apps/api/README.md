@@ -1,8 +1,15 @@
 # merlin-api
 
-FastAPI HTTP server. The canonical Merlin `/v1` surface — every other
+FastAPI HTTP server. The canonical Merlin API surface — every other
 client (the Telegram bot today, the React frontend in Phase 2, the Pro
 Dashboard in Phase 3) hits the same routes.
+
+**Versioning.** Routes are flat — no `/v1/` prefix. The OpenAPI
+`info.version` field (in `apps/api/scripts/generate_openapi.py`) is
+the canonical version marker. CI's OpenAPI snapshot diff is what
+enforces "you changed the contract, bump the version." URL versioning
+is deferred until a partner-facing surface ships (ADR (r) in
+`docs/ARCHITECTURE.md`).
 
 ## Layout
 
@@ -17,14 +24,14 @@ apps/api/
 │   ├── __init__.py
 │   ├── py.typed
 │   ├── main.py        # 5-line entry point (run_uvicorn)
-│   ├── app.py         # FastAPI factory + middleware + /v1 router mount
+│   ├── app.py         # FastAPI factory + middleware + flat-route mounts
 │   ├── config.py      # pydantic-settings Settings
 │   ├── openapi.py     # metadata, tags, HMAC bearer security scheme
 │   ├── auth.py        # internal-service-token HMAC bearer validator (v0)
 │   ├── deps.py        # FastAPI Depends() factories
 │   ├── errors.py      # exception handlers
 │   ├── health.py      # /health + /ready (un-versioned)
-│   └── routes/        # one module per resource, all mounted under /v1
+│   └── routes/        # one module per resource, flat-mounted (no prefix)
 ├── scripts/
 │   └── generate_openapi.py
 └── tests/

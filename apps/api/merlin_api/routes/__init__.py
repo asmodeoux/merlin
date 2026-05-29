@@ -1,23 +1,26 @@
-"""Per-resource route modules — Sprint 1 fills with /v1/* business routes.
+"""Per-resource route modules — flat routes (no URL versioning).
 
-Every business route is mounted under a single `APIRouter(prefix="/v1")`
-in `merlin_api.app.create_app`. Adding a new resource = add a module
-here, export its `router`, and include it from `app.py`.
+Versioning policy (plan §6): the OpenAPI ``info.version`` field is the
+canonical API version marker. No ``/v1/`` URL prefix at v0 (Q-027).
+When/if a public, partner-facing surface ever lands, a
+``v1.include_router`` mount can be added without disturbing the
+existing client.
 
-Planned Sprint 1 resources:
+Each module exports a ``router`` that ``merlin_api.app.create_app``
+includes directly.
 
-- ``claims``  — ``POST /v1/claims``, ``GET /v1/claims/{id}``.
-- ``board``   — ``GET /v1/board``, ``GET /v1/me``.
-- ``invites`` — ``POST /v1/invites``, ``POST /v1/invites/{code}/redeem``.
-- ``assets``  — lazy asset resolution per Q-027:
-    - ``GET  /v1/assets/search?q=<text>`` — proxies CoinGecko
-      ``/search`` and returns candidate ``{coingecko_id, symbol, name,
-      market_cap_rank}`` rows. Drives the bot's asset picker.
-    - ``POST /v1/assets/resolve`` — body
-      ``{coingecko_id, symbol_hint?, name_hint?}``. INSERT-or-fetch on
-      ``assets`` keyed by ``coingecko_id`` (immutable per MVP §15
-      invariant 13); returns ``{asset_id, symbol, name, coingecko_id}``.
-      Called by the bot at the end of the ``/alpha`` asset step *and*
-      implicitly by ``POST /v1/claims`` if the caller supplies a
-      ``coingecko_id`` that isn't yet materialised.
+Sprint 1 resources:
+
+- ``invites`` — ``POST /invites/redeem``.
+- ``me``     — ``GET /me``, ``PATCH /me``.
+- ``board``  — ``GET /board``.
+- ``assets`` — ``GET /assets/search``, ``POST /assets/resolve``
+  (Q-027 lazy asset resolution).
+- ``claims`` — ``POST /claims/draft`` (Q-028 freeform LLM ingest, no
+  DB writes), ``POST /claims`` (atomic commit + RQ enqueue),
+  ``GET /claims/{id}``.
 """
+
+from merlin_api.routes import assets, board, claims, invites, me
+
+__all__ = ["assets", "board", "claims", "invites", "me"]

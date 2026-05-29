@@ -4,3 +4,27 @@ Stdlib only. No third-party imports allowed (enforced by import-linter).
 Anything that touches a database, a network, or the current time goes
 through a port in `merlin_core.application.ports` instead.
 """
+
+from merlin_core.domain.claim_draft import (
+    AssetCandidate,
+    ClaimDraft,
+    Conviction,
+    Direction,
+    ExtractedFields,
+    FieldConfidence,
+    Horizon,
+    ParsedVia,
+    ParseMetadata,
+)
+
+__all__ = [
+    "AssetCandidate",
+    "ClaimDraft",
+    "Conviction",
+    "Direction",
+    "ExtractedFields",
+    "FieldConfidence",
+    "Horizon",
+    "ParseMetadata",
+    "ParsedVia",
+]

@@ -1,8 +1,20 @@
 # merlin_client
 
-Async httpx SDK for the Merlin `/v1` API. Used today by `merlin_bot`;
-future internal Python services (analytics jobs, batch importers) will
-use the same client.
+Async httpx SDK for the Merlin API (flat routes, no URL versioning at
+v0 — the OpenAPI `info.version` is the canonical version marker). Used
+today by `merlin_bot`; future internal Python services (analytics jobs,
+batch importers) will use the same client.
+
+Methods (Sprint 1):
+
+- `redeem_invite(code, tg_user_id, tg_handle)` → `POST /invites/redeem`
+- `get_me()` / `update_me(display_name)` → `GET` / `PATCH /me`
+- `get_board(window)` → `GET /board`
+- `search_assets(query)` → `GET /assets/search`
+- `resolve_asset(coingecko_id)` → `POST /assets/resolve`
+- `draft_claim(text)` → `POST /claims/draft` (no DB writes)
+- `submit_claim(payload)` → `POST /claims` (atomic + `enqueue_at`)
+- `get_claim(claim_id)` → `GET /claims/{id}`
 
 ## Auth
 

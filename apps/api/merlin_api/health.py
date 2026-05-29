@@ -13,12 +13,18 @@ Both routes stay un-versioned (no `/v1` prefix) and skip the
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel
 
+from merlin_api.config import Settings
+from merlin_api.deps import get_settings
+
 router = APIRouter(tags=["health"])
+
+_log = logging.getLogger("merlin.api.health")
 
 
 class HealthResponse(BaseModel):
@@ -68,18 +74,65 @@ async def health() -> HealthResponse:
     },
     openapi_extra={"security": []},
 )
-async def ready(response: Response) -> ReadyResponse:
-    """Check critical dependencies; flip the status code on failure.
+async def ready(
+    response: Response,
+    settings: Settings = Depends(get_settings),
+) -> ReadyResponse:
+    """Probe DB + Redis; flip to 503 on failure so Fly drains traffic.
 
-    Sprint 1 wires real connectivity probes against the SQLAlchemy
-    session + Redis client. The scaffold returns "ready" so the rest of
-    the stack (compose healthchecks, smoke tests) can come up.
+    Per the bot-flow plan §"Sprint 1 acceptance criteria" #2: no external
+    API checks here — OpenRouter / CoinGecko / Telegram outages don't
+    make us "not ready"; the LLM circuit-breaker and resolver retries
+    handle them at request time.
     """
-    # Sprint 1: replace the placeholder check with `select 1` against
-    # the async DB session and a Redis `PING`.
-    checks: dict[str, Annotated[str, "ok|fail"]] = {"db": "ok", "redis": "ok"}
-    failed = [name for name, state in checks.items() if state != "ok"]
-    if failed:
+    checks: dict[str, Literal["ok", "fail"]] = {
+        "db": await _check_db(settings.database_url),
+        "redis": await _check_redis(settings.redis_url),
+    }
+    if any(state != "ok" for state in checks.values()):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return ReadyResponse(status="not_ready", checks=checks)  # type: ignore[arg-type]
-    return ReadyResponse(status="ready", checks=checks)  # type: ignore[arg-type]
+        return ReadyResponse(status="not_ready", checks=checks)
+    return ReadyResponse(status="ready", checks=checks)
+
+
+async def _check_db(database_url: str) -> Literal["ok", "fail"]:
+    """Run ``SELECT 1`` against the configured Postgres DSN.
+
+    Engine is created per-call. We do not cache a session here because
+    readiness must catch DSN/credential drift between rolling restarts.
+    """
+    try:
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        engine = create_async_engine(database_url, pool_pre_ping=True)
+        try:
+            async with engine.connect() as conn:
+                from sqlalchemy import text
+
+                await conn.execute(text("SELECT 1"))
+        finally:
+            await engine.dispose()
+    except Exception as e:
+        _log.warning("readiness db check failed: %s", e)
+        return "fail"
+    return "ok"
+
+
+async def _check_redis(redis_url: str) -> Literal["ok", "fail"]:
+    """``PING`` the configured Redis instance via the asyncio client."""
+    try:
+        from redis.asyncio import Redis
+
+        client = Redis.from_url(redis_url)
+        try:
+            await client.ping()
+        finally:
+            await client.aclose()
+    except Exception as e:
+        _log.warning("readiness redis check failed: %s", e)
+        return "fail"
+    return "ok"
+
+
+# Re-export Annotated to keep mypy happy in older Python type-check matrices.
+_ = Annotated

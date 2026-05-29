@@ -9,3 +9,40 @@ Layer rule (enforced by import-linter): this module imports stdlib +
 pydantic only. No domain types leak across this boundary — anything that
 needs to cross becomes a contract DTO here.
 """
+
+from merlin_core.contracts.assets import (
+    AssetCandidateDTO,
+    AssetResolution,
+    AssetSearchResponse,
+    ResolveAssetRequest,
+)
+from merlin_core.contracts.board import BoardEntry, BoardResponse, MeResponse
+from merlin_core.contracts.claims import (
+    ClaimDraftRequest,
+    ClaimDraftResponse,
+    ClaimResponse,
+    ExtractedFieldsDTO,
+    ParseMetadataDTO,
+    SubmitClaimRequest,
+)
+from merlin_core.contracts.invites import RedeemInviteRequest, RedeemInviteResponse
+from merlin_core.contracts.me import UpdateMeRequest
+
+__all__ = [
+    "AssetCandidateDTO",
+    "AssetResolution",
+    "AssetSearchResponse",
+    "BoardEntry",
+    "BoardResponse",
+    "ClaimDraftRequest",
+    "ClaimDraftResponse",
+    "ClaimResponse",
+    "ExtractedFieldsDTO",
+    "MeResponse",
+    "ParseMetadataDTO",
+    "RedeemInviteRequest",
+    "RedeemInviteResponse",
+    "ResolveAssetRequest",
+    "SubmitClaimRequest",
+    "UpdateMeRequest",
+]

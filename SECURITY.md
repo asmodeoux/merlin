@@ -39,7 +39,19 @@ threat model and rationale. Highlights:
 - **Scanners** — `gitleaks` (pre-commit + CI), `pip-audit` (CI + daily
   cron), `actions/dependency-review-action` (PR diff, blocks moderate+).
 - **Secrets** — GitHub Secret Scanning + Push Protection enabled.
-  Service tokens via `fly secrets set`; never committed.
+  Service tokens via `fly secrets set`; never committed. The four
+  secrets the Sprint-1 stack actually consumes:
+
+  | Var | Where it comes from | Notes |
+  |---|---|---|
+  | `TELEGRAM_BOT_TOKEN` | BotFather | Worker also reads this for outbound resolution notifications (direct Bot API call). |
+  | `OPENROUTER_API_KEY` | openrouter.ai | Empty disables the freeform `/alpha` path; the bot falls back to the button form silently. |
+  | `COINGECKO_API_KEY` | coingecko.com (Demo tier free) | Same env var name carries forward to paid tiers — the base URL discriminates. |
+  | `MERLIN_API_INTERNAL_TOKEN` | `openssl rand -hex 32` | HMAC bearer for bot↔API and worker↔API. Rotate via `fly secrets set` on every app together. |
+
+  `LLM_MONTHLY_USD_BUDGET` is a cost-safety knob, not a secret: when
+  the running spend exceeds it, the API short-circuits freeform drafts
+  to the button form. Set conservatively (≤$3) before external testers.
 - **CI permissions** — top-of-file `permissions: contents: read` on
   every workflow; widened per-job only where strictly required.
 - **AI-generated code** — disclosed in the PR template; CI gates

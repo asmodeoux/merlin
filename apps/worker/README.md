@@ -9,11 +9,18 @@ RQ-based background worker. Runs:
   `/alpha` flow (Q-027) so this
   worker only ever sees CoinGecko ids that already exist in the local
   `assets` table.
-- **Reputation recompute** — scheduled by `pg_cron` at 00:05 UTC (MVP
-  §8.1, MVP §12); the cron job enqueues an RQ task that this worker
-  picks up.
-- **Retry sweep** — MVP §12.1 resolution-failed retry policy.
-- **Misc background tasks** — invite expiry sweep, ledger reconciliation.
+- **Reputation recompute** — **reactive, not scheduled** (Q-029 PROPOSED).
+  The resolver enqueues `recompute_source_reputation(source_id)` the
+  moment a new outcome lands; this worker drains the `reputation` queue
+  and appends a `source_reputation_history` row per outcome. The MVP
+  spec's previous `pg_cron @ 00:05 UTC` daily job is dropped (Q-029).
+- **Retry policy** — RQ's built-in `Retry(max=3, interval=[60,300,900])`
+  on every resolution enqueue. Failed jobs land in RQ's failed-job
+  registry; operator rerun via `make admin-rerun CLAIM_ID=…`.
+- **Direct Telegram notifications** — on outcome write the worker
+  POSTs to the Bot API directly (`TelegramNotifier` adapter), no
+  detour through the bot service. Bot-voice rules apply to every
+  string.
 
 ## Forbidden imports
 
