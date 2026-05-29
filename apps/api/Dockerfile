@@ -26,13 +26,17 @@ COPY --from=ghcr.io/astral-sh/uv:0.5.7 /uv /usr/local/bin/uv
 WORKDIR /app
 
 # Copy the workspace metadata first so dependency-only layers cache well.
+# Each workspace pyproject.toml has ``readme = "README.md"`` (PEP 621
+# standard, Hatchling validates the path at metadata-resolution time),
+# so the README must travel with the pyproject even in the
+# dependency-only sync step.
 COPY pyproject.toml uv.lock .python-version ./
-COPY apps/api/pyproject.toml apps/api/pyproject.toml
-COPY apps/bot/pyproject.toml apps/bot/pyproject.toml
-COPY apps/worker/pyproject.toml apps/worker/pyproject.toml
-COPY packages/python/merlin_core/pyproject.toml packages/python/merlin_core/pyproject.toml
-COPY packages/python/merlin_infrastructure/pyproject.toml packages/python/merlin_infrastructure/pyproject.toml
-COPY packages/python/merlin_client/pyproject.toml packages/python/merlin_client/pyproject.toml
+COPY apps/api/pyproject.toml apps/api/README.md apps/api/
+COPY apps/bot/pyproject.toml apps/bot/README.md apps/bot/
+COPY apps/worker/pyproject.toml apps/worker/README.md apps/worker/
+COPY packages/python/merlin_core/pyproject.toml packages/python/merlin_core/README.md packages/python/merlin_core/
+COPY packages/python/merlin_infrastructure/pyproject.toml packages/python/merlin_infrastructure/README.md packages/python/merlin_infrastructure/
+COPY packages/python/merlin_client/pyproject.toml packages/python/merlin_client/README.md packages/python/merlin_client/
 
 # Frozen install — fails the build if uv.lock is stale.
 RUN uv sync --frozen --package merlin-api --no-dev --no-install-project

@@ -19,6 +19,7 @@ from telegram import (
     BotCommandScopeChat,
     BotCommandScopeDefault,
 )
+from telegram.error import BadRequest
 
 from merlin_bot.config import Settings
 
@@ -74,10 +75,30 @@ async def register_commands(
 
     admin_commands = list(PUBLIC_COMMANDS) + list(ADMIN_EXTRA_COMMANDS)
     for admin_chat_id in settings.telegram_admin_chat_ids:
-        await application.bot.set_my_commands(
-            commands=admin_commands,
-            scope=BotCommandScopeChat(chat_id=admin_chat_id),
-        )
+        try:
+            await application.bot.set_my_commands(
+                commands=admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin_chat_id),
+            )
+        except BadRequest as e:
+            # Telegram requires the chat to exist server-side before it
+            # accepts a ``BotCommandScopeChat`` push — and the chat only
+            # exists once the admin has sent the bot at least one
+            # message. On a fresh deploy this means the first startup
+            # logs ``Chat not found`` for every configured admin; the
+            # next startup (after the admin runs ``/start``) succeeds.
+            # We log a warning instead of crashing the bot because the
+            # public command menu has already been pushed successfully
+            # and the bot is otherwise fully functional.
+            _log.warning(
+                "could not push admin commands to chat_id=%s (%s). "
+                "If you haven't /start'd the bot yet from this account, "
+                "do so once and restart the bot; the admin menu will "
+                "appear on the next push.",
+                admin_chat_id,
+                e,
+            )
+            continue
         _log.info(
             "registered %d admin commands for chat_id=%s",
             len(admin_commands),

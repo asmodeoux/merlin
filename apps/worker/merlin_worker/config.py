@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated, Any
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -33,11 +35,34 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------
     # RQ
     # -------------------------------------------------------------------
-    rq_queues: list[str] = Field(
+    # ``NoDecode`` opts out of pydantic-settings' default JSON pre-decode
+    # for complex types, so the env value reaches our ``field_validator``
+    # below as the raw string ("default,resolution,reputation") rather
+    # than being rejected as malformed JSON. Mirrors the same pattern
+    # we use in apps/bot for ``TELEGRAM_ADMIN_CHAT_IDS``.
+    rq_queues: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["default", "resolution", "reputation"],
-        description="Queues this worker drains. RQ workers are queue-scoped.",
+        description=(
+            "Queues this worker drains, comma-separated. RQ workers are "
+            "queue-scoped. Example: ``default,resolution,reputation``."
+        ),
     )
     rq_default_timeout_s: int = Field(default=300, gt=0)
+
+    @field_validator("rq_queues", mode="before")
+    @classmethod
+    def _split_rq_queues(cls, raw: Any) -> Any:
+        """Accept a comma-separated string ("default,resolution") or a list.
+
+        pydantic-settings parses ``list``-typed env vars as JSON by
+        default; we override with the friendlier syntax matching the
+        ``.env.example`` comment.
+        """
+        if raw is None or raw == "":
+            return ["default", "resolution", "reputation"]
+        if isinstance(raw, str):
+            return [part.strip() for part in raw.split(",") if part.strip()]
+        return raw
 
     # -------------------------------------------------------------------
     # External APIs (market data)

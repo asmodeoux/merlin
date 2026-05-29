@@ -155,8 +155,8 @@ dev-up: ## Bring up dev compose (api/bot/worker + pg + redis, hot reload + debug
 	@echo "  ✓ API     http://localhost:8000  (debugpy 5678)"
 	@echo "  ✓ Bot     polling                (debugpy 5679)"
 	@echo "  ✓ Worker  RQ verbose             (debugpy 5680)"
-	@echo "  ✓ PG      localhost:5432"
-	@echo "  ✓ Redis   localhost:6379"
+	@echo "  ✓ PG      localhost:5433  (remapped to avoid native PG on 5432)"
+	@echo "  ✓ Redis   localhost:6380  (remapped to avoid native Redis on 6379)"
 	@echo ""
 
 dev-down: ## Stop dev compose.

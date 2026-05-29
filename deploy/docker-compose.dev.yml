@@ -14,8 +14,11 @@ services:
       POSTGRES_USER: merlin
       POSTGRES_PASSWORD: merlin
       POSTGRES_DB: merlin
+    # Host port is 5433 to avoid clashing with a native Postgres on
+    # 5432; inside the compose network the API/worker still reach this
+    # container on 5432 via the service name (``postgres:5432``).
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - merlin_pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,8 +29,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Host port is 6380 to avoid clashing with a native Redis on 6379;
+    # services in the compose network reach this container on the
+    # default 6379 via ``redis://redis:6379/0``.
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -39,7 +45,11 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
       target: dev
-    env_file: ../apps/api/.env.example
+    # Real secrets live in ``apps/api/.env`` (gitignored, populated by
+    # ``cp .env.example .env`` + paste). ``.env.example`` only has empty
+    # placeholders; pointing compose at it would silently break the
+    # OpenRouter / CoinGecko paths.
+    env_file: ../apps/api/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://merlin:merlin@postgres:5432/merlin
       REDIS_URL: redis://redis:6379/0
@@ -60,7 +70,7 @@ services:
       context: ..
       dockerfile: apps/bot/Dockerfile
       target: dev
-    env_file: ../apps/bot/.env.example
+    env_file: ../apps/bot/.env
     environment:
       MERLIN_API_BASE_URL: http://merlin-api:8000
       REDIS_URL: redis://redis:6379/1
@@ -78,7 +88,7 @@ services:
       context: ..
       dockerfile: apps/worker/Dockerfile
       target: dev
-    env_file: ../apps/worker/.env.example
+    env_file: ../apps/worker/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://merlin:merlin@postgres:5432/merlin
       REDIS_URL: redis://redis:6379/0

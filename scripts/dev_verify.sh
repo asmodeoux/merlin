@@ -79,7 +79,7 @@ deadline=$((SECONDS + TIMEOUT_S))
 until curl -sf "$API_URL/health" >/dev/null; do
   if (( SECONDS >= deadline )); then
     fail "api /health never responded within ${TIMEOUT_S}s"
-    dump_logs api
+    dump_logs merlin-api
     exit 1
   fi
   sleep "$POLL_INTERVAL_S"
@@ -90,16 +90,20 @@ if ! curl -sf "$API_URL/ready" >/dev/null; then
   fail "api /ready returned non-2xx"
   curl -s "$API_URL/ready" || true
   echo ""
-  dump_logs api
+  dump_logs merlin-api
   exit 1
 fi
 ok "api /ready"
 
+# Service names must match docker-compose.dev.yml (``merlin-bot``,
+# ``merlin-worker``). Plain ``bot``/``worker`` were a leftover from an
+# earlier scaffold and silently caused dev-verify to fail at the
+# log-grep stage even when the containers were healthy.
 deadline=$((SECONDS + TIMEOUT_S))
-while ! docker compose -f "$COMPOSE_FILE" logs bot 2>/dev/null | grep -q "$BOT_STARTUP_TOKEN"; do
+while ! docker compose -f "$COMPOSE_FILE" logs merlin-bot 2>/dev/null | grep -q "$BOT_STARTUP_TOKEN"; do
   if (( SECONDS >= deadline )); then
     fail "bot never logged '$BOT_STARTUP_TOKEN'"
-    dump_logs bot
+    dump_logs merlin-bot
     exit 1
   fi
   sleep "$POLL_INTERVAL_S"
@@ -107,10 +111,10 @@ done
 ok "bot started polling"
 
 deadline=$((SECONDS + TIMEOUT_S))
-while ! docker compose -f "$COMPOSE_FILE" logs worker 2>/dev/null | grep -q "$WORKER_STARTUP_TOKEN"; do
+while ! docker compose -f "$COMPOSE_FILE" logs merlin-worker 2>/dev/null | grep -q "$WORKER_STARTUP_TOKEN"; do
   if (( SECONDS >= deadline )); then
     fail "worker never logged '$WORKER_STARTUP_TOKEN'"
-    dump_logs worker
+    dump_logs merlin-worker
     exit 1
   fi
   sleep "$POLL_INTERVAL_S"
@@ -123,6 +127,6 @@ printf "${color_ok}Stack ready (${elapsed}s)${color_reset}\n"
 echo "  api     $API_URL     (debugpy 5678)"
 echo "  bot     polling, ready for messages    (debugpy 5679)"
 echo "  worker  RQ verbose                (debugpy 5680)"
-echo "  pg      localhost:5432"
-echo "  redis   localhost:6379"
+echo "  pg      localhost:5433  (remapped to avoid native PG on 5432)"
+echo "  redis   localhost:6380  (remapped to avoid native Redis on 6379)"
 echo ""

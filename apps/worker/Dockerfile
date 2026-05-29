@@ -12,13 +12,16 @@ COPY --from=ghcr.io/astral-sh/uv:0.5.7 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+# Workspace metadata + READMEs (Hatchling needs the README path
+# resolvable at metadata-resolution time — see api/Dockerfile for the
+# full rationale).
 COPY pyproject.toml uv.lock .python-version ./
-COPY apps/api/pyproject.toml apps/api/pyproject.toml
-COPY apps/bot/pyproject.toml apps/bot/pyproject.toml
-COPY apps/worker/pyproject.toml apps/worker/pyproject.toml
-COPY packages/python/merlin_core/pyproject.toml packages/python/merlin_core/pyproject.toml
-COPY packages/python/merlin_infrastructure/pyproject.toml packages/python/merlin_infrastructure/pyproject.toml
-COPY packages/python/merlin_client/pyproject.toml packages/python/merlin_client/pyproject.toml
+COPY apps/api/pyproject.toml apps/api/README.md apps/api/
+COPY apps/bot/pyproject.toml apps/bot/README.md apps/bot/
+COPY apps/worker/pyproject.toml apps/worker/README.md apps/worker/
+COPY packages/python/merlin_core/pyproject.toml packages/python/merlin_core/README.md packages/python/merlin_core/
+COPY packages/python/merlin_infrastructure/pyproject.toml packages/python/merlin_infrastructure/README.md packages/python/merlin_infrastructure/
+COPY packages/python/merlin_client/pyproject.toml packages/python/merlin_client/README.md packages/python/merlin_client/
 
 RUN uv sync --frozen --package merlin-worker --no-dev --no-install-project
 
