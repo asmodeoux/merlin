@@ -95,6 +95,13 @@ class SubmitClaimRequest(BaseModel):
 
     The bot composes this from the preview state (LLM-prefilled fields,
     possibly edited by the user, plus the final asset selection).
+
+    ``tg_user_id`` rides the body for the same reason ``PATCH /me``
+    needs it: the HMAC bearer authenticates the *service*, not the
+    per-user identity, so the API has to be told which source is
+    making the call. Resolved server-side via the
+    ``source_identity`` table — the raw TG id never leaves this
+    boundary and never ends up on the ``claims`` row itself.
     """
 
     coingecko_id: str = Field(..., min_length=1)
@@ -102,6 +109,12 @@ class SubmitClaimRequest(BaseModel):
     horizon: Horizon
     conviction: Conviction
     thesis_text: str = Field(..., min_length=1, max_length=4_000)
+    tg_user_id: int
+    # Optional debug breadcrumb: the LLM-extracted short symbol the
+    # bot used to populate CoinGecko's /search candidates. Persisted
+    # on the claim row so an audit can reconstruct "user wrote X, LLM
+    # said Y, we picked Z" without rerunning the LLM.
+    asset_query: str | None = Field(default=None, max_length=128)
     extracted_fields: ExtractedFieldsDTO = Field(default_factory=ExtractedFieldsDTO)
     parse_metadata: ParseMetadataDTO
 

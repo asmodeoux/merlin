@@ -62,11 +62,18 @@ class MeResponse(BaseModel):
 
     Headline stats are plain English / plain percent. No "regret",
     no "simulated PnL", no version markers.
+
+    ``accuracy_pct`` and ``rank`` are ``Optional`` because a user with
+    zero resolved calls has no honest value to report — defaulting to
+    ``0.0`` / ``0`` would tell users "you're at zero" when the truthful
+    answer is "we haven't checked anything yet". The bot renders these
+    as "tracking your first resolutions" rather than a misleading
+    percent.
     """
 
     display_name: str | None = None
     calls_open: list[OpenCallEntry] = Field(default_factory=list)
     calls_resolved_recent: list[ResolvedCallEntry] = Field(default_factory=list)
-    accuracy_pct: float = 0.0
+    accuracy_pct: float | None = None
     calls_resolved_total: int = 0
     rank: int | None = None

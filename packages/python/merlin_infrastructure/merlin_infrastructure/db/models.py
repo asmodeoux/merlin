@@ -12,8 +12,14 @@ end-to-end:
 * ``invites`` — invite-only onboarding gate (MVP §6 + §14). One-time
   codes issued by admins, redeemed atomically inside
   ``POST /invites/redeem``.
+* ``claims`` — every market call a user logs. Denormalized asset
+  fields (``asset_coingecko_id`` / ``asset_symbol`` / ``asset_name``)
+  live directly on the row until the normalized ``assets`` /
+  ``asset_aliases`` tables land with the scoring worker. Carries the
+  freeform-LLM audit columns (``parsed_via`` + ``extracted_fields`` +
+  ``parse_metadata``) per Q-028.
 
-Remaining tables (claims, events, hypotheses, outcomes,
+Remaining tables (events, hypotheses, outcomes,
 source_reputation_history, attribution_ledger, override_log, assets,
 asset_aliases, waitlist_entries, ...) land alongside their use cases in
 later sprints. The migration that creates them must keep this file as
@@ -42,6 +48,7 @@ PII boundary (MVP §15 invariant 9 + MVP §13):
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -52,10 +59,12 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -215,4 +224,94 @@ class Invite(Base):
     __table_args__ = (
         UniqueConstraint("code", name="uq_invites_code"),
         Index("ix_invites_code_redeemable", "code", "redeemed_at", "revoked_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# claims — every market call a user logs (MVP §13).
+# ---------------------------------------------------------------------------
+
+
+class Claim(Base):
+    """A single market call.
+
+    Denormalized asset fields (``asset_coingecko_id`` /
+    ``asset_symbol`` / ``asset_name``) live directly on the row; the
+    normalized ``assets`` / ``asset_aliases`` tables land alongside the
+    scoring worker in a later sprint. Until then, copying the three
+    fields per claim is the simplest honest slice — re-normalising
+    later is a column-copy migration.
+
+    Append-only in spirit: the application layer never UPDATEs or
+    DELETEs a claim outside the explicit edits / soft-delete columns
+    that ship with the scoring sprint. The DB-level append-only
+    triggers from MVP §15 invariants 7/8 land alongside the outcomes
+    table; until then this is enforced by the repository layer
+    omitting an ``update()`` method.
+    """
+
+    __tablename__ = "claims"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sources.source_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_coingecko_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    asset_symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    asset_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    conviction: Mapped[str] = mapped_column(String(16), nullable=False)
+    thesis_text: Mapped[str] = mapped_column(Text, nullable=False)
+    asset_query: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    resolves_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    parsed_via: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="form",
+        server_default=text("'form'"),
+    )
+    extracted_fields: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    parse_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "direction IN ('long', 'short')",
+            name="ck_claims_direction",
+        ),
+        CheckConstraint(
+            "conviction IN ('weak','medium','strong','very_strong')",
+            name="ck_claims_conviction",
+        ),
+        CheckConstraint(
+            "parsed_via IN ('freeform_llm', 'form')",
+            name="ck_claims_parsed_via",
+        ),
+        Index("ix_claims_source_resolves", "source_id", "resolves_at"),
+        Index("ix_claims_source", "source_id"),
     )

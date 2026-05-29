@@ -156,14 +156,20 @@ def test_build_submit_payload_with_full_draft() -> None:
             "horizon": "14d",
             "conviction": "strong",
             "thesis_text": "Vitalik rumour",
+            "asset_query": "ETH",
             "extracted_fields": {"schema_version": 1, "rumour_referenced": True},
             "parse_metadata": {"parsed_via": "freeform_llm"},
         },
         {"coingecko_id": "ethereum", "symbol": "ETH"},
+        tg_user_id=42,
     )
     assert payload is not None
     assert payload["coingecko_id"] == "ethereum"
     assert payload["direction"] == "long"
+    assert payload["tg_user_id"] == 42
+    # ``asset_query`` rides through so the audit row can reconstruct
+    # the LLM-extracted symbol → coingecko_id mapping.
+    assert payload["asset_query"] == "ETH"
     assert payload["extracted_fields"]["rumour_referenced"] is True
 
 
@@ -171,6 +177,7 @@ def test_build_submit_payload_missing_required_field_returns_none() -> None:
     payload = sp._build_submit_payload(
         {"direction": "long", "horizon": "14d"},  # no conviction or thesis
         {"coingecko_id": "ethereum"},
+        tg_user_id=42,
     )
     assert payload is None
 
@@ -184,6 +191,25 @@ def test_build_submit_payload_no_asset_returns_none() -> None:
             "thesis_text": "ok",
         },
         {},
+        tg_user_id=42,
+    )
+    assert payload is None
+
+
+def test_build_submit_payload_missing_tg_user_id_returns_none() -> None:
+    """The API needs the caller's TG id to resolve a source_id. An
+    Update with no ``effective_user`` (e.g. a channel post replay)
+    means the bot can't make this call — better to drop the payload
+    than send a half-populated body."""
+    payload = sp._build_submit_payload(
+        {
+            "direction": "long",
+            "horizon": "14d",
+            "conviction": "strong",
+            "thesis_text": "ok",
+        },
+        {"coingecko_id": "ethereum"},
+        tg_user_id=None,
     )
     assert payload is None
 
@@ -269,14 +295,22 @@ def test_keyboard_always_shows_edit_and_cancel() -> None:
 def test_is_draft_complete_mirrors_submit_payload_preconditions() -> None:
     """``_is_draft_complete`` is the keyboard's gate; ``_build_submit_payload``
     is the on-confirm validator. They MUST agree — if the keyboard
-    shows Confirm, the submit MUST succeed; if hidden, MUST fail."""
+    shows Confirm, the submit MUST succeed; if hidden, MUST fail.
+
+    ``_build_submit_payload`` additionally requires ``tg_user_id`` (the
+    API needs it to resolve the source); ``_is_draft_complete``
+    doesn't gate on it because the user-facing card has no field that
+    surfaces "TG id missing". They agree on the draft+asset
+    preconditions, which is what the keyboard renders against.
+    """
+    tg = 42
     # Complete → both pass.
     assert sp._is_draft_complete(_FULL_DRAFT, _FULL_ASSET) is True
-    assert sp._build_submit_payload(_FULL_DRAFT, _FULL_ASSET) is not None
+    assert sp._build_submit_payload(_FULL_DRAFT, _FULL_ASSET, tg_user_id=tg) is not None
     # Missing asset → both refuse.
     assert sp._is_draft_complete(_FULL_DRAFT, {}) is False
-    assert sp._build_submit_payload(_FULL_DRAFT, {}) is None
+    assert sp._build_submit_payload(_FULL_DRAFT, {}, tg_user_id=tg) is None
     # Missing horizon → both refuse.
     bad = dict(_FULL_DRAFT, horizon=None)
     assert sp._is_draft_complete(bad, _FULL_ASSET) is False
-    assert sp._build_submit_payload(bad, _FULL_ASSET) is None
+    assert sp._build_submit_payload(bad, _FULL_ASSET, tg_user_id=tg) is None

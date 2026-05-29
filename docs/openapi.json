@@ -501,12 +501,18 @@
         "type": "object"
       },
       "MeResponse": {
-        "description": "``GET /me`` payload \u2014 open calls, resolved calls, headline stats.\n\nHeadline stats are plain English / plain percent. No \"regret\",\nno \"simulated PnL\", no version markers.",
+        "description": "``GET /me`` payload \u2014 open calls, resolved calls, headline stats.\n\nHeadline stats are plain English / plain percent. No \"regret\",\nno \"simulated PnL\", no version markers.\n\n``accuracy_pct`` and ``rank`` are ``Optional`` because a user with\nzero resolved calls has no honest value to report \u2014 defaulting to\n``0.0`` / ``0`` would tell users \"you're at zero\" when the truthful\nanswer is \"we haven't checked anything yet\". The bot renders these\nas \"tracking your first resolutions\" rather than a misleading\npercent.",
         "properties": {
           "accuracy_pct": {
-            "default": 0.0,
-            "title": "Accuracy Pct",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy Pct"
           },
           "calls_open": {
             "items": {
@@ -803,8 +809,20 @@
         "type": "object"
       },
       "SubmitClaimRequest": {
-        "description": "Body of ``POST /claims`` \u2014 atomic commit.\n\nThe bot composes this from the preview state (LLM-prefilled fields,\npossibly edited by the user, plus the final asset selection).",
+        "description": "Body of ``POST /claims`` \u2014 atomic commit.\n\nThe bot composes this from the preview state (LLM-prefilled fields,\npossibly edited by the user, plus the final asset selection).\n\n``tg_user_id`` rides the body for the same reason ``PATCH /me``\nneeds it: the HMAC bearer authenticates the *service*, not the\nper-user identity, so the API has to be told which source is\nmaking the call. Resolved server-side via the\n``source_identity`` table \u2014 the raw TG id never leaves this\nboundary and never ends up on the ``claims`` row itself.",
         "properties": {
+          "asset_query": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Query"
+          },
           "coingecko_id": {
             "minLength": 1,
             "title": "Coingecko Id",
@@ -828,6 +846,10 @@
           "parse_metadata": {
             "$ref": "#/components/schemas/ParseMetadataDTO"
           },
+          "tg_user_id": {
+            "title": "Tg User Id",
+            "type": "integer"
+          },
           "thesis_text": {
             "maxLength": 4000,
             "minLength": 1,
@@ -841,6 +863,7 @@
           "horizon",
           "conviction",
           "thesis_text",
+          "tg_user_id",
           "parse_metadata"
         ],
         "title": "SubmitClaimRequest",
@@ -1052,7 +1075,7 @@
     },
     "/board": {
       "get": {
-        "description": "User-facing only: rank, display name, calls resolved, accuracy percent, last call date. No belief score, no simulated PnL, no version markers.",
+        "description": "User-facing only: rank, display name, calls resolved, accuracy percent, last call date. No belief score, no simulated PnL, no version markers. Returns an empty list until the outcomes layer ships \u2014 the bot renders an honest empty-state then.",
         "operationId": "get_board_board_get",
         "parameters": [
           {
@@ -1113,7 +1136,7 @@
     },
     "/claims": {
       "post": {
-        "description": "Five INSERTs + one RQ ``enqueue_at`` inside a single transaction. Returns the persisted claim with its resolve date. Idempotent against duplicate submissions by ``(source, asset, t0, horizon)``.",
+        "description": "Persists the ``claims`` row and enqueues the RQ resolution job inside one request. ``tg_user_id`` is resolved to a ``source_id`` via the ``source_identity`` table; unknown users 404 (onboard via ``/invites/redeem`` or ``/sources/admin_bootstrap`` first). Returns the persisted claim with its resolve date.",
         "operationId": "submit_claim_claims_post",
         "parameters": [
           {
@@ -1165,7 +1188,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Submit a claim (atomic commit + scheduled resolution).",
+        "summary": "Submit a claim (persist + schedule resolution).",
         "tags": [
           "claims"
         ]
@@ -1439,9 +1462,20 @@
     },
     "/me": {
       "get": {
-        "description": "User-visible only: open calls (asset + direction + resolve date), recent resolved calls with plain-percent returns, accuracy. No internal scoring fields, no version markers.",
+        "description": "User-visible only: open calls (asset + direction + resolve date), recent resolved calls with plain-percent returns, accuracy. ``tg_user_id`` query param resolves the caller via the ``source_identity`` table (same convention as ``PATCH /me``). 404s if the caller hasn't been onboarded yet.",
         "operationId": "get_me_me_get",
         "parameters": [
+          {
+            "description": "Caller's raw Telegram user id. The HMAC bearer authenticates the service, not the per-user identity, so the API needs the TG id on every authenticated call (we have no per-user JWT at v0). Same convention as ``PATCH /me``.",
+            "in": "query",
+            "name": "tg_user_id",
+            "required": true,
+            "schema": {
+              "description": "Caller's raw Telegram user id. The HMAC bearer authenticates the service, not the per-user identity, so the API needs the TG id on every authenticated call (we have no per-user JWT at v0). Same convention as ``PATCH /me``.",
+              "title": "Tg User Id",
+              "type": "integer"
+            }
+          },
           {
             "in": "header",
             "name": "Authorization",

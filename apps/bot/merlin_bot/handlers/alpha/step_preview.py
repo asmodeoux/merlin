@@ -92,7 +92,8 @@ async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ``_is_draft_complete`` is True, so this should be unreachable in
     # normal traffic. A stale message clicked after state changed is
     # the realistic edge case.
-    payload = _build_submit_payload(draft, asset)
+    tg_user_id = update.effective_user.id if update.effective_user is not None else None
+    payload = _build_submit_payload(draft, asset, tg_user_id=tg_user_id)
     if payload is None:
         await ui_render(
             update,
@@ -281,9 +282,21 @@ def _is_draft_complete(draft: dict[str, Any], asset: dict[str, Any]) -> bool:
 def _build_submit_payload(
     draft: dict[str, Any],
     asset: dict[str, Any],
+    *,
+    tg_user_id: int | None,
 ) -> dict[str, Any] | None:
-    """Compose the ``SubmitClaimRequest`` payload; None if a required field is missing."""
+    """Compose the ``SubmitClaimRequest`` payload; None if a required field is missing.
+
+    ``tg_user_id`` is required by the API to look up the calling
+    source via ``source_identity`` (the HMAC bearer authenticates the
+    service, not the per-user identity). A missing ``tg_user_id``
+    means we're being driven by a ``Update`` with no effective user
+    (e.g. a channel post replay) — drop the payload so the route
+    never sees a half-populated body.
+    """
     if not asset or not asset.get("coingecko_id"):
+        return None
+    if tg_user_id is None:
         return None
     direction = draft.get("direction")
     horizon = draft.get("horizon")
@@ -297,6 +310,8 @@ def _build_submit_payload(
         "horizon": horizon,
         "conviction": conviction,
         "thesis_text": thesis_text,
+        "tg_user_id": tg_user_id,
+        "asset_query": draft.get("asset_query"),
         "extracted_fields": draft.get("extracted_fields") or {"schema_version": 1},
         "parse_metadata": draft.get("parse_metadata") or {"parsed_via": "form"},
     }

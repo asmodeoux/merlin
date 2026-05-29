@@ -15,6 +15,7 @@ thesis, resolves date, outcome if any. No internal scoring fields.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -36,7 +37,10 @@ from merlin_core.domain import ClaimDraft
 from merlin_core.domain.claim_draft import Horizon
 from merlin_core.domain.horizons import HORIZON_SECONDS
 
-from merlin_api.deps import Ports, get_ports
+from merlin_api.deps import Ports, get_ports, get_session
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(tags=["claims"])
 
@@ -116,18 +120,22 @@ async def draft_claim(
     "/claims",
     response_model=ClaimResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Submit a claim (atomic commit + scheduled resolution).",
+    summary="Submit a claim (persist + schedule resolution).",
     description=(
-        "Five INSERTs + one RQ ``enqueue_at`` inside a single transaction. "
-        "Returns the persisted claim with its resolve date. Idempotent "
-        "against duplicate submissions by ``(source, asset, t0, horizon)``."
+        "Persists the ``claims`` row and enqueues the RQ resolution job "
+        "inside one request. ``tg_user_id`` is resolved to a "
+        "``source_id`` via the ``source_identity`` table; unknown users "
+        "404 (onboard via ``/invites/redeem`` or "
+        "``/sources/admin_bootstrap`` first). Returns the persisted "
+        "claim with its resolve date."
     ),
 )
 async def submit_claim(
     body: SubmitClaimRequest,
     ports: Ports = Depends(get_ports),
+    session: AsyncSession = Depends(get_session),
 ) -> ClaimResponse:
-    """Commit a claim and schedule its resolution."""
+    """Persist the claim, schedule its resolution, return the row."""
     # Confirm the asset exists upstream — the bot may have a stale id
     # if a token was delisted between the search and the commit.
     try:
@@ -143,6 +151,23 @@ async def submit_claim(
             detail=f"market data lookup failed: {e}",
         ) from e
 
+    # Resolve caller -> source_id via the PII table. The route refuses
+    # to write a claim for an un-onboarded user — without a source row,
+    # ``/me`` and ``/board`` would have nothing to link the claim back
+    # to and the FK on ``claims.source_id`` would 500.
+    from merlin_infrastructure.db.repositories import (
+        ClaimRepository,
+        SourceIdentityRepository,
+    )
+
+    identity_repo = SourceIdentityRepository(session)
+    source_id = await identity_repo.get_source_id_by_tg_user_id(body.tg_user_id)
+    if source_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="source not found — onboard via /invites/redeem first",
+        )
+
     submitted_at = datetime.now(UTC)
     # body.horizon is a wire-format ``str`` per merlin_core.contracts; the
     # domain ``HORIZON_SECONDS`` map is keyed by the Literal alias. The
@@ -151,9 +176,36 @@ async def submit_claim(
     resolves_at = submitted_at + timedelta(seconds=HORIZON_SECONDS[horizon_key])
     claim_id = uuid4()
 
-    # Sprint 1 wires the SubmitClaim use case (DB INSERTs) here. Until
-    # then, we still enqueue the resolution job so the queue
-    # contract test (api → RQ → worker) is exercised end-to-end.
+    # INSERT the claim row BEFORE enqueueing. If the enqueue fails we
+    # rollback the row; if the row insert fails we never enqueue. The
+    # opposite order (enqueue first, then INSERT) lands the worker on
+    # a phantom claim if the INSERT fails — exactly the latent bug
+    # the previous "no DB" path masked.
+    claim_repo = ClaimRepository(session)
+    await claim_repo.create(
+        claim_id=claim_id,
+        source_id=source_id,
+        asset_coingecko_id=body.coingecko_id,
+        asset_symbol=metadata.symbol,
+        asset_name=metadata.name,
+        direction=body.direction,
+        horizon=body.horizon,
+        conviction=body.conviction,
+        thesis_text=body.thesis_text,
+        asset_query=body.asset_query,
+        submitted_at=submitted_at,
+        resolves_at=resolves_at,
+        parsed_via=body.parse_metadata.parsed_via,
+        # ``mode="json"`` serializes datetimes (notably
+        # ``parse_metadata.extracted_at``) to ISO strings so the JSONB
+        # column's default ``json.dumps`` doesn't choke. The plain
+        # ``model_dump()`` leaves them as ``datetime`` objects, which
+        # blow up at flush time with "Object of type datetime is not
+        # JSON serializable" — a 500 on every real LLM-driven submit.
+        extracted_fields=body.extracted_fields.model_dump(mode="json"),
+        parse_metadata=body.parse_metadata.model_dump(mode="json"),
+    )
+
     # RQ's ``validate_job_id`` rejects anything outside ``[A-Za-z0-9_-]``,
     # so the historical ``resolve:{uuid}`` shape blew up at runtime
     # (live Sprint-1 bug). Use a dash separator — same idempotency
@@ -164,6 +216,8 @@ async def submit_claim(
         str(claim_id),
         job_id=f"resolve-{claim_id}",
     )
+
+    await session.commit()
 
     return ClaimResponse(
         claim_id=claim_id,

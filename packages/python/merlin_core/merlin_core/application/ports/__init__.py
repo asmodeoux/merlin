@@ -45,10 +45,13 @@ from merlin_core.application.ports.market_data import (
 )
 from merlin_core.application.ports.notifier import NotifierPort
 from merlin_core.application.ports.repositories import (
+    ClaimRecord,
+    ClaimRepositoryPort,
     InviteAlreadyRedeemedError,
     InviteNotFoundError,
     InviteRecord,
     InviteRepositoryPort,
+    LeaderboardEntry,
     RepositoryError,
     SourceAlreadyExistsError,
     SourceIdentityRepositoryPort,
@@ -61,11 +64,14 @@ __all__ = [
     "AssetNotFoundError",
     "ClaimDrafterError",
     "ClaimDrafterPort",
+    "ClaimRecord",
+    "ClaimRepositoryPort",
     "InviteAlreadyRedeemedError",
     "InviteNotFoundError",
     "InviteRecord",
     "InviteRepositoryPort",
     "JobQueuePort",
+    "LeaderboardEntry",
     "MarketDataError",
     "MarketDataPort",
     "NotifierPort",

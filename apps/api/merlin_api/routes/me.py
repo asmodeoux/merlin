@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from merlin_core.contracts import MeResponse, UpdateMeRequest
+from merlin_core.contracts.board import OpenCallEntry
 
 from merlin_api.deps import get_session
 
@@ -22,12 +23,69 @@ router = APIRouter(tags=["sources"])
     description=(
         "User-visible only: open calls (asset + direction + resolve date), "
         "recent resolved calls with plain-percent returns, accuracy. "
-        "No internal scoring fields, no version markers."
+        "``tg_user_id`` query param resolves the caller via the "
+        "``source_identity`` table (same convention as ``PATCH /me``). "
+        "404s if the caller hasn't been onboarded yet."
     ),
 )
-async def get_me() -> MeResponse:
-    """Return the requesting source's snapshot. Sprint 1 wires the DB read."""
-    return MeResponse()
+async def get_me(
+    tg_user_id: int = Query(
+        ...,
+        description=(
+            "Caller's raw Telegram user id. The HMAC bearer "
+            "authenticates the service, not the per-user identity, so "
+            "the API needs the TG id on every authenticated call (we "
+            "have no per-user JWT at v0). Same convention as "
+            "``PATCH /me``."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),
+) -> MeResponse:
+    """Return the requesting source's snapshot.
+
+    Honest empty-state policy: no resolved calls yet → ``accuracy_pct``
+    is ``None`` (not 0.0) and ``rank`` is ``None`` (not 0). The bot
+    renders these as "tracking your first resolutions" rather than a
+    misleading zero percent — see ``MeResponse`` docstring.
+    """
+    from merlin_infrastructure.db.repositories import (
+        ClaimRepository,
+        SourceIdentityRepository,
+        SourceRepository,
+    )
+
+    identity_repo = SourceIdentityRepository(session)
+    source_repo = SourceRepository(session)
+    claim_repo = ClaimRepository(session)
+
+    source_id = await identity_repo.get_source_id_by_tg_user_id(tg_user_id)
+    if source_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="source not found — onboard via /invites/redeem first",
+        )
+
+    source = await source_repo.get_by_source_id(source_id)
+    open_claims = await claim_repo.list_open_by_source(source_id)
+    resolved_total = await claim_repo.count_resolved_by_source(source_id)
+
+    return MeResponse(
+        display_name=source.display_name if source is not None else None,
+        calls_open=[
+            OpenCallEntry(
+                claim_id=row.id,
+                asset_symbol=row.asset_symbol,
+                direction=row.direction,
+                horizon=row.horizon,
+                resolves_at=row.resolves_at,
+            )
+            for row in open_claims
+        ],
+        calls_resolved_recent=[],
+        calls_resolved_total=resolved_total,
+        accuracy_pct=None,
+        rank=None,
+    )
 
 
 @router.patch(

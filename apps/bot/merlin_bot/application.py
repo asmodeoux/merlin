@@ -88,18 +88,23 @@ def build_application(settings: Settings) -> Application:
 
     application: Application = builder.build()
 
-    # Register handlers. ``/help`` is registered first as a standalone
-    # CommandHandler so it's reachable from inside any conversation —
-    # PTB matches CommandHandlers ahead of state-matched MessageHandlers
-    # when the message starts with ``/``. Onboarding and ``/alpha``
+    # Register handlers. Stateless ``CommandHandler``s come first so
+    # they're reachable from inside any conversation — PTB matches
+    # CommandHandlers ahead of state-matched MessageHandlers when the
+    # message starts with ``/``. ``/help`` / ``/invite`` / ``/me`` /
+    # ``/board`` are stateless. Onboarding and ``/alpha``
     # (ConversationHandlers) follow.
     from merlin_bot.handlers.admin import build_invite_handler
     from merlin_bot.handlers.alpha import build_handler as build_alpha_handler
+    from merlin_bot.handlers.board import build_handler as build_board_handler
     from merlin_bot.handlers.help import build_handler as build_help_handler
+    from merlin_bot.handlers.me import build_handler as build_me_handler
     from merlin_bot.handlers.start import build_handler as build_start_handler
 
     application.add_handler(build_help_handler())
     application.add_handler(build_invite_handler())
+    application.add_handler(build_me_handler())
+    application.add_handler(build_board_handler())
     application.add_handler(build_start_handler())
     application.add_handler(build_alpha_handler())
     # Global ``/cancel`` — registered AFTER the ``/alpha`` ConversationHandler

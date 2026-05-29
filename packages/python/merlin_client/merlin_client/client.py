@@ -165,9 +165,15 @@ class MerlinClient:
     # -----------------------------------------------------------------------
     # Sources / me
     # -----------------------------------------------------------------------
-    async def get_me(self) -> dict[str, Any]:
-        """``GET /me`` — reputation snapshot."""
-        return await self._get("/me")
+    async def get_me(self, *, tg_user_id: int) -> dict[str, Any]:
+        """``GET /me?tg_user_id=...`` — reputation snapshot.
+
+        ``tg_user_id`` rides the query string for the same reason
+        ``update_me`` puts it in the body: the HMAC bearer
+        authenticates the *service*, not the per-user identity, so the
+        API needs the per-user identifier on every authenticated call.
+        """
+        return await self._get("/me", params={"tg_user_id": tg_user_id})
 
     async def update_me(self, *, display_name: str, tg_user_id: int) -> None:
         """``PATCH /me`` — set leaderboard display name. Returns 204.

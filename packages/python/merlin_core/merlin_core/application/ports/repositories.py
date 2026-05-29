@@ -5,17 +5,22 @@ in ``merlin_infrastructure.db.repositories``. The application layer
 depends only on these Protocols — adapters are wired at the edge by
 ``merlin_api.deps`` and ``merlin_worker.bootstrap``.
 
-Sprint 1 ships the three Protocols needed to make the bot onboard users
-for real:
+Protocols landed so far:
 
 * ``SourceRepositoryPort`` — leaderboard identity + Admiralty grading.
 * ``SourceIdentityRepositoryPort`` — PII boundary (raw Telegram IDs).
 * ``InviteRepositoryPort`` — invite-only onboarding gate.
+* ``ClaimRepositoryPort`` — minimum surface (``create`` +
+  ``list_open_by_source`` + ``count_resolved_by_source`` +
+  ``leaderboard``) for ``POST /alpha`` Confirm to persist a row and
+  for ``GET /me`` + ``GET /board`` to be honest. The leaderboard query
+  is wired here even though it returns ``[]`` for now — when the
+  outcomes layer ships, only the implementation changes.
 
-Later sprints add ``ClaimRepositoryPort``, ``OutcomeRepositoryPort``,
-``AttributionLedgerPort``, and friends. Every append-only repository
-(MVP §15 invariants 7/8/10/12) deliberately does NOT expose an
-``update()`` / ``delete()`` method.
+Later sprints add ``OutcomeRepositoryPort``, ``AttributionLedgerPort``,
+``SourceReputationHistoryPort``, and friends. Every append-only
+repository (MVP §15 invariants 7/8/10/12) deliberately does NOT expose
+an ``update()`` / ``delete()`` method.
 
 All methods are async — every adapter is built on async SQLAlchemy.
 ``source_id`` is always the opaque ``'tg:<sha256>'`` string from
@@ -25,9 +30,9 @@ appear on ``SourceIdentityRepositoryPort``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 # ---------------------------------------------------------------------------
@@ -78,6 +83,50 @@ class InviteRecord:
         for logging and UI hints only.
         """
         return self.redeemed_at is None and self.revoked_at is None
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimRecord:
+    """Read-side projection of a row in ``claims``.
+
+    Denormalized asset fields match the schema's denormalized columns;
+    when the normalized ``assets`` table lands in a later sprint we'll
+    add a richer projection alongside this one and leave this shape
+    intact for the simple-listing paths.
+    """
+
+    id: UUID
+    source_id: str
+    asset_coingecko_id: str
+    asset_symbol: str
+    asset_name: str | None
+    direction: str
+    horizon: str
+    conviction: str
+    thesis_text: str
+    asset_query: str | None
+    submitted_at: datetime
+    resolves_at: datetime
+    parsed_via: str
+    extracted_fields: dict[str, Any] = field(default_factory=dict)
+    parse_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class LeaderboardEntry:
+    """One row of the ranking query that backs ``GET /board``.
+
+    Sprint-1 slice returns an empty list — no outcomes layer yet, so
+    nothing has resolved and there's nothing to rank. The shape is
+    pinned here so the swap-in is local when the worker lands.
+    """
+
+    rank: int
+    display_name: str
+    calls_resolved: int
+    calls_correct: int
+    accuracy_pct: float
+    last_call_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -213,5 +262,75 @@ class InviteRepositoryPort(Protocol):
         racing redeems for the same code will see one True and one
         False — the loser raises ``InviteAlreadyRedeemedError`` at the
         application layer.
+        """
+        ...
+
+
+class ClaimRepositoryPort(Protocol):
+    """Persist + read ``claims`` rows.
+
+    Sprint-1 slice: ``create`` (the ``/alpha`` Confirm write),
+    ``list_open_by_source`` (``/me``'s open list),
+    ``count_resolved_by_source`` (``/me``'s resolved tally), and
+    ``leaderboard`` (``/board`` — returns ``[]`` until the worker
+    lands).
+
+    The leaderboard query is wired here even when empty so the route
+    can stay a one-liner: ``await repo.leaderboard(window)``. When
+    outcomes ship, only this method changes — routes and bot stay put.
+
+    Append-only invariant (MVP §15 invariant 7): there is no
+    ``update()`` / ``delete()`` method by design. Closed-loop columns
+    (``edits`` JSONB, ``soft_deleted_at``) and their write methods land
+    with the worker.
+    """
+
+    async def create(
+        self,
+        *,
+        claim_id: UUID,
+        source_id: str,
+        asset_coingecko_id: str,
+        asset_symbol: str,
+        asset_name: str | None,
+        direction: str,
+        horizon: str,
+        conviction: str,
+        thesis_text: str,
+        asset_query: str | None,
+        submitted_at: datetime,
+        resolves_at: datetime,
+        parsed_via: str,
+        extracted_fields: dict[str, Any],
+        parse_metadata: dict[str, Any],
+    ) -> ClaimRecord:
+        """INSERT a new claim row. Flushes, does not commit."""
+        ...
+
+    async def list_open_by_source(self, source_id: str) -> list[ClaimRecord]:
+        """Open calls for a given source.
+
+        Filters ``WHERE source_id = :sid AND resolves_at > now()``,
+        orders by ``resolves_at ASC`` so the soonest-to-resolve sits at
+        the top of the list (most actionable for the user).
+        """
+        ...
+
+    async def count_resolved_by_source(self, source_id: str) -> int:
+        """Count of calls whose horizon has passed.
+
+        ``WHERE source_id = :sid AND resolves_at <= now()``. Honest
+        proxy for "resolved" until the outcomes table exists — by the
+        time ``resolves_at`` is past, the call IS over even if it
+        hasn't been scored yet.
+        """
+        ...
+
+    async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
+        """Top-N source ranking for the window.
+
+        Returns ``[]`` until the outcomes layer exists — there's
+        nothing honest to rank by. Shape is pinned so the route +
+        contract stay stable when the swap-in lands.
         """
         ...
