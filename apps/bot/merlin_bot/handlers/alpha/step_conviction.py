@@ -1,7 +1,7 @@
 """Conviction step — weak / medium / strong / very strong.
 
-No "simulated size" leakage. The user picks one of four words; the
-internal $-mapping (if any) lives entirely server-side.
+No "simulated size" leakage (Q-028). The user picks one of four words;
+the internal $-mapping (if any) lives entirely server-side.
 """
 
 from __future__ import annotations

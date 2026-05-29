@@ -99,6 +99,9 @@ test-client: ## merlin_client tests only.
 test-e2e: ## End-to-end tests (full-flow stub for now).
 	uv run pytest tests/e2e --no-cov
 
+test-preflight: ## Preflight consistency tests (compose ↔ scripts ↔ env ↔ Dockerfiles). See AGENTS.md §5.1.
+	uv run pytest tests/preflight --no-cov
+
 ##@ Coverage
 cov: ## Run all tests with coverage.
 	uv run pytest --cov
@@ -179,12 +182,12 @@ docs-check: ## rg-based grep gate — fail on forbidden tokens in current docs/c
 	@scripts/docs_check.sh
 
 ##@ CI
-ci: install-frozen lint format-check type layers openapi-check env-check pip-audit docs-check test-core test-infra test-client test-api test-bot test-worker test-e2e ## Full local CI parity (layered coverage gates).
+ci: install-frozen lint format-check type layers openapi-check env-check pip-audit docs-check test-preflight test-core test-infra test-client test-api test-bot test-worker test-e2e ## Full local CI parity (layered coverage gates).
 	@echo ""
 	@echo "  ✓ make ci complete"
 	@echo ""
 
-ci-fast: install-frozen lint format-check type layers openapi-check env-check docs-check test-unit ## Fast CI (skip integration + snapshot + audit).
+ci-fast: install-frozen lint format-check type layers openapi-check env-check docs-check test-preflight test-unit ## Fast CI (skip integration + snapshot + audit).
 
 ##@ Cleanup
 clean: ## Remove caches and build artifacts.

@@ -8,8 +8,8 @@ Every string follows the bot-voice rules from the end-to-end plan §6:
 - No raw enum literals (``pending``, ``resolved``).
 - No ISO timestamps in user-visible text. Calendar dates only.
 - No labels-with-colons. Inline prose only.
-- No "$5 simulated size" or any conviction-to-dollar mapping.
-- No limitation hedges ("not scored at v0", "kept for the record").
+- No "$5 simulated size" or any conviction-to-dollar mapping (Q-028).
+- No limitation hedges ("not scored at v0", "kept for the record") (Q-028).
 
 Pure functions — no I/O, no globals. The notifier consumes the
 finished string and POSTs it as-is.

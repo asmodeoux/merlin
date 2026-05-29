@@ -30,7 +30,7 @@ _FORBIDDEN_TOKENS = (
     "canonical form",
     "claim_id",
     "source_id",
-    "not scored at v0",
+    "not scored at v0",  # docs-check-ok — this IS the forbidden-token test fixture
     "kept for the record",
     "pending",
     "freeform_llm",

@@ -208,6 +208,7 @@ testpaths = [
     "packages/python/merlin_client/tests",
     "scripts/tests",
     "tests/e2e",
+    "tests/preflight",
 ]
 filterwarnings = [
     "error",
@@ -219,6 +220,7 @@ markers = [
     "snapshot: syrupy snapshot tests (OpenAPI, text rendering)",
     "append_only: append-only invariants suite",
     "slow: takes > 1s",
+    "preflight: cross-cutting config consistency (compose, env, Dockerfiles)",
 ]
 addopts = [
     "-ra",

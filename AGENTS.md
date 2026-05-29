@@ -83,6 +83,37 @@ Skipping steps creates drift between the spec and the code.
   `merlin_worker`. Soft strict on `merlin_infrastructure` and
   `merlin_bot` (heavy I/O glue; the disruptive flags are off).
 
+### 5.1 Preflight tests (`tests/preflight/`)
+
+The first Docker bring-up of Sprint 1 surfaced **seven defects** that
+shipped past a fully-green `make ci`. Each one shared a structural
+property: it was a *configuration mismatch between two files* (compose
+vs. script, pyproject vs. Dockerfile, env vs. Settings class, etc.)
+that only manifested when the stack was wired together for real.
+
+To stop that class of bug recurring, **`tests/preflight/`** holds
+cheap, fast, deterministic checks that pin the consistency contract:
+
+| Test | Defends against |
+| --- | --- |
+| `test_compose_consistency.py::test_app_service_env_file_points_at_real_env` | Compose pointing at `.env.example` (placeholders) instead of `.env` — silent broken-config boot |
+| `test_compose_consistency.py::test_dev_verify_only_references_real_services` | Helper-script drift from compose service names — `make dev-verify` always fails even on a healthy stack |
+| `test_compose_consistency.py::test_app_service_mounts_packages_for_hot_reload` | Forgetting `packages/python` bind-mount — hot-reload silently misses cross-package edits |
+| `test_compose_consistency.py::test_compose_{postgres,redis}_remap_to_avoid_native_clash` | Reverting host-port remaps and clashing with a dev's native PG/Redis |
+| `test_dockerfile_workspace_metadata.py::test_dockerfile_copies_every_workspace_readme` | Hatchling failing on `OSError: Readme file does not exist` because the Dockerfile copies `pyproject.toml` without the `README.md` it references |
+| `test_env_example_parses.py::test_*_settings_parses_env_example` | Pydantic Settings classes that crash on the real `.env.example` shape (e.g. comma-separated lists where `pydantic-settings` defaults to JSON-decode) |
+
+If you change `deploy/docker-compose.dev.yml`, a `Dockerfile`, an
+`.env.example`, or `scripts/dev_verify.sh`, **run `make
+test-preflight`** (or the full `make ci`) — these tests are designed
+to fail loudly with an exact remediation hint baked into the assertion
+message.
+
+The bar for adding to this suite: a regression here would only be
+caught at deploy / live-traffic time and the fix is a one-line config
+edit. If a defect ever escapes CI again, the postmortem must add the
+matching preflight test.
+
 ## 6. PTB v21 patterns
 
 Bot handlers must follow the patterns in

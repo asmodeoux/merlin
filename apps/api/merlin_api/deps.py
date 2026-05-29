@@ -22,8 +22,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from fastapi import Depends
-
 from merlin_api.config import Settings
 
 if TYPE_CHECKING:
@@ -61,12 +59,24 @@ class Ports:
 
 
 @lru_cache(maxsize=1)
-def get_ports(settings: Settings = Depends(get_settings)) -> Ports:
+def get_ports() -> Ports:
     """Build the default ``Ports`` from ``Settings``.
 
     Imports are deferred so unit tests of unrelated modules don't pull
     in httpx + redis on collection. The cache means we only construct
     one set of adapters per process.
+
+    NOTE: ``Settings`` is fetched via ``get_settings()`` directly rather
+    than as a ``Depends`` parameter. Combining ``@lru_cache`` with a
+    ``Depends(...)`` arg crashes FastAPI's dependency solver at request
+    time with ``TypeError: unhashable type: 'Settings'`` (Pydantic v2
+    models are mutable, hence unhashable, and ``lru_cache`` tries to
+    hash all arguments for memoization). ``get_settings()`` is itself
+    ``@lru_cache``'d so calling it here still yields the same singleton
+    across every request. Tests override via
+    ``app.dependency_overrides[get_ports] = lambda: Ports(...)`` and so
+    bypass this construction path entirely — which is why this only
+    surfaced under live traffic.
     """
     import httpx
     from merlin_infrastructure.llm.openrouter import OpenRouterClaimDrafter
@@ -74,6 +84,8 @@ def get_ports(settings: Settings = Depends(get_settings)) -> Ports:
     from merlin_infrastructure.notify.telegram.notifier import TelegramNotifier
     from merlin_infrastructure.queue.rq import RQQueueAdapter
     from redis import Redis
+
+    settings = get_settings()
 
     return Ports(
         drafter=OpenRouterClaimDrafter(

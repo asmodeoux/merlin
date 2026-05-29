@@ -233,8 +233,8 @@ def _horizon_human(value: str | None) -> str:
 def _conviction_human(value: str | None) -> str:
     """Render conviction as a single user-facing word.
 
-    No "simulated size" leak per the bot-voice rules. The user gets
-    strong > medium > weak — that's the whole picture they need.
+    No "simulated size" leak per the bot-voice rules (Q-028). The user
+    gets strong > medium > weak — that's the whole picture they need.
     """
     mapping = {
         "weak": "weak",
