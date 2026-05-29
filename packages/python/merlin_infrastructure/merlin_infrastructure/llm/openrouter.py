@@ -254,8 +254,10 @@ class OpenRouterClaimDrafter:
             named_entities=tuple(str(x) for x in named_entities_raw),
         )
 
+        asset_query_str = asset_query if isinstance(asset_query, str) else None
         return ClaimDraft(
             asset_candidates=(),  # API layer fills this after CoinGecko /search
+            asset_query=asset_query_str,
             direction=_typed(direction, ("long", "short")),
             horizon=_typed(
                 horizon,

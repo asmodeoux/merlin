@@ -6,9 +6,12 @@ RQ release embeds scheduling.
 
 Per plan §3:
 
-- ``job_id`` is deterministic (``f"resolve:{claim_id}"``,
-  ``f"reputation:{source_id}"``). Lets ``cancel(job_id)`` and the
-  ``/admin/rerun`` path work with natural keys.
+- ``job_id`` is deterministic (``f"resolve-{claim_id}"``,
+  ``f"reputation-{source_id}"``). Lets ``cancel(job_id)`` and the
+  ``/admin/rerun`` path work with natural keys. RQ's
+  ``validate_job_id`` rejects characters outside ``[A-Za-z0-9_-]``,
+  so use a dash separator — colons raise ``ValueError`` at
+  ``enqueue_at`` time (Sprint-1 live regression).
 - Retry policy: ``Retry(max=3, interval=[60, 300, 900])`` — 1m / 5m /
   15m. Wired into ``enqueue_at`` so deferred resolution jobs get the
   same protection as immediate ones.

@@ -24,6 +24,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from merlin_bot.api_dependency import BOT_DATA_KEY
 from merlin_bot.handlers.alpha.states import (
+    USER_KEY_ASSET_RESOLUTION,
     USER_KEY_CANDIDATES,
     USER_KEY_DRAFT,
     AlphaState,
@@ -78,9 +79,53 @@ async def _handle_text(
 
     if context.user_data is not None:
         context.user_data[USER_KEY_DRAFT] = draft
-        context.user_data[USER_KEY_CANDIDATES] = draft.get("asset_candidates", [])
+        candidates = draft.get("asset_candidates", [])
+        context.user_data[USER_KEY_CANDIDATES] = candidates
+        # If the LLM was confident about the asset AND CoinGecko's top
+        # candidate cleanly matches that query, auto-pick it. Otherwise
+        # the user has to manually click "Edit Asset" → pick the
+        # obvious top hit, which is a needless ceremony when "ETH"
+        # unambiguously means Ethereum. Anything ambiguous (symbol
+        # mismatch, no clear winner) falls through to the Edit Asset
+        # picker as before.
+        auto = _auto_pick(draft.get("asset_query"), candidates)
+        if auto is not None:
+            context.user_data[USER_KEY_ASSET_RESOLUTION] = {
+                "coingecko_id": auto["coingecko_id"],
+                "symbol": auto["symbol"],
+                "name": auto["name"],
+            }
 
     return await show_preview(update, context)
+
+
+def _auto_pick(
+    asset_query: str | None,
+    candidates: list[dict[str, object]],
+) -> dict[str, object] | None:
+    """Return the top candidate iff it's clearly the LLM's intended asset.
+
+    Conservative heuristic: the top candidate's ``symbol`` or ``name``
+    matches the LLM's ``asset_query`` case-insensitively. This catches
+    the common case ("ETH" → Ethereum ETH, "BTC" → Bitcoin BTC,
+    "bitcoin" → Bitcoin) without auto-locking on ambiguity ("eth" in a
+    sentence about Ethena would still trigger the picker because the
+    top hit's symbol is "USDE" — no match).
+
+    On Confirm, ``POST /claims`` still calls CoinGecko ``get_asset_metadata``
+    server-side as a defence against forged ids, so an auto-pick can
+    never push an invalid claim through. The user can also override
+    via the Edit Asset button at any point before Confirm.
+    """
+    if not asset_query or not candidates:
+        return None
+    q = asset_query.strip().lower()
+    top = candidates[0]
+    symbol = str(top.get("symbol", "")).lower()
+    name = str(top.get("name", "")).lower()
+    if q in {symbol, name}:
+        return top
+    return None
 
 
 async def _enter_form_flow(

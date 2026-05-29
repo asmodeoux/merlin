@@ -103,6 +103,15 @@ class ClaimDraft:
     """
 
     asset_candidates: tuple[AssetCandidate, ...] = ()
+    # Short search string the LLM extracted from the freeform message
+    # (e.g. "ETH"). The API uses this to drive CoinGecko ``/search``
+    # and populate ``asset_candidates``. ``None`` means the LLM either
+    # didn't surface an asset or returned one below the confidence
+    # floor — the bot then surfaces the asset picker as a missing
+    # field. Distinct from ``thesis_text``: the thesis is the verbatim
+    # message kept for the audit record, while ``asset_query`` is the
+    # one-or-two-token search seed and is NOT user-facing.
+    asset_query: str | None = None
     direction: Direction | None = None
     horizon: Horizon | None = None
     conviction: Conviction | None = None

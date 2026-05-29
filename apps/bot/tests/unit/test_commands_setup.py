@@ -59,9 +59,12 @@ def test_public_command_descriptions_fit_telegram_limit() -> None:
         assert 1 <= len(cmd.description) <= 80
 
 
-def test_admin_extra_commands_is_empty_at_sprint_1() -> None:
-    """Operator commands land in Sprint 2; the slot is reserved."""
-    assert ADMIN_EXTRA_COMMANDS == ()
+def test_admin_extra_commands_includes_invite() -> None:
+    """``/invite`` lands in Sprint 1 — admins mint invite codes via it."""
+    cmds = {cmd.command for cmd in ADMIN_EXTRA_COMMANDS}
+    assert "invite" in cmds
+    for cmd in ADMIN_EXTRA_COMMANDS:
+        assert 1 <= len(cmd.description) <= 80
 
 
 async def test_register_commands_pushes_public_scope() -> None:

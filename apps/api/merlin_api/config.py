@@ -8,8 +8,10 @@ renaming an env var requires updating both in the same commit.
 
 from __future__ import annotations
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -115,3 +117,35 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------
     api_title: str = Field(default="Merlin API")
     api_version: str = Field(default="0.2.0")
+
+    # -------------------------------------------------------------------
+    # Admin allowlist (parallels merlin_bot — same env var on both sides
+    # so the admin's Telegram ID is recognised by every service).
+    #
+    # Used by ``POST /sources/admin_bootstrap`` and ``POST /invites`` to
+    # gate admin-only endpoints. The bot also reads this list so its
+    # ``/start`` and ``/invite`` handlers know which user qualifies.
+    #
+    # ``NoDecode`` + the validator below let the env var stay a
+    # comma-separated string (``123,456``) — the same trap that ate the
+    # worker at boot (preflight test in ``tests/preflight``).
+    # -------------------------------------------------------------------
+    telegram_admin_chat_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Comma-separated Telegram chat IDs that bypass invite redemption "
+            "and may issue new invite codes. Same env shape as merlin_bot."
+        ),
+    )
+
+    @field_validator("telegram_admin_chat_ids", mode="before")
+    @classmethod
+    def _parse_admin_chat_ids(cls, raw: object) -> list[int]:
+        if raw is None or raw == "":
+            return []
+        if isinstance(raw, list):
+            return [int(x) for x in raw]
+        if isinstance(raw, str):
+            return [int(part) for part in (p.strip() for p in raw.split(",")) if part]
+        msg = f"Cannot parse telegram_admin_chat_ids from {raw!r}"
+        raise TypeError(msg)

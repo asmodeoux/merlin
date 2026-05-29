@@ -18,6 +18,7 @@ The default ``Ports`` factory wires real adapters from ``Settings``:
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
         MarketDataPort,
         NotifierPort,
     )
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @lru_cache(maxsize=1)
@@ -108,3 +110,29 @@ def get_ports() -> Ports:
             http_client=httpx.AsyncClient(timeout=10.0),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# DB session dependency — one ``AsyncSession`` per request.
+# ---------------------------------------------------------------------------
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """Yield an ``AsyncSession`` for the request.
+
+    The route handler holds the session for the lifetime of the
+    request; repositories layer their flushes on top, and the handler
+    COMMITs (or the dependency rolls back on exception). See
+    ``merlin_infrastructure.db.session.yield_session`` for the
+    contract — kept thin here so tests can override with a single
+    ``app.dependency_overrides`` swap.
+    """
+    from merlin_infrastructure.db.session import (
+        get_session_factory,
+        yield_session,
+    )
+
+    settings = get_settings()
+    factory = get_session_factory(settings.database_url)
+    async for session in yield_session(factory):
+        yield session

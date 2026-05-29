@@ -10,3 +10,15 @@ of defense.
 See MVP §15 invariants 7/8/10/12 and
 `tests/integration/test_append_only_invariants.py`.
 """
+
+from merlin_infrastructure.db.repositories.invite_repository import InviteRepository
+from merlin_infrastructure.db.repositories.source_identity_repository import (
+    SourceIdentityRepository,
+)
+from merlin_infrastructure.db.repositories.source_repository import SourceRepository
+
+__all__ = [
+    "InviteRepository",
+    "SourceIdentityRepository",
+    "SourceRepository",
+]

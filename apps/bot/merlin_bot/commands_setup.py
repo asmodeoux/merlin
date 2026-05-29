@@ -43,8 +43,8 @@ PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
 
 # Admin-only additions — appended to PUBLIC_COMMANDS for the admin's
 # chat scope so admins see the full list, public users see the trimmed
-# list. Empty at v0; the operator-side admin commands land in Sprint 2.
-ADMIN_EXTRA_COMMANDS: tuple[BotCommand, ...] = ()
+# list.
+ADMIN_EXTRA_COMMANDS: tuple[BotCommand, ...] = (BotCommand("invite", "Issue a new invite code"),)
 
 
 async def register_commands(

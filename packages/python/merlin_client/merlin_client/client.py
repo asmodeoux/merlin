@@ -120,6 +120,48 @@ class MerlinClient:
             },
         )
 
+    async def create_invite(
+        self,
+        *,
+        tg_user_id: int,
+        expires_in_days: int = 14,
+    ) -> dict[str, Any]:
+        """``POST /invites`` — admin-only invite issuance.
+
+        Returns ``{code, expires_at}``. 403s if ``tg_user_id`` isn't in
+        the API's admin allowlist.
+        """
+        return await self._post(
+            "/invites",
+            json={
+                "tg_user_id": tg_user_id,
+                "expires_in_days": expires_in_days,
+            },
+        )
+
+    # -----------------------------------------------------------------------
+    # Sources / admin
+    # -----------------------------------------------------------------------
+    async def admin_bootstrap(
+        self,
+        *,
+        tg_user_id: int,
+        tg_handle: str | None = None,
+        display_name: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /sources/admin_bootstrap`` — admin onboarding without an invite.
+
+        Idempotent. Returns ``{source_id, display_name_prompt}``.
+        """
+        return await self._post(
+            "/sources/admin_bootstrap",
+            json={
+                "tg_user_id": tg_user_id,
+                "tg_handle": tg_handle,
+                "display_name": display_name,
+            },
+        )
+
     # -----------------------------------------------------------------------
     # Sources / me
     # -----------------------------------------------------------------------
@@ -127,12 +169,17 @@ class MerlinClient:
         """``GET /me`` — reputation snapshot."""
         return await self._get("/me")
 
-    async def update_me(self, *, display_name: str) -> None:
-        """``PATCH /me`` — set leaderboard display name. Returns 204."""
+    async def update_me(self, *, display_name: str, tg_user_id: int) -> None:
+        """``PATCH /me`` — set leaderboard display name. Returns 204.
+
+        ``tg_user_id`` is included in the body so the API can look the
+        calling source up via the ``source_identity`` table — the HMAC
+        bearer authenticates the *service*, not the per-user identity.
+        """
         try:
             response = await self._client.patch(
                 "/me",
-                json={"display_name": display_name},
+                json={"display_name": display_name, "tg_user_id": tg_user_id},
             )
         except httpx.TimeoutException as exc:
             raise MerlinTimeoutError(str(exc)) from exc

@@ -34,8 +34,7 @@ from telegram.ext import (
     filters,
 )
 
-from merlin_bot.api_dependency import BOT_DATA_KEY
-from merlin_bot.filters import is_admin
+from merlin_bot.api_dependency import BOT_DATA_ADMIN_KEY, BOT_DATA_KEY
 
 _log = logging.getLogger("merlin.bot.handlers.start")
 
@@ -53,7 +52,7 @@ _USER_KEY_DISPLAY_NAME = "display_name"
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for ``/start``. Greet or ask for invite code."""
+    """Entry point for ``/start``. Greet, admin-bootstrap, or ask for invite."""
     if update.effective_user is None or update.message is None:
         return ConversationHandler.END
 
@@ -61,8 +60,53 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(_returning_user_greeting(context.user_data))
         return ConversationHandler.END
 
+    # Admin bypass: if the calling Telegram id is in the allowlist, skip
+    # the invite-code prompt entirely. We INSERT (or fetch) the admin's
+    # source row via ``POST /sources/admin_bootstrap`` and jump straight
+    # to the display-name step.
+    admin_chat_ids: frozenset[int] = context.bot_data.get(
+        BOT_DATA_ADMIN_KEY,
+        frozenset(),
+    )
+    if update.effective_user.id in admin_chat_ids:
+        return await _admin_bootstrap(update, context)
+
     await update.message.reply_text(_welcome_text())
     return StartState.AWAIT_INVITE
+
+
+async def _admin_bootstrap(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    """Create or fetch the admin's source row, then prompt for display name.
+
+    On API error we log and fall through to the invite-code prompt —
+    the admin can still onboard the normal way if the bootstrap path
+    is broken, which is far better than locking them out entirely.
+    """
+    assert update.effective_user is not None and update.message is not None
+
+    client: MerlinClient = context.bot_data[BOT_DATA_KEY]
+    try:
+        result = await client.admin_bootstrap(
+            tg_user_id=update.effective_user.id,
+            tg_handle=update.effective_user.username,
+        )
+    except MerlinHTTPError as e:
+        _log.warning("admin_bootstrap failed (%s); falling back to invite flow", e)
+        await update.message.reply_text(_welcome_text())
+        return StartState.AWAIT_INVITE
+
+    if context.user_data is not None:
+        context.user_data[_USER_KEY_SOURCE_ID] = result.get("source_id")
+
+    if result.get("display_name_prompt", True):
+        await update.message.reply_text(_admin_welcome_text())
+        return StartState.AWAIT_DISPLAY_NAME
+
+    await update.message.reply_text(_welcome_done_text(display_name=None))
+    return ConversationHandler.END
 
 
 async def receive_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -101,7 +145,7 @@ async def receive_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def receive_display_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User sent us their display name; save it and greet them."""
-    if update.message is None:
+    if update.message is None or update.effective_user is None:
         return ConversationHandler.END
 
     raw = (update.message.text or "").strip()
@@ -113,7 +157,10 @@ async def receive_display_name(update: Update, context: ContextTypes.DEFAULT_TYP
 
     client: MerlinClient = context.bot_data[BOT_DATA_KEY]
     try:
-        await client.update_me(display_name=display_name)
+        await client.update_me(
+            display_name=display_name,
+            tg_user_id=update.effective_user.id,
+        )
     except MerlinHTTPError as e:
         _log.warning("update_me failed: %s", e)
         await update.message.reply_text(_temporary_error_text())
@@ -170,6 +217,14 @@ def _ask_display_name_text() -> str:
     return "You're in. What name should we put on the leaderboard?"
 
 
+def _admin_welcome_text() -> str:
+    """First-time admin greeting after auto-bootstrap (no invite needed)."""
+    return (
+        "Welcome, operator. What name should we put on the leaderboard? "
+        "You can use /invite to issue codes."
+    )
+
+
 def _welcome_done_text(*, display_name: str | None) -> str:
     """Final onboarding message — invites the user to make their first call."""
     name = display_name or "there"
@@ -199,7 +254,3 @@ def _invite_invalid_text() -> str:
 def _temporary_error_text() -> str:
     """Recoverable error; ask the user to try again."""
     return "Something's off on our end. Try again in a moment."
-
-
-# Silence the unused-import — admin filter exposed for sibling handlers.
-_ = is_admin

@@ -40,10 +40,12 @@ from merlin_api.deps import Ports, get_ports
 
 router = APIRouter(tags=["claims"])
 
-# Above this confidence, the API proactively populates asset_candidates
-# with a CoinGecko ``/search`` call. Below it, the bot will ask the
-# user to type / pick from the asset step.
-_ASSET_SEARCH_CONFIDENCE_FLOOR = 0.85
+# The per-field confidence floor for ``asset_query`` lives on the
+# drafter (``merlin_infrastructure.llm.openrouter._ASSET_CONFIDENCE_FLOOR``).
+# The API trusts the drafter's gating and does not re-check the
+# confidence here — keeping the floor in one place avoids skew
+# (Sprint-1 bug had both layers gating independently AND the API
+# dropping the drafter's value on the floor anyway).
 
 
 @router.post(
@@ -77,19 +79,20 @@ async def draft_claim(
         ) from e
 
     candidates: list[AssetCandidateDTO] = []
-    asset_query: str | None = None
-    parse_meta = draft.parse_metadata
-    asset_confidence = parse_meta.confidences.get("asset_query", 0.0) if parse_meta else 0.0
-    # Pull the asset query from the LLM's confidences map (the LLM puts
-    # the query value in extracted_fields; we recompose here so the bot
-    # sees a uniform shape).
-    if asset_confidence >= _ASSET_SEARCH_CONFIDENCE_FLOOR:
-        # The drafter doesn't return the asset query explicitly — it's the
-        # source for asset_candidates. Extract it from raw_user_turns[0]
-        # via the prompt's expected schema: the drafter stores asset_query
-        # itself in the missing_fields semantic (not present => absent).
-        # We use the thesis_text as a best-effort fallback search string.
-        asset_query = draft.thesis_text or body.text
+    # The drafter is the single source of truth for the asset query: it
+    # extracts the field, applies the per-field confidence floor, and
+    # leaves ``asset_query`` set ONLY when the LLM was confident enough
+    # for us to surface the candidates without a clarifying question.
+    # If the floor culled it (or the user didn't mention an asset at
+    # all), we leave ``asset_query`` None and the bot opens the asset
+    # picker. We MUST NOT fall back to ``draft.thesis_text`` here —
+    # the thesis is the verbatim full sentence, and feeding it to
+    # CoinGecko ``/search`` returns either nothing or wildly wrong
+    # tokens (Sprint-1 live bug: "ETH long 2 weeks, Vitalik announced
+    # a large upgrade to staking" → zero candidates for an obvious ETH
+    # call).
+    asset_query: str | None = draft.asset_query
+    if asset_query:
         try:
             candidates_domain = await ports.market_data.search_assets(asset_query)
             candidates = [
@@ -151,11 +154,15 @@ async def submit_claim(
     # Sprint 1 wires the SubmitClaim use case (DB INSERTs) here. Until
     # then, we still enqueue the resolution job so the queue
     # contract test (api → RQ → worker) is exercised end-to-end.
+    # RQ's ``validate_job_id`` rejects anything outside ``[A-Za-z0-9_-]``,
+    # so the historical ``resolve:{uuid}`` shape blew up at runtime
+    # (live Sprint-1 bug). Use a dash separator — same idempotency
+    # semantics (one job per claim), but it actually round-trips RQ.
     ports.queue.enqueue_at(
         resolves_at,
         "merlin_worker.jobs.resolve_outcome",
         str(claim_id),
-        job_id=f"resolve:{claim_id}",
+        job_id=f"resolve-{claim_id}",
     )
 
     return ClaimResponse(

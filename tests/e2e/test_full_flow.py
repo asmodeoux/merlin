@@ -15,7 +15,7 @@ The real test will:
    - freeform message ("ETH long 14d strong, Vitalik rumour").
    - tap Confirm on the preview.
 4. Assert the API persisted ``claims``/``events``/``hypotheses``/
-   ``attribution_ledger`` rows and enqueued ``resolve:<claim_id>``.
+   ``attribution_ledger`` rows and enqueued ``resolve-<claim_id>``.
 5. Freeze the worker clock past ``t_resolve``.
 6. Trigger the RQ worker once; assert ``outcomes`` row + bot-voice
    notification + downstream ``recompute_source_reputation`` job.

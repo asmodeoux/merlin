@@ -68,6 +68,43 @@ async def test_successful_extraction_high_confidence(http_client: httpx.AsyncCli
     assert draft.parse_metadata.parsed_via == "freeform_llm"
     assert draft.parse_metadata.raw_user_turns == ("ETH long 14d strong, Vitalik rumour",)
     assert draft.missing_fields == ()
+    # REGRESSION (Sprint 1 live bug): the LLM-extracted asset_query
+    # MUST survive the round-trip onto the returned ClaimDraft, so the
+    # API can pass it to CoinGecko /search instead of guessing with
+    # thesis_text. Dropping it on the floor here caused obvious calls
+    # like "ETH long 2 weeks, Vitalik staking news" to land with zero
+    # asset candidates.
+    assert draft.asset_query == "ETH"
+
+
+async def test_asset_query_below_confidence_floor_is_none(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """When the LLM is unsure of the asset, ``asset_query`` is None
+    AND ``asset`` appears in ``missing_fields``. The API then opens
+    the asset picker instead of running a CoinGecko search against a
+    low-confidence guess."""
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "maybe ETH idk",
+            "direction": "long",
+            "horizon": "14d",
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.3,  # below 0.85 floor
+                "direction": 0.95,
+                "horizon": 0.9,
+                "conviction": 0.85,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("something market-y, maybe ETH idk")
+
+    assert draft.asset_query is None
+    assert "asset" in draft.missing_fields
 
 
 async def test_low_confidence_field_is_marked_missing(

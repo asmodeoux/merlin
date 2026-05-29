@@ -10,6 +10,7 @@ from merlin_bot.handlers.alpha.states import (
     AlphaState,
 )
 from merlin_bot.handlers.alpha.step_preview import show_preview
+from merlin_bot.handlers.alpha.ui import render as ui_render
 
 CB_PREFIX = "alpha:hor:"
 
@@ -27,18 +28,17 @@ _OPTIONS: list[tuple[str, str]] = [
 
 
 async def prompt_horizon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show horizon buttons."""
+    """Morph the preview card into the horizon picker."""
     query = update.callback_query
     if query is not None:
         await query.answer()
-    if update.effective_chat is None:
-        return ConversationHandler.END
     rows = [
         [InlineKeyboardButton(label, callback_data=f"{CB_PREFIX}{code}")]
         for label, code in _OPTIONS
     ]
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+    await ui_render(
+        update,
+        context,
         text="How long until you find out?",
         reply_markup=InlineKeyboardMarkup(rows),
     )

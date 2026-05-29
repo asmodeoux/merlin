@@ -187,10 +187,12 @@ def _enqueue_reputation_recompute(*, source_id: str) -> None:
 
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
     queue = RQQueueAdapter(redis=Redis.from_url(redis_url))
+    # RQ's ``validate_job_id`` rejects ``:`` — use a dash separator
+    # to match the ``resolve-{claim_id}`` convention.
     queue.enqueue(
         "merlin_worker.jobs.recompute_source_reputation",
         source_id,
-        job_id=f"reputation:{source_id}",
+        job_id=f"reputation-{source_id}",
     )
 
 

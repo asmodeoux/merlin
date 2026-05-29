@@ -24,7 +24,7 @@ lands and this one re-runs (which is safe because the columns are
 ``ADD COLUMN IF NOT EXISTS``).
 
 Revision ID: a1f7c3e8b2d4
-Revises:
+Revises: 3b4f1e2c8a90
 Create Date: 2026-05-29 10:00:00 UTC
 """
 
@@ -37,7 +37,7 @@ from alembic import op
 
 # Revision identifiers, used by Alembic.
 revision: str = "a1f7c3e8b2d4"
-down_revision: str | None = None
+down_revision: str | None = "3b4f1e2c8a90"
 branch_labels: str | None = None
 depends_on: str | None = None
 

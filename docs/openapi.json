@@ -1,6 +1,65 @@
 {
   "components": {
     "schemas": {
+      "AdminBootstrapRequest": {
+        "description": "Body of ``POST /sources/admin_bootstrap``.\n\nBot sends the calling Telegram user's id + handle. The route\nvalidates the id is in ``Settings.telegram_admin_chat_ids`` and\n400s otherwise (admins-only).",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "tg_handle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tg Handle"
+          },
+          "tg_user_id": {
+            "title": "Tg User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tg_user_id"
+        ],
+        "title": "AdminBootstrapRequest",
+        "type": "object"
+      },
+      "AdminBootstrapResponse": {
+        "description": "Response: opaque ``source_id`` + display-name prompt hint.\n\nMirrors ``RedeemInviteResponse`` so the bot's caller can reuse its\nonboarding state machine. ``display_name_prompt`` is True iff a\nbrand-new admin row was created without a display name set.",
+        "properties": {
+          "display_name_prompt": {
+            "default": true,
+            "title": "Display Name Prompt",
+            "type": "boolean"
+          },
+          "source_id": {
+            "maxLength": 64,
+            "minLength": 4,
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id"
+        ],
+        "title": "AdminBootstrapResponse",
+        "type": "object"
+      },
       "AssetCandidateDTO": {
         "description": "One row in the response to ``GET /assets/search``.\n\nMirrors the domain ``AssetCandidate`` shape but lives in\n``contracts`` because Pydantic is forbidden in ``domain``.",
         "properties": {
@@ -317,6 +376,50 @@
         "title": "ClaimResponse",
         "type": "object"
       },
+      "CreateInviteRequest": {
+        "description": "Body of ``POST /invites`` \u2014 admin issues a new code.\n\nAdmin endpoints don't need ``created_by_source_id`` in the body;\nthe route resolves it server-side from the calling admin's TG id.\nEmpty body is allowed (the route defaults ``expires_in_days``).",
+        "properties": {
+          "expires_in_days": {
+            "default": 14,
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Expires In Days",
+            "type": "integer"
+          },
+          "tg_user_id": {
+            "description": "Telegram ID of the admin issuing the invite. The route checks this against the API's admin allowlist and resolves it to the admin's opaque source_id.",
+            "title": "Tg User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tg_user_id"
+        ],
+        "title": "CreateInviteRequest",
+        "type": "object"
+      },
+      "CreateInviteResponse": {
+        "description": "Response: the freshly minted code, ready to paste.",
+        "properties": {
+          "code": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Code",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "expires_at"
+        ],
+        "title": "CreateInviteResponse",
+        "type": "object"
+      },
       "ExtractedFieldsDTO": {
         "additionalProperties": true,
         "description": "User-attested intent the v0 verifier doesn't score.\n\nFrozen at claim commit per MVP \u00a715 invariant 17. The bot does\n**not** surface low-confidence fields on the preview \u2014 they live\nhere for the record.",
@@ -623,7 +726,7 @@
         "type": "object"
       },
       "RedeemInviteResponse": {
-        "description": "Response: opaque ``source_id`` + next-step hint.\n\n``display_name_prompt`` is True iff the source row was just created\nand the bot should ask the user for a leaderboard name.",
+        "description": "Response: opaque ``source_id`` + next-step hint.\n\n``source_id`` is the opaque ``'tg:<sha256>'`` handle from\n``merlin_core.domain.source_id.make_source_id`` \u2014 a string, never a\nUUID (MVP \u00a715 invariant 9). The previous draft of this contract\ntyped it as ``UUID``; that was wrong and the stub redeem endpoint\nonly \"worked\" because it returned a random UUID the bot never\nlooked at.\n\n``display_name_prompt`` is True iff the source row was just created\nand the bot should ask the user for a leaderboard name. False on\nidempotent re-redeem (same Telegram user pasting the same code\nagain \u2014 we return their existing source_id).",
         "properties": {
           "display_name_prompt": {
             "default": true,
@@ -631,7 +734,8 @@
             "type": "boolean"
           },
           "source_id": {
-            "format": "uuid",
+            "maxLength": 64,
+            "minLength": 4,
             "title": "Source Id",
             "type": "string"
           }
@@ -743,17 +847,22 @@
         "type": "object"
       },
       "UpdateMeRequest": {
-        "description": "Body of ``PATCH /me``.",
+        "description": "Body of ``PATCH /me``.\n\nIncludes ``tg_user_id`` so the API can look up the calling source\nvia ``source_identity``. The bot's HMAC bearer authenticates the\nservice, but the API needs the per-user identifier on every\nauthenticated call (we have no per-user JWT at v0).",
         "properties": {
           "display_name": {
             "maxLength": 40,
             "minLength": 1,
             "title": "Display Name",
             "type": "string"
+          },
+          "tg_user_id": {
+            "title": "Tg User Id",
+            "type": "integer"
           }
         },
         "required": [
-          "display_name"
+          "display_name",
+          "tg_user_id"
         ],
         "title": "UpdateMeRequest",
         "type": "object"
@@ -1208,9 +1317,69 @@
         ]
       }
     },
+    "/invites": {
+      "post": {
+        "description": "Generates a URL-safe ~11-character code and stores it with an expiry. Caller must be a Telegram admin (configured via ``TELEGRAM_ADMIN_CHAT_IDS``); non-admin callers 403.",
+        "operationId": "create_invite_invites_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInviteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateInviteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue a new invite code (admin-only).",
+        "tags": [
+          "invites"
+        ]
+      }
+    },
     "/invites/redeem": {
       "post": {
-        "description": "Single transaction: validate invite, INSERT ``sources`` (zeroed Admiralty: ``reliability='F'``, ``credibility=6``), INSERT ``source_identity``, UPDATE ``invites`` redeemed. Returns the new ``source_id`` and a hint to prompt for display name. Unknown / expired codes 404.",
+        "description": "Single transaction: validate invite, INSERT ``sources`` (zeroed Admiralty: ``reliability='F'``, ``credibility=6``), INSERT ``source_identity``, UPDATE ``invites`` redeemed. Returns the new ``source_id`` and a hint to prompt for display name. Unknown / expired / already-redeemed codes 404.",
         "operationId": "redeem_invite_invites_redeem_post",
         "parameters": [
           {
@@ -1318,7 +1487,7 @@
         ]
       },
       "patch": {
-        "description": "Idempotent \u2014 calling with the same name is a no-op. The display name has a 40-character soft cap; the bot trims user input before sending.",
+        "description": "Idempotent \u2014 calling with the same name is a no-op. The display name has a 40-character soft cap; the bot trims user input before sending. 404s if the caller's ``tg_user_id`` has no source row yet.",
         "operationId": "update_me_me_patch",
         "parameters": [
           {
@@ -1399,6 +1568,66 @@
         "summary": "Readiness probe \u2014 process can serve traffic.",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/sources/admin_bootstrap": {
+      "post": {
+        "description": "Idempotent: a second call from the same admin's Telegram id returns the existing ``source_id``. Non-admin callers (TG id not in ``TELEGRAM_ADMIN_CHAT_IDS``) 403.",
+        "operationId": "admin_bootstrap_sources_admin_bootstrap_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminBootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminBootstrapResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create an admin's source row without an invite code (admin-only).",
+        "tags": [
+          "sources"
         ]
       }
     }

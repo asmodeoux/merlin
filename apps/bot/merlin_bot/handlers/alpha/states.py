@@ -26,3 +26,9 @@ class AlphaState(IntEnum):
 USER_KEY_DRAFT = "alpha_draft"  # dict matching ClaimDraftResponse
 USER_KEY_ASSET_RESOLUTION = "alpha_asset_resolution"  # dict (AssetResolution)
 USER_KEY_CANDIDATES = "alpha_candidates"  # list[dict] from search
+# Telegram (chat_id, message_id) of the currently-live preview / picker
+# card. Tracked so that text-based exits (the ``/cancel`` command, the
+# conversation timing out, etc.) can strip the dangling inline keyboard
+# from the user's chat instead of leaving stale buttons in place.
+USER_KEY_PREVIEW_MESSAGE_ID = "alpha_preview_msg_id"
+USER_KEY_PREVIEW_CHAT_ID = "alpha_preview_chat_id"

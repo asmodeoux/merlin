@@ -25,10 +25,21 @@ from merlin_core.contracts.claims import (
     ParseMetadataDTO,
     SubmitClaimRequest,
 )
-from merlin_core.contracts.invites import RedeemInviteRequest, RedeemInviteResponse
+from merlin_core.contracts.invites import (
+    CreateInviteRequest,
+    CreateInviteResponse,
+    RedeemInviteRequest,
+    RedeemInviteResponse,
+)
 from merlin_core.contracts.me import UpdateMeRequest
+from merlin_core.contracts.sources import (
+    AdminBootstrapRequest,
+    AdminBootstrapResponse,
+)
 
 __all__ = [
+    "AdminBootstrapRequest",
+    "AdminBootstrapResponse",
     "AssetCandidateDTO",
     "AssetResolution",
     "AssetSearchResponse",
@@ -37,6 +48,8 @@ __all__ = [
     "ClaimDraftRequest",
     "ClaimDraftResponse",
     "ClaimResponse",
+    "CreateInviteRequest",
+    "CreateInviteResponse",
     "ExtractedFieldsDTO",
     "MeResponse",
     "ParseMetadataDTO",

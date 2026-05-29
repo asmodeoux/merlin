@@ -27,7 +27,7 @@ from merlin_api.auth import require_internal_token
 from merlin_api.deps import get_settings
 from merlin_api.errors import register_exception_handlers
 from merlin_api.openapi import build_openapi
-from merlin_api.routes import assets, board, claims, invites, me
+from merlin_api.routes import assets, board, claims, invites, me, sources
 
 
 def create_app() -> FastAPI:
@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
     # applies to every business route at once.
     auth_dep = [Depends(require_internal_token)]
     app.include_router(invites.router, dependencies=auth_dep)
+    app.include_router(sources.router, dependencies=auth_dep)
     app.include_router(me.router, dependencies=auth_dep)
     app.include_router(board.router, dependencies=auth_dep)
     app.include_router(assets.router, dependencies=auth_dep)

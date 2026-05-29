@@ -14,7 +14,7 @@ Per the bot-flow plan §2 "Bet capture":
 5. INSERT the ``events`` row with ``t_resolve = now() + horizon_seconds(horizon)``.
 6. INSERT the ``attribution_ledger`` row (originator passthrough).
 7. ``queue.enqueue_at(t_resolve, "merlin_worker.jobs.resolve_outcome",
-   claim_id, job_id=f"resolve:{claim_id}")``.
+   claim_id, job_id=f"resolve-{claim_id}")``.
 
 All seven steps happen inside one DB transaction so a crash between
 INSERTs leaves no partial state. The RQ enqueue runs after the
@@ -179,12 +179,14 @@ class SubmitClaim:
         )
 
         # 7. Schedule the resolver. Deterministic job_id (plan §3) lets
-        #    operators cancel + rerun by natural key.
+        #    operators cancel + rerun by natural key. RQ's
+        #    ``validate_job_id`` rejects ``:`` (allows only
+        #    ``[A-Za-z0-9_-]``); use a dash separator.
         job_id = self._queue.enqueue_at(
             resolves_at,
             "merlin_worker.jobs.resolve_outcome",
             str(claim_id),
-            job_id=f"resolve:{claim_id}",
+            job_id=f"resolve-{claim_id}",
         )
 
         return SubmitClaimResult(

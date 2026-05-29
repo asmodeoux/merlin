@@ -8,7 +8,8 @@ Sub-modules:
 
 - ``rq`` — production adapter wrapping ``rq.Queue`` and its built-in
   ``enqueue_at`` scheduler primitives. Deterministic ``job_id``
-  conventions (``resolve:{claim_id}``, ``reputation:{source_id}``).
+  conventions (``resolve-{claim_id}``, ``reputation-{source_id}``)
+  — dash separator, NOT colon (RQ rejects colons).
 - ``fake`` — in-memory test adapter; records calls without
   dispatching. Sync-mode RQ for integration tests lives in
   ``apps/worker/tests/conftest.py``.

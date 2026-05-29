@@ -42,8 +42,11 @@ class JobQueuePort(Protocol):
                 be JSON-serializable (RQ uses pickle by default but we
                 discipline to JSON-safe values for legibility).
             job_id: Optional deterministic job id. Defaults to a UUID;
-                pass e.g. ``f"resolve:{claim_id}"`` for natural keys so
-                ``cancel(job_id)`` is straightforward.
+                pass e.g. ``f"resolve-{claim_id}"`` for natural keys so
+                ``cancel(job_id)`` is straightforward. NOTE: RQ's
+                ``validate_job_id`` only accepts ``[A-Za-z0-9_-]`` —
+                use ``-`` (not ``:``) as the separator or the
+                downstream ``enqueue_at`` raises ``ValueError``.
 
         Returns:
             The resolved job id (the one passed in, or the generated UUID).

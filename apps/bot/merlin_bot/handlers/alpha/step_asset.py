@@ -22,6 +22,7 @@ from merlin_bot.handlers.alpha.states import (
     AlphaState,
 )
 from merlin_bot.handlers.alpha.step_preview import show_preview
+from merlin_bot.handlers.alpha.ui import render as ui_render
 
 _log = logging.getLogger("merlin.bot.handlers.alpha.asset")
 
@@ -29,25 +30,33 @@ CB_PREFIX = "alpha:asset:"
 
 
 async def prompt_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Ask the user which asset they mean."""
+    """Morph the preview card into the asset picker or text prompt.
+
+    If we already have candidates cached from the freeform LLM hop,
+    show them as buttons; otherwise prompt the user to type. The
+    text-prompt branch has no keyboard — the user's reply is the
+    input and ``receive_asset_query`` sends the candidate keyboard
+    as a new message.
+    """
     query = update.callback_query
     if query is not None:
         await query.answer()
-    if update.effective_chat is None:
-        return ConversationHandler.END
 
     candidates = context.user_data.get(USER_KEY_CANDIDATES, []) if context.user_data else []
     if candidates:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+        await ui_render(
+            update,
+            context,
             text="Which one did you mean?",
             reply_markup=_candidates_keyboard(candidates),
         )
         return AlphaState.PICK_ASSET
 
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+    await ui_render(
+        update,
+        context,
         text="Which asset? Type a name or ticker (BTC, ETH, RNDR, …).",
+        reply_markup=None,
     )
     return AlphaState.EDIT_ASSET
 

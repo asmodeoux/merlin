@@ -8,21 +8,24 @@ from merlin_infrastructure.queue.fake import FakeJobQueue
 
 
 def test_enqueue_at_records_call() -> None:
+    # Job id format is ``resolve-<uuid>`` — RQ's ``validate_job_id``
+    # rejects colons (Sprint-1 live regression). Pin the dash format
+    # here so the fake stays compatible with the real adapter.
     q = FakeJobQueue()
     when = datetime(2026, 6, 12, tzinfo=UTC)
     job_id = q.enqueue_at(
         when,
         "merlin_worker.jobs.resolve_outcome",
         "claim-1",
-        job_id="resolve:claim-1",
+        job_id="resolve-claim-1",
     )
-    assert job_id == "resolve:claim-1"
+    assert job_id == "resolve-claim-1"
     assert len(q.calls) == 1
     call = q.calls[0]
     assert call.when == when
     assert call.fn_path == "merlin_worker.jobs.resolve_outcome"
     assert call.args == ("claim-1",)
-    assert call.job_id == "resolve:claim-1"
+    assert call.job_id == "resolve-claim-1"
 
 
 def test_enqueue_records_immediate_call_without_when() -> None:

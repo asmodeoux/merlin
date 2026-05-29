@@ -13,6 +13,7 @@ from logging.config import fileConfig
 from typing import TYPE_CHECKING
 
 from alembic import context
+from merlin_infrastructure.db.models import Base
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -33,9 +34,7 @@ if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
 
-# Sprint 1: replace with `from merlin_infrastructure.db.models import Base`
-#           target_metadata = Base.metadata
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:

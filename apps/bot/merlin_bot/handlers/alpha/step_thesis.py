@@ -13,18 +13,24 @@ from merlin_bot.handlers.alpha.states import (
     AlphaState,
 )
 from merlin_bot.handlers.alpha.step_preview import show_preview
+from merlin_bot.handlers.alpha.ui import render as ui_render
 
 
 async def prompt_thesis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Ask the user for their thesis."""
+    """Morph the preview card into a text-input prompt.
+
+    No keyboard on this message — the user's reply is the text input;
+    after ``receive_thesis`` runs, a fresh preview card is sent (we
+    can't edit-in-place once the user has interleaved a text reply).
+    """
     query = update.callback_query
     if query is not None:
         await query.answer()
-    if update.effective_chat is None:
-        return ConversationHandler.END
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+    await ui_render(
+        update,
+        context,
         text="In your own words — what's the call?",
+        reply_markup=None,
     )
     return AlphaState.EDIT_THESIS
 

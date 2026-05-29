@@ -14,20 +14,20 @@ from merlin_bot.handlers.alpha.states import (
     AlphaState,
 )
 from merlin_bot.handlers.alpha.step_preview import show_preview
+from merlin_bot.handlers.alpha.ui import render as ui_render
 
 CB_LONG = "alpha:dir:long"
 CB_SHORT = "alpha:dir:short"
 
 
 async def prompt_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show the long/short buttons."""
+    """Morph the preview card into the long/short picker."""
     query = update.callback_query
     if query is not None:
         await query.answer()
-    if update.effective_chat is None:
-        return ConversationHandler.END
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+    await ui_render(
+        update,
+        context,
         text="Which way?",
         reply_markup=InlineKeyboardMarkup(
             [
