@@ -62,3 +62,34 @@ class CreateInviteResponse(BaseModel):
 
     code: str = Field(..., min_length=8, max_length=64)
     expires_at: datetime
+
+
+class RevokeInviteRequest(BaseModel):
+    """Body of ``POST /invites/revoke`` — admin invalidates an un-redeemed code.
+
+    Admin-only. The route checks ``tg_user_id`` against the API's
+    admin allowlist and 403s non-admins. ``code`` is the exact value
+    the bot returned from ``POST /invites``.
+    """
+
+    code: str = Field(..., min_length=1, max_length=64)
+    tg_user_id: int = Field(
+        ...,
+        description=(
+            "Telegram ID of the admin revoking the invite. Checked "
+            "against the API's admin allowlist."
+        ),
+    )
+
+
+class RevokeInviteResponse(BaseModel):
+    """Response: the code that was revoked + the timestamp it was killed.
+
+    Returning the code back lets the bot echo the revocation
+    confirmation without remembering what the admin typed. ``revoked_at``
+    is the server's wall-clock time at the moment of the UPDATE so the
+    admin sees the actual recorded value, not an approximation.
+    """
+
+    code: str = Field(..., min_length=1, max_length=64)
+    revoked_at: datetime

@@ -120,3 +120,33 @@ class InviteRepository(InviteRepositoryPort):
         # UPDATE/DELETE/INSERT) but not on the parent ``Result``; the
         # mypy plugin can't narrow that. The runtime type is fine.
         return result.rowcount == 1  # type: ignore[attr-defined]
+
+    async def revoke_by_code(
+        self,
+        *,
+        code: str,
+        revoked_at: datetime,
+    ) -> bool:
+        """Atomically revoke an un-redeemed, un-revoked invite by code.
+
+        ``UPDATE ... WHERE code=:code AND redeemed_at IS NULL AND
+        revoked_at IS NULL`` — same shape as ``mark_redeemed`` so the
+        atomicity guarantees match. Returns True on exactly-one
+        affected row; False if the code is unknown, already redeemed,
+        or already revoked.
+
+        Note: expired-but-unconsumed codes are still revokable here on
+        purpose — a leaked code is worth killing the moment we learn
+        about it, not on its natural expiry.
+        """
+        stmt = (
+            update(Invite)
+            .where(
+                Invite.code == code,
+                Invite.redeemed_at.is_(None),
+                Invite.revoked_at.is_(None),
+            )
+            .values(revoked_at=revoked_at)
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount == 1  # type: ignore[attr-defined]

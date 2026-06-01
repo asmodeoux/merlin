@@ -30,6 +30,8 @@ from merlin_core.contracts.invites import (
     CreateInviteResponse,
     RedeemInviteRequest,
     RedeemInviteResponse,
+    RevokeInviteRequest,
+    RevokeInviteResponse,
 )
 from merlin_core.contracts.me import UpdateMeRequest
 from merlin_core.contracts.sources import (
@@ -56,6 +58,8 @@ __all__ = [
     "RedeemInviteRequest",
     "RedeemInviteResponse",
     "ResolveAssetRequest",
+    "RevokeInviteRequest",
+    "RevokeInviteResponse",
     "SubmitClaimRequest",
     "UpdateMeRequest",
 ]

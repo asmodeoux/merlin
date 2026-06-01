@@ -42,6 +42,10 @@ dev = [
     "syrupy>=4.7",
     "watchdog>=6",  # `watchmedo auto-restart` for dev hot reload
     "debugpy>=1.8",
+    # fakeredis backs the RedisPersistence unit tests so they don't
+    # require a live Redis (the integration suite still uses the real
+    # service in docker-compose.test.yml).
+    "fakeredis>=2.26",
 ]
 
 [tool.hatch.build.targets.wheel]

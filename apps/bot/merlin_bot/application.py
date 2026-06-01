@@ -94,7 +94,7 @@ def build_application(settings: Settings) -> Application:
     # message starts with ``/``. ``/help`` / ``/invite`` / ``/me`` /
     # ``/board`` are stateless. Onboarding and ``/alpha``
     # (ConversationHandlers) follow.
-    from merlin_bot.handlers.admin import build_invite_handler
+    from merlin_bot.handlers.admin import build_invite_handler, build_revoke_handler
     from merlin_bot.handlers.alpha import build_handler as build_alpha_handler
     from merlin_bot.handlers.board import build_handler as build_board_handler
     from merlin_bot.handlers.help import build_handler as build_help_handler
@@ -103,6 +103,7 @@ def build_application(settings: Settings) -> Application:
 
     application.add_handler(build_help_handler())
     application.add_handler(build_invite_handler())
+    application.add_handler(build_revoke_handler())
     application.add_handler(build_me_handler())
     application.add_handler(build_board_handler())
     application.add_handler(build_start_handler())

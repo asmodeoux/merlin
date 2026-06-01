@@ -10,7 +10,9 @@ Per-resource methods:
 - ``draft_claim(text)`` — Q-028 freeform LLM extraction (stateless).
 - ``submit_claim(...)``, ``get_claim(claim_id)`` — atomic commit + inspect.
 - ``get_board(window)``, ``get_me()``, ``update_me(display_name)``.
-- ``redeem_invite(code, tg_user_id, tg_handle)``.
+- ``redeem_invite(code, tg_user_id, tg_handle)``,
+  ``create_invite(tg_user_id, expires_in_days)``,
+  ``revoke_invite(code, tg_user_id)``.
 - ``search_assets(query)``, ``resolve_asset(coingecko_id)`` — backs the
   bot's `/alpha` asset step (Q-027 lazy asset resolution).
 """
@@ -136,6 +138,26 @@ class MerlinClient:
             json={
                 "tg_user_id": tg_user_id,
                 "expires_in_days": expires_in_days,
+            },
+        )
+
+    async def revoke_invite(
+        self,
+        *,
+        code: str,
+        tg_user_id: int,
+    ) -> dict[str, Any]:
+        """``POST /invites/revoke`` — admin-only invite invalidation.
+
+        Returns ``{code, revoked_at}`` on success. 403s if ``tg_user_id``
+        isn't in the API's admin allowlist; 404s if the code is unknown,
+        already redeemed, or already revoked.
+        """
+        return await self._post(
+            "/invites/revoke",
+            json={
+                "code": code,
+                "tg_user_id": tg_user_id,
             },
         )
 

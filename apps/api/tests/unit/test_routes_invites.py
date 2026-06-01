@@ -40,6 +40,7 @@ NON_ADMIN_ID = 999999
 class _FakeInviteRepo:
     invites: dict[str, InviteRecord] = field(default_factory=dict)
     redeem_calls: list[tuple[UUID, str]] = field(default_factory=list)
+    revoke_calls: list[str] = field(default_factory=list)
 
     async def get_redeemable_by_code(self, code: str) -> InviteRecord | None:
         rec = self.invites.get(code)
@@ -91,6 +92,23 @@ class _FakeInviteRepo:
                 )
                 return True
         return False
+
+    async def revoke_by_code(self, *, code: str, revoked_at: datetime) -> bool:
+        self.revoke_calls.append(code)
+        rec = self.invites.get(code)
+        if rec is None or not rec.is_redeemable:
+            return False
+        self.invites[code] = InviteRecord(
+            id=rec.id,
+            code=rec.code,
+            created_by_source_id=rec.created_by_source_id,
+            created_at=rec.created_at,
+            expires_at=rec.expires_at,
+            redeemed_at=rec.redeemed_at,
+            redeemed_by_source_id=rec.redeemed_by_source_id,
+            revoked_at=revoked_at,
+        )
+        return True
 
 
 @dataclass
@@ -346,3 +364,138 @@ async def test_redeem_invite_idempotent_for_same_tg_user(
     assert response.json()["display_name_prompt"] is False
     # No new invite consumed; no commit needed.
     assert fake_session.invites.redeem_calls == []
+
+
+# ---------------------------------------------------------------------------
+# POST /invites/revoke — admin invalidation.
+# ---------------------------------------------------------------------------
+
+
+async def test_revoke_invite_admin_succeeds_and_marks_revoked(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Happy path: admin revokes a live code; row is marked revoked."""
+    fake_session.invites.invites["LIVE_CODE"] = InviteRecord(
+        id=uuid4(),
+        code="LIVE_CODE",
+        created_by_source_id=None,
+        created_at=datetime.now(tz=UTC),
+        expires_at=datetime.now(tz=UTC) + timedelta(days=14),
+        redeemed_at=None,
+        redeemed_by_source_id=None,
+        revoked_at=None,
+    )
+
+    response = await client.post(
+        "/invites/revoke",
+        json={"code": "LIVE_CODE", "tg_user_id": ADMIN_ID},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["code"] == "LIVE_CODE"
+    assert body.get("revoked_at")
+    assert fake_session.invites.invites["LIVE_CODE"].revoked_at is not None
+    assert fake_session.committed
+    # The route used the revoke path, not the redeem path.
+    assert fake_session.invites.revoke_calls == ["LIVE_CODE"]
+
+
+async def test_revoke_invite_non_admin_403s(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Non-admins can't reach the revoke surface."""
+    fake_session.invites.invites["LIVE_CODE"] = InviteRecord(
+        id=uuid4(),
+        code="LIVE_CODE",
+        created_by_source_id=None,
+        created_at=datetime.now(tz=UTC),
+        expires_at=datetime.now(tz=UTC) + timedelta(days=14),
+        redeemed_at=None,
+        redeemed_by_source_id=None,
+        revoked_at=None,
+    )
+
+    response = await client.post(
+        "/invites/revoke",
+        json={"code": "LIVE_CODE", "tg_user_id": NON_ADMIN_ID},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not an admin"
+    # The repo's revoke path was never touched.
+    assert fake_session.invites.revoke_calls == []
+    assert fake_session.invites.invites["LIVE_CODE"].revoked_at is None
+
+
+async def test_revoke_invite_unknown_code_404s(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    response = await client.post(
+        "/invites/revoke",
+        json={"code": "DOES_NOT_EXIST", "tg_user_id": ADMIN_ID},
+        headers=auth_headers,
+    )
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+async def test_revoke_invite_already_redeemed_404s(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """An already-consumed code can't be revoked — the redemption
+    already happened. Same 404 status as unknown-code (the three
+    terminal states all collapse to ``no longer revocable``)."""
+    fake_session.invites.invites["DEAD_CODE"] = InviteRecord(
+        id=uuid4(),
+        code="DEAD_CODE",
+        created_by_source_id=None,
+        created_at=datetime.now(tz=UTC),
+        expires_at=datetime.now(tz=UTC) + timedelta(days=14),
+        redeemed_at=datetime.now(tz=UTC),
+        redeemed_by_source_id="tg:somebody",
+        revoked_at=None,
+    )
+
+    response = await client.post(
+        "/invites/revoke",
+        json={"code": "DEAD_CODE", "tg_user_id": ADMIN_ID},
+        headers=auth_headers,
+    )
+    assert response.status_code == 404
+
+
+async def test_revoke_invite_already_revoked_404s(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Revoking an already-revoked code is a no-op error from the
+    admin's perspective — there's nothing to do, but it's not a
+    fresh success either."""
+    fake_session.invites.invites["KILLED_CODE"] = InviteRecord(
+        id=uuid4(),
+        code="KILLED_CODE",
+        created_by_source_id=None,
+        created_at=datetime.now(tz=UTC),
+        expires_at=datetime.now(tz=UTC) + timedelta(days=14),
+        redeemed_at=None,
+        redeemed_by_source_id=None,
+        revoked_at=datetime.now(tz=UTC),
+    )
+
+    response = await client.post(
+        "/invites/revoke",
+        json={"code": "KILLED_CODE", "tg_user_id": ADMIN_ID},
+        headers=auth_headers,
+    )
+    assert response.status_code == 404

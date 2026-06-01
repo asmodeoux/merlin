@@ -44,7 +44,10 @@ PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
 # Admin-only additions — appended to PUBLIC_COMMANDS for the admin's
 # chat scope so admins see the full list, public users see the trimmed
 # list.
-ADMIN_EXTRA_COMMANDS: tuple[BotCommand, ...] = (BotCommand("invite", "Issue a new invite code"),)
+ADMIN_EXTRA_COMMANDS: tuple[BotCommand, ...] = (
+    BotCommand("invite", "Issue a new invite code"),
+    BotCommand("revoke", "Revoke an un-redeemed invite"),
+)
 
 
 async def register_commands(

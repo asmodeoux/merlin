@@ -29,6 +29,8 @@ from merlin_core.contracts import (
     CreateInviteResponse,
     RedeemInviteRequest,
     RedeemInviteResponse,
+    RevokeInviteRequest,
+    RevokeInviteResponse,
 )
 from merlin_core.domain.source_id import make_source_id
 
@@ -123,8 +125,15 @@ async def redeem_invite(
         redeemed_at=datetime.now(tz=UTC),
     )
     if not claimed:
-        # Lost the race to another redeemer. Roll back the source we
-        # just inserted — the dependency's exception handler does this.
+        # Lost the race to another redeemer. Explicitly roll back the
+        # source + identity INSERTs we just did — the registered
+        # exception handler turns the raise below into a Response
+        # *before* the ``yield_session`` dep's except-clause sees the
+        # exception, so the dep-level rollback never fires on this
+        # path. Without this explicit call we'd leak a half-onboarded
+        # source row (an integration test in test_invite_flow.py pins
+        # this).
+        await session.rollback()
         raise InviteAlreadyRedeemedError(
             f"invite {invite.code!r} consumed by another redeemer",
         )
@@ -200,3 +209,53 @@ async def _source_exists(session: AsyncSession, source_id: str) -> bool:
 
     row = await session.get(Source, source_id)
     return row is not None
+
+
+@router.post(
+    "/invites/revoke",
+    response_model=RevokeInviteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Revoke an un-redeemed invite code (admin-only).",
+    description=(
+        "Marks the invite as revoked so future ``POST /invites/redeem`` "
+        "calls 404 against it. Atomic — two simultaneous revoke calls "
+        "for the same code can never both succeed. Returns 404 if the "
+        "code is unknown, already redeemed, or already revoked (the "
+        "three indistinguishable terminal states from a revoke-caller's "
+        "perspective). Caller must be a Telegram admin "
+        "(``TELEGRAM_ADMIN_CHAT_IDS``); non-admin callers 403."
+    ),
+)
+async def revoke_invite(
+    body: RevokeInviteRequest,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> RevokeInviteResponse:
+    """Atomically revoke an un-redeemed invite by code."""
+    from merlin_infrastructure.db.repositories import InviteRepository
+
+    if body.tg_user_id not in settings.telegram_admin_chat_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="not an admin",
+        )
+
+    invite_repo = InviteRepository(session)
+    revoked_at = datetime.now(tz=UTC)
+    claimed = await invite_repo.revoke_by_code(
+        code=body.code,
+        revoked_at=revoked_at,
+    )
+    if not claimed:
+        # Unknown / already-redeemed / already-revoked all collapse to
+        # the same 404 — from the admin's point of view, the code is
+        # no longer revokable for any of these reasons and the
+        # distinction doesn't change the next action ("try a different
+        # code" or "this code is already dead, you're done").
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="invite code not found or already consumed",
+        )
+
+    await session.commit()
+    return RevokeInviteResponse(code=body.code, revoked_at=revoked_at)

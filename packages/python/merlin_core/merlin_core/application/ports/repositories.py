@@ -265,6 +265,27 @@ class InviteRepositoryPort(Protocol):
         """
         ...
 
+    async def revoke_by_code(
+        self,
+        *,
+        code: str,
+        revoked_at: datetime,
+    ) -> bool:
+        """Atomically revoke an unredeemed invite by code.
+
+        Implemented as ``UPDATE ... WHERE code = :code AND redeemed_at
+        IS NULL AND revoked_at IS NULL`` and returns True iff exactly
+        one row was updated. False covers all three "code is not in a
+        revokable state" cases — unknown code, already redeemed,
+        already revoked — and the application layer translates that
+        to the relevant 404 / 409.
+
+        Expired codes are still revokable on purpose: a leaked
+        soon-to-expire code is worth killing immediately rather than
+        waiting on the clock.
+        """
+        ...
+
 
 class ClaimRepositoryPort(Protocol):
     """Persist + read ``claims`` rows.

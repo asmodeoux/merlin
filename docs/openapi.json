@@ -808,6 +808,50 @@
         "title": "ResolvedCallEntry",
         "type": "object"
       },
+      "RevokeInviteRequest": {
+        "description": "Body of ``POST /invites/revoke`` \u2014 admin invalidates an un-redeemed code.\n\nAdmin-only. The route checks ``tg_user_id`` against the API's\nadmin allowlist and 403s non-admins. ``code`` is the exact value\nthe bot returned from ``POST /invites``.",
+        "properties": {
+          "code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "tg_user_id": {
+            "description": "Telegram ID of the admin revoking the invite. Checked against the API's admin allowlist.",
+            "title": "Tg User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "tg_user_id"
+        ],
+        "title": "RevokeInviteRequest",
+        "type": "object"
+      },
+      "RevokeInviteResponse": {
+        "description": "Response: the code that was revoked + the timestamp it was killed.\n\nReturning the code back lets the bot echo the revocation\nconfirmation without remembering what the admin typed. ``revoked_at``\nis the server's wall-clock time at the moment of the UPDATE so the\nadmin sees the actual recorded value, not an approximation.",
+        "properties": {
+          "code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "title": "Revoked At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "revoked_at"
+        ],
+        "title": "RevokeInviteResponse",
+        "type": "object"
+      },
       "SubmitClaimRequest": {
         "description": "Body of ``POST /claims`` \u2014 atomic commit.\n\nThe bot composes this from the preview state (LLM-prefilled fields,\npossibly edited by the user, plus the final asset selection).\n\n``tg_user_id`` rides the body for the same reason ``PATCH /me``\nneeds it: the HMAC bearer authenticates the *service*, not the\nper-user identity, so the API has to be told which source is\nmaking the call. Resolved server-side via the\n``source_identity`` table \u2014 the raw TG id never leaves this\nboundary and never ends up on the ``claims`` row itself.",
         "properties": {
@@ -1455,6 +1499,66 @@
           }
         },
         "summary": "Redeem an invite code (atomic \u2014 INSERT sources + UPDATE invites).",
+        "tags": [
+          "invites"
+        ]
+      }
+    },
+    "/invites/revoke": {
+      "post": {
+        "description": "Marks the invite as revoked so future ``POST /invites/redeem`` calls 404 against it. Atomic \u2014 two simultaneous revoke calls for the same code can never both succeed. Returns 404 if the code is unknown, already redeemed, or already revoked (the three indistinguishable terminal states from a revoke-caller's perspective). Caller must be a Telegram admin (``TELEGRAM_ADMIN_CHAT_IDS``); non-admin callers 403.",
+        "operationId": "revoke_invite_invites_revoke_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeInviteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeInviteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke an un-redeemed invite code (admin-only).",
         "tags": [
           "invites"
         ]

@@ -212,7 +212,14 @@ testpaths = [
 ]
 filterwarnings = [
     "error",
-    # Allowed third-party deprecations land here when they appear.
+    # testcontainers 4.x is mid-migration from the @wait_container_is_ready
+    # decorator to structured wait strategies and emits a DeprecationWarning
+    # at *their own* import time (the warning fires inside their module body,
+    # not in our code). We don't use the deprecated API ourselves; drop this
+    # filter when testcontainers >= 5.x lands. Message regex used because
+    # ``stacklevel=2`` attributes the warning to the testcontainers caller
+    # frame, which moves around between minor releases.
+    "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning",
 ]
 markers = [
     "fast: pre-commit fast subset (no I/O)",
