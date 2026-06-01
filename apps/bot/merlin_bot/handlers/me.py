@@ -80,10 +80,14 @@ def _render_me(payload: dict[str, Any]) -> str:
         Accuracy: tracking your first resolutions
 
         Open calls:
-          ETH long — 2 weeks, resolves 2026-06-12 16:35 UTC
+          ETH long — 2 weeks, entry $2,438.12, resolves 2026-06-12 16:35 UTC
           BTC long — 1 month, resolves 2026-06-29 09:10 UTC
 
-        /alpha to add another, /board for the leaderboard.
+    The entry-price chunk ("entry $X.YY") is shown only when the
+    server has a captured snapshot (``entry_price_usd != None``). On
+    legacy rows or rows submitted while CoinGecko was down we just
+    omit the chunk — the bot never invents a placeholder, never
+    shows "$0.00".
 
     Zero-open empty-state collapses the list section to a single
     "No open calls yet" line so the message stays short.
@@ -108,12 +112,48 @@ def _render_me(payload: dict[str, Any]) -> str:
 
 
 def _render_open_call(call: dict[str, Any]) -> str:
-    """One open-call bullet line."""
+    """One open-call bullet line.
+
+    Inline shape: ``ASSET direction — horizon, [entry $X.YY,] resolves <utc>``.
+    The entry-price chunk only appears when the server captured a
+    snapshot at submit time — see ``_format_entry_price`` for the
+    adaptive decimal logic.
+    """
     asset = str(call.get("asset_symbol") or "?").upper()
     direction = _direction_human(str(call.get("direction") or ""))
     horizon = _horizon_human(str(call.get("horizon") or ""))
     resolves_at = _utc_datetime(str(call.get("resolves_at") or ""))
-    return f"  {asset} {direction} — {horizon}, resolves {resolves_at}"
+    entry_chunk = _format_entry_price(call.get("entry_price_usd"))
+    middle = f"{horizon}, {entry_chunk}resolves {resolves_at}"
+    return f"  {asset} {direction} — {middle}"
+
+
+def _format_entry_price(price: object) -> str:
+    """Return ``"entry $X.YY, "`` when the snapshot is present, else ``""``.
+
+    Returns the trailing ``", "`` (or empty string) so the caller can
+    inline this directly without conditional separators. Keeps the
+    bullet-line composition declarative.
+
+    Adaptive decimals: 2dp for >= $1 (BTC / ETH territory), 4dp for
+    $0.01 - $1 (mid-cap alts), 8dp below (sub-cent memecoins). The
+    threshold matches ``step_preview._format_usd`` — same rules on
+    receipt + ``/me`` so a user reading their open list sees the
+    identical number they saw at Confirm time.
+    """
+    if price is None:
+        return ""
+    try:
+        amount = float(price)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    if amount >= 1.0:
+        rendered = f"${amount:,.2f}"
+    elif amount >= 0.01:
+        rendered = f"${amount:.4f}"
+    else:
+        rendered = f"${amount:.8f}"
+    return f"entry {rendered}, "
 
 
 def _accuracy_line(accuracy_pct: float | None, resolved_total: int) -> str:

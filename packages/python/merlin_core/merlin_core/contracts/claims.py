@@ -135,6 +135,12 @@ class ClaimResponse(BaseModel):
     thesis_text: str
     submitted_at: datetime
     resolves_at: datetime
+    # Best-effort entry-price snapshot in USD at ``submitted_at``.
+    # ``None`` when CoinGecko was unreachable at submit (we never
+    # block a bet on market data) or for legacy rows that predate
+    # the column. The bot renders the price line iff this is set —
+    # an absent price never invents a placeholder.
+    price_usd_at_submit: float | None = None
     extracted_fields: ExtractedFieldsDTO
     # parse_metadata included for the admin / debug path; the bot
     # ignores it for normal display.

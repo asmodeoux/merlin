@@ -55,6 +55,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    Double,
     ForeignKey,
     Index,
     Integer,
@@ -279,6 +280,14 @@ class Claim(Base):
     resolves_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
+    )
+    # Best-effort entry-price snapshot captured by ``POST /claims`` via
+    # ``MarketDataPort.get_price_at(submitted_at)``. NULL when CoinGecko
+    # was unavailable at submit (we never block a bet on market data)
+    # and for legacy rows that predate this column.
+    price_usd_at_submit: Mapped[float | None] = mapped_column(
+        Double(),
+        nullable=True,
     )
     parsed_via: Mapped[str] = mapped_column(
         String(16),

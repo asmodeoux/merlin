@@ -67,7 +67,12 @@ class _FakeContext:
 
 def test_render_me_with_open_calls_lists_one_per_line() -> None:
     """Each open call lands on its own bullet line; the message
-    follows the four-section layout (header / headline / body / cta)."""
+    follows the four-section layout (header / headline / body / cta).
+
+    Entry-price chunk renders inline when the server captured one
+    (ETH below); omitted when ``entry_price_usd`` is ``None`` (BTC
+    below — simulates a row submitted while CoinGecko was down).
+    """
     payload: dict[str, Any] = {
         "display_name": "Yuri",
         "calls_open": [
@@ -77,6 +82,7 @@ def test_render_me_with_open_calls_lists_one_per_line() -> None:
                 "direction": "long",
                 "horizon": "14d",
                 "resolves_at": "2026-06-12T16:35:00Z",
+                "entry_price_usd": 2438.12,
             },
             {
                 "claim_id": "00000000-0000-0000-0000-000000000002",
@@ -84,6 +90,7 @@ def test_render_me_with_open_calls_lists_one_per_line() -> None:
                 "direction": "short",
                 "horizon": "7d",
                 "resolves_at": "2026-06-05T12:00:00Z",
+                "entry_price_usd": None,  # legacy / CoinGecko-down row
             },
         ],
         "calls_resolved_total": 0,
@@ -96,11 +103,77 @@ def test_render_me_with_open_calls_lists_one_per_line() -> None:
     assert "Accuracy: tracking your first resolutions" in text
     # Bullets one per line, with the asset symbol up-cased and the
     # horizon translated to human words.
-    assert "ETH long — 2 weeks, resolves 2026-06-12 16:35 UTC" in text
+    assert "ETH long — 2 weeks, entry $2,438.12, resolves 2026-06-12 16:35 UTC" in text, text
+    # BTC row has no entry-price chunk — server's None means we omit
+    # the "entry $X" segment entirely (never invent a placeholder).
     assert "BTC short — 1 week, resolves 2026-06-05 12:00 UTC" in text
+    assert "BTC short — 1 week, entry" not in text
     # Call to action at the bottom.
     assert "/alpha" in text
     assert "/board" in text
+
+
+def test_render_open_call_entry_price_matches_receipt_format_per_bucket() -> None:
+    """The /me handler and the /alpha receipt both render an entry
+    price; they MUST produce the same number for the same input so
+    the user sees an identical figure on the Saved card and on /me.
+
+    Bucket thresholds (>=$1 -> 2dp, $0.01 - $1 -> 4dp, <$0.01 -> 8dp) are
+    duplicated between ``handlers/me._format_entry_price`` and
+    ``alpha.step_preview._format_usd``. This test cross-validates
+    the two implementations against the same inputs — if one drifts
+    (e.g. someone bumps the threshold on the receipt side only) the
+    user would see "$2,438.12" on Saved and a differently-formatted
+    "$2438.12" on /me. That asymmetry would be a silent UX bug.
+    """
+    from merlin_bot.handlers.alpha import step_preview as sp
+    from merlin_bot.handlers.me import _format_entry_price
+
+    samples = [
+        2438.12,  # >= $1 — thousands sep + 2dp
+        12345.6789,  # >= $1, larger, ensures 2dp truncation matches
+        0.4231,  # mid-range — 4dp
+        0.0123,  # right above the 4dp threshold
+        0.000123,  # sub-cent — 8dp
+    ]
+    for price in samples:
+        receipt_dollars = sp._format_usd(price)
+        me_chunk = _format_entry_price(price)
+        # ``_format_entry_price`` wraps the formatted dollar amount
+        # in "entry $X, ". Strip the affixes and compare the raw
+        # dollar token byte-for-byte.
+        assert me_chunk.startswith("entry "), me_chunk
+        assert me_chunk.endswith(", "), me_chunk
+        me_dollars = me_chunk.removeprefix("entry ").removesuffix(", ")
+        assert me_dollars == receipt_dollars, (
+            f"price={price!r}: /me renders {me_dollars!r} but the "
+            f"receipt renders {receipt_dollars!r}; the two adaptive-"
+            "decimal helpers have drifted apart."
+        )
+
+
+def test_render_me_omits_entry_price_when_field_absent() -> None:
+    """Older API payloads / legacy rows have no ``entry_price_usd``
+    key at all — the renderer must treat that as "no snapshot" and
+    omit the inline chunk, same as an explicit ``None``."""
+    payload = {
+        "display_name": "Yuri",
+        "calls_open": [
+            {
+                "claim_id": "x",
+                "asset_symbol": "ETH",
+                "direction": "long",
+                "horizon": "14d",
+                "resolves_at": "2026-06-12T16:35:00Z",
+                # no entry_price_usd key at all
+            },
+        ],
+        "calls_resolved_total": 0,
+        "accuracy_pct": None,
+    }
+    text = _render_me(payload)
+    assert "ETH long — 2 weeks, resolves 2026-06-12 16:35 UTC" in text
+    assert "entry" not in text.lower()
 
 
 def test_render_me_empty_state_collapses_the_list_section() -> None:

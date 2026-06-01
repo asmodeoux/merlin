@@ -347,6 +347,17 @@
               }
             ]
           },
+          "price_usd_at_submit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Usd At Submit"
+          },
           "resolves_at": {
             "format": "date-time",
             "title": "Resolves At",
@@ -560,7 +571,7 @@
         "type": "object"
       },
       "OpenCallEntry": {
-        "description": "One open call on ``/me`` \u2014 what the user is waiting on.",
+        "description": "One open call on ``/me`` \u2014 what the user is waiting on.\n\n``entry_price_usd`` is the snapshot captured when the claim was\nsubmitted (``MarketDataPort.get_price_at(submitted_at)``).\n``None`` when CoinGecko was unavailable at submit time (we\nnever block a bet on market data) or for legacy rows that\npredate the column. The bot renders the entry-price line iff\nthis is set \u2014 never invents a placeholder.",
         "properties": {
           "asset_symbol": {
             "title": "Asset Symbol",
@@ -574,6 +585,17 @@
           "direction": {
             "title": "Direction",
             "type": "string"
+          },
+          "entry_price_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Price Usd"
           },
           "horizon": {
             "title": "Horizon",

@@ -14,6 +14,7 @@ thesis, resolves date, outcome if any. No internal scoring fields.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -41,6 +42,8 @@ from merlin_api.deps import Ports, get_ports, get_session
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+_log = logging.getLogger("merlin.api.routes.claims")
 
 router = APIRouter(tags=["claims"])
 
@@ -176,6 +179,23 @@ async def submit_claim(
     resolves_at = submitted_at + timedelta(seconds=HORIZON_SECONDS[horizon_key])
     claim_id = uuid4()
 
+    # Best-effort entry-price snapshot. The user needs the price they
+    # were betting against to sanity-check the call ("did I get the
+    # right asset?", "was the price already weird?") and to make the
+    # eventual outcome meaningful. We capture it once, here, and the
+    # column is canonical for the receipt + /me + downstream worker.
+    #
+    # Failure is non-fatal: market-data being down at submit time
+    # must NOT block the bet (same principle as the LLM-failure
+    # fallback — market data is UX acceleration, never a system
+    # dependency). On failure we log and persist NULL; the bot's
+    # renderer simply omits the entry-price line.
+    price_usd_at_submit = await _snapshot_entry_price(
+        ports=ports,
+        coingecko_id=body.coingecko_id,
+        submitted_at=submitted_at,
+    )
+
     # INSERT the claim row BEFORE enqueueing. If the enqueue fails we
     # rollback the row; if the row insert fails we never enqueue. The
     # opposite order (enqueue first, then INSERT) lands the worker on
@@ -196,6 +216,7 @@ async def submit_claim(
         submitted_at=submitted_at,
         resolves_at=resolves_at,
         parsed_via=body.parse_metadata.parsed_via,
+        price_usd_at_submit=price_usd_at_submit,
         # ``mode="json"`` serializes datetimes (notably
         # ``parse_metadata.extracted_at``) to ISO strings so the JSONB
         # column's default ``json.dumps`` doesn't choke. The plain
@@ -228,6 +249,7 @@ async def submit_claim(
         thesis_text=body.thesis_text,
         submitted_at=submitted_at,
         resolves_at=resolves_at,
+        price_usd_at_submit=price_usd_at_submit,
         extracted_fields=body.extracted_fields,
         parse_metadata=body.parse_metadata,
         outcome=None,
@@ -252,6 +274,42 @@ async def get_claim(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail="GET /claims/{id} is wired against the DB in Sprint 1.",
     )
+
+
+async def _snapshot_entry_price(
+    *,
+    ports: Ports,
+    coingecko_id: str,
+    submitted_at: datetime,
+) -> float | None:
+    """Capture the entry price snapshot for a claim at submit time.
+
+    Best-effort by design — a CoinGecko outage at submit time must
+    NOT block the bet (the same UX-acceleration-not-system-dependency
+    rule that governs the LLM fallback). On failure we log and
+    return ``None``; the column stays NULL and the bot's renderer
+    omits the entry-price line.
+
+    Uses ``MarketDataPort.get_price_at(submitted_at)`` rather than a
+    new "spot price" port method because (a) the existing 5-minute
+    bucket window is more than fine for ``now`` and (b) it keeps the
+    adapter surface narrow — the worker's resolution path already
+    uses the same call.
+    """
+    try:
+        point = await ports.market_data.get_price_at(coingecko_id, submitted_at)
+    except MarketDataError as e:
+        # Non-fatal — the bet still submits. The receipt + /me will
+        # render without an entry-price line. We surface the failure
+        # in the logs so an operator running ``make dev-logs`` during
+        # a CoinGecko incident sees the impact.
+        _log.warning(
+            "entry-price snapshot failed for %s at submit: %s; persisting NULL",
+            coingecko_id,
+            e,
+        )
+        return None
+    return float(point.price_usd)
 
 
 def _to_draft_response(

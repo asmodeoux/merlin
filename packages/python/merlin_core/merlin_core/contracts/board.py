@@ -37,13 +37,22 @@ class BoardResponse(BaseModel):
 
 
 class OpenCallEntry(BaseModel):
-    """One open call on ``/me`` — what the user is waiting on."""
+    """One open call on ``/me`` — what the user is waiting on.
+
+    ``entry_price_usd`` is the snapshot captured when the claim was
+    submitted (``MarketDataPort.get_price_at(submitted_at)``).
+    ``None`` when CoinGecko was unavailable at submit time (we
+    never block a bet on market data) or for legacy rows that
+    predate the column. The bot renders the entry-price line iff
+    this is set — never invents a placeholder.
+    """
 
     claim_id: UUID
     asset_symbol: str
     direction: str
     horizon: str
     resolves_at: datetime
+    entry_price_usd: float | None = None
 
 
 class ResolvedCallEntry(BaseModel):

@@ -158,7 +158,14 @@ def _seed_onboarded(session: _FakeSession, *, tg_user_id: int, source_id: str) -
 
 
 def _claim(*, claim_id: UUID, source_id: str, **overrides: Any) -> ClaimRecord:
-    """Build a ClaimRecord with sensible defaults."""
+    """Build a ClaimRecord with sensible defaults.
+
+    ``price_usd_at_submit`` defaults to ``None`` to match the
+    real-world shape of a row submitted while CoinGecko was
+    unreachable (or a legacy row predating the column). Tests
+    that pin the price-propagation contract override it via
+    ``**overrides``.
+    """
     defaults: dict[str, Any] = {
         "id": claim_id,
         "source_id": source_id,
@@ -173,6 +180,7 @@ def _claim(*, claim_id: UUID, source_id: str, **overrides: Any) -> ClaimRecord:
         "submitted_at": datetime.now(tz=UTC),
         "resolves_at": datetime.now(tz=UTC) + timedelta(days=14),
         "parsed_via": "freeform_llm",
+        "price_usd_at_submit": None,
         "extracted_fields": {},
         "parse_metadata": {},
     }
@@ -260,6 +268,72 @@ async def test_get_me_returns_open_calls_and_display_name(
     # Honest empty-state — never 0.0% accuracy when nothing has resolved.
     assert body["accuracy_pct"] is None
     assert body["rank"] is None
+
+
+async def test_get_me_open_call_propagates_entry_price(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """``OpenCallEntry.entry_price_usd`` must carry through from the
+    persisted ``ClaimRecord.price_usd_at_submit`` column to the wire
+    JSON. Without this, the bot's /me renderer has nothing to show
+    even when the API captured the snapshot at submit time.
+
+    Live-bug class: a missed field in the route's projection means
+    "did the column get filled?" and "does the user see it?" can
+    drift independently. This test pins they don't.
+    """
+    src_id = "tg:0000111122223333abcdabcd00001111"
+    _seed_onboarded(fake_session, tg_user_id=42, source_id=src_id)
+    claim_id = uuid4()
+    fake_session.claims.open_by_source[src_id] = [
+        _claim(
+            claim_id=claim_id,
+            source_id=src_id,
+            price_usd_at_submit=2438.12,
+        ),
+    ]
+
+    response = await client.get("/me", params={"tg_user_id": 42}, headers=auth_headers)
+    assert response.status_code == 200, response.text
+    open_call = response.json()["calls_open"][0]
+    assert open_call["entry_price_usd"] == pytest.approx(2438.12), (
+        "GET /me did not surface entry_price_usd from the claim row — "
+        "the bot's /me list will silently drop the entry-price chunk "
+        "for every claim, including ones the API captured at submit."
+    )
+
+
+async def test_get_me_open_call_entry_price_serialises_null_when_absent(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """A claim row with NULL ``price_usd_at_submit`` (legacy / CoinGecko
+    down at submit) must serialise as ``"entry_price_usd": null`` —
+    NOT a missing key, NOT a 0.0 placeholder. The bot's renderer
+    distinguishes "no snapshot" from "captured zero" and would render
+    "$0.00" if we lied about absence.
+    """
+    src_id = "tg:" + "b" * 32
+    _seed_onboarded(fake_session, tg_user_id=43, source_id=src_id)
+    fake_session.claims.open_by_source[src_id] = [
+        _claim(
+            claim_id=uuid4(),
+            source_id=src_id,
+            price_usd_at_submit=None,
+        ),
+    ]
+
+    response = await client.get("/me", params={"tg_user_id": 43}, headers=auth_headers)
+    assert response.status_code == 200, response.text
+    open_call = response.json()["calls_open"][0]
+    # The field MUST be present in the payload (so bot dicts can look
+    # it up without a KeyError) and explicitly null (so the renderer
+    # treats it as "no snapshot").
+    assert "entry_price_usd" in open_call
+    assert open_call["entry_price_usd"] is None
 
 
 async def test_get_me_empty_state(

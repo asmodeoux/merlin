@@ -108,6 +108,11 @@ class ClaimRecord:
     submitted_at: datetime
     resolves_at: datetime
     parsed_via: str
+    # Best-effort price-at-submit snapshot. ``None`` when CoinGecko
+    # was unreachable at submit time or for rows that predate the
+    # column. Read-side (``/me``, the receipt) renders the line iff
+    # this is set; never invents a placeholder.
+    price_usd_at_submit: float | None = None
     extracted_fields: dict[str, Any] = field(default_factory=dict)
     parse_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -324,8 +329,16 @@ class ClaimRepositoryPort(Protocol):
         parsed_via: str,
         extracted_fields: dict[str, Any],
         parse_metadata: dict[str, Any],
+        price_usd_at_submit: float | None = None,
     ) -> ClaimRecord:
-        """INSERT a new claim row. Flushes, does not commit."""
+        """INSERT a new claim row. Flushes, does not commit.
+
+        ``price_usd_at_submit`` is the best-effort entry-price snapshot
+        the API captures from CoinGecko at ``POST /claims`` time. The
+        default is ``None`` so existing callers and tests don't need a
+        synchronised update — pass it when you have it, omit when
+        market data was unavailable.
+        """
         ...
 
     async def list_open_by_source(self, source_id: str) -> list[ClaimRecord]:

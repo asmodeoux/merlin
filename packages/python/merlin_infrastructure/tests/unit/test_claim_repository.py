@@ -95,6 +95,81 @@ async def test_create_inserts_a_claim_row_with_passed_fields() -> None:
     assert record.direction == "long"
 
 
+async def test_create_persists_price_usd_at_submit() -> None:
+    """``create`` must forward ``price_usd_at_submit`` to the ORM row
+    and project it back through the returned ``ClaimRecord``.
+
+    The /alpha receipt + /me both read this value off the row; if
+    the repo silently dropped it, every freshly-submitted claim
+    would render without an entry-price line even when the API
+    captured the snapshot. This pins the write-path contract.
+    """
+    sess = _fake_session()
+    repo = ClaimRepository(sess)
+
+    submitted_at = datetime.now(tz=UTC)
+    record = await repo.create(
+        claim_id=uuid4(),
+        source_id="tg:" + "a" * 32,
+        asset_coingecko_id="ethereum",
+        asset_symbol="ETH",
+        asset_name="Ethereum",
+        direction="long",
+        horizon="14d",
+        conviction="strong",
+        thesis_text="Vitalik staking news",
+        asset_query="ETH",
+        submitted_at=submitted_at,
+        resolves_at=submitted_at + timedelta(days=14),
+        parsed_via="freeform_llm",
+        extracted_fields={},
+        parse_metadata={"parsed_via": "freeform_llm"},
+        price_usd_at_submit=2438.12,
+    )
+    added = sess.add.call_args[0][0]
+    assert added.price_usd_at_submit == pytest.approx(2438.12), (
+        "ClaimRepository.create did not put price_usd_at_submit on "
+        "the ORM Claim row — the column writes NULL even when the "
+        "API captured a snapshot."
+    )
+    # And the returned ClaimRecord round-trips the value back to the
+    # route (which echoes it on ClaimResponse for the bot's receipt).
+    assert record.price_usd_at_submit == pytest.approx(2438.12)
+
+
+async def test_create_defaults_price_usd_at_submit_to_none() -> None:
+    """Existing call sites that don't pass ``price_usd_at_submit``
+    (the form-flow path, legacy tests) must still work — the kwarg
+    defaults to ``None``, persists NULL, and the projected record
+    carries ``None`` cleanly through to the wire payload.
+    """
+    sess = _fake_session()
+    repo = ClaimRepository(sess)
+
+    submitted_at = datetime.now(tz=UTC)
+    record = await repo.create(
+        claim_id=uuid4(),
+        source_id="tg:" + "c" * 32,
+        asset_coingecko_id="bitcoin",
+        asset_symbol="BTC",
+        asset_name="Bitcoin",
+        direction="short",
+        horizon="7d",
+        conviction="medium",
+        thesis_text="...",
+        asset_query=None,
+        submitted_at=submitted_at,
+        resolves_at=submitted_at + timedelta(days=7),
+        parsed_via="form",
+        extracted_fields={},
+        parse_metadata={"parsed_via": "form"},
+        # price_usd_at_submit deliberately omitted
+    )
+    added = sess.add.call_args[0][0]
+    assert added.price_usd_at_submit is None
+    assert record.price_usd_at_submit is None
+
+
 async def test_create_does_not_commit() -> None:
     """The repo flushes but never commits — the route holds the unit
     of work boundary so it can co-commit with the enqueue side-effect."""
@@ -130,55 +205,63 @@ async def _scalars_returning(rows: list[Any]) -> MagicMock:
     return result
 
 
+def _fake_claim_row(*, asset_symbol: str, resolves_at: datetime, **overrides: Any) -> MagicMock:
+    """Build a MagicMock shaped like a SQLAlchemy-returned ``Claim``.
+
+    Every column the repository's ``_to_record`` projection touches
+    is set explicitly so MagicMock can't silently auto-attribute a
+    non-``None`` Mock for a missing assignment — exactly the failure
+    mode a forgotten line in ``_to_record`` would cause.
+    """
+    now = datetime.now(tz=UTC)
+    row = MagicMock(spec=Claim)
+    row.id = uuid4()
+    row.source_id = "tg:abc"
+    row.asset_coingecko_id = "x"
+    row.asset_symbol = asset_symbol
+    row.asset_name = asset_symbol.capitalize()
+    row.direction = "long"
+    row.horizon = "14d"
+    row.conviction = "strong"
+    row.thesis_text = "..."
+    row.asset_query = asset_symbol
+    row.submitted_at = now
+    row.resolves_at = resolves_at
+    row.parsed_via = "freeform_llm"
+    row.price_usd_at_submit = None
+    row.extracted_fields = {}
+    row.parse_metadata = {}
+    for k, v in overrides.items():
+        setattr(row, k, v)
+    return row
+
+
 async def test_list_open_by_source_filters_and_orders() -> None:
     """The query must filter on ``resolves_at > now()`` and order ASC.
 
     We don't execute against a real DB here; instead we verify the
     statement compiles (catches typos in column references) and the
     returned rows project cleanly through ``_to_record``.
+
+    We also pin the read-side ``price_usd_at_submit`` projection by
+    seeding one row with a captured snapshot (ETH) and one with NULL
+    (BTC — simulates CoinGecko down at submit / legacy row). A bug
+    in ``_to_record`` (e.g. forgetting the new field) would make ETH
+    silently lose the column on the way to ``/me``.
     """
     sess = _fake_session()
-
-    # Two fake Claim rows that look like SQLAlchemy returned them.
     now = datetime.now(tz=UTC)
-    later = now + timedelta(days=14)
-    soonest = now + timedelta(days=2)
-
-    row1 = MagicMock(spec=Claim)
-    row1.id = uuid4()
-    row1.source_id = "tg:abc"
-    row1.asset_coingecko_id = "ethereum"
-    row1.asset_symbol = "ETH"
-    row1.asset_name = "Ethereum"
-    row1.direction = "long"
-    row1.horizon = "14d"
-    row1.conviction = "strong"
-    row1.thesis_text = "..."
-    row1.asset_query = "ETH"
-    row1.submitted_at = now
-    row1.resolves_at = later
-    row1.parsed_via = "freeform_llm"
-    row1.extracted_fields = {}
-    row1.parse_metadata = {}
-
-    row2 = MagicMock(spec=Claim)
-    row2.id = uuid4()
-    row2.source_id = "tg:abc"
-    row2.asset_coingecko_id = "bitcoin"
-    row2.asset_symbol = "BTC"
-    row2.asset_name = "Bitcoin"
-    row2.direction = "long"
-    row2.horizon = "3d"
-    row2.conviction = "medium"
-    row2.thesis_text = "..."
-    row2.asset_query = "BTC"
-    row2.submitted_at = now
-    row2.resolves_at = soonest
-    row2.parsed_via = "form"
-    row2.extracted_fields = {}
-    row2.parse_metadata = {}
-
-    sess.execute.return_value = await _scalars_returning([row2, row1])  # already-sorted
+    row_eth = _fake_claim_row(
+        asset_symbol="ETH",
+        resolves_at=now + timedelta(days=14),
+        price_usd_at_submit=2438.12,
+    )
+    row_btc = _fake_claim_row(
+        asset_symbol="BTC",
+        resolves_at=now + timedelta(days=2),
+        price_usd_at_submit=None,
+    )
+    sess.execute.return_value = await _scalars_returning([row_btc, row_eth])
 
     repo = ClaimRepository(sess)
     records = await repo.list_open_by_source("tg:abc")
@@ -186,6 +269,19 @@ async def test_list_open_by_source_filters_and_orders() -> None:
     sess.execute.assert_awaited_once()
     assert len(records) == 2
     assert [r.asset_symbol for r in records] == ["BTC", "ETH"]
+
+    btc_record, eth_record = records
+    assert btc_record.price_usd_at_submit is None
+    assert eth_record.price_usd_at_submit == pytest.approx(2438.12)
+
+    # Compile the statement and inspect for the must-have predicates.
+    # If the column references typo, the compile step itself raises.
+    stmt = sess.execute.call_args[0][0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+    assert "claims" in compiled.lower()
+    assert "source_id" in compiled
+    assert "resolves_at" in compiled
+    assert "order by" in compiled.lower()
 
     # Compile the statement and inspect for the must-have predicates.
     # If the column references typo, the compile step itself raises.

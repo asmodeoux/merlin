@@ -164,6 +164,24 @@ class _FakeMarketData:
             name="Ethereum",
         )
 
+    async def get_price_at(self, coingecko_id: str, when: datetime) -> Any:
+        """Best-effort entry-price snapshot stub.
+
+        ``POST /claims`` calls this at submit time to capture
+        ``price_usd_at_submit``. The preflight test doesn't pin a
+        specific price — it pins the persistence wiring — so we
+        return a recognisable fixture amount and let the route
+        thread it through.
+        """
+        from merlin_core.application.ports import PricePoint
+
+        return PricePoint(
+            coingecko_id=coingecko_id,
+            requested_at=when,
+            returned_at=when,
+            price_usd=2438.12,
+        )
+
 
 class _NoopNotifier:
     async def notify(self, *_a: Any, **_kw: Any) -> None:
@@ -261,3 +279,12 @@ async def test_submit_claim_actually_creates_a_row(
     assert kwargs["submitted_at"].tzinfo.utcoffset(kwargs["submitted_at"]) == UTC.utcoffset(
         kwargs["submitted_at"],
     )
+    # The route MUST forward the entry-price snapshot to the repo —
+    # otherwise the receipt + /me + outcome paths show nothing where
+    # the user needs the price they were betting against.
+    assert "price_usd_at_submit" in kwargs, (
+        "POST /claims did not forward price_usd_at_submit to "
+        "ClaimRepository.create — the receipt and /me will silently "
+        "drop the entry-price line for every freshly-submitted bet."
+    )
+    assert kwargs["price_usd_at_submit"] == pytest.approx(2438.12)

@@ -152,16 +152,17 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def _render_preview(draft: dict[str, Any], asset: dict[str, Any]) -> str:
     """Compose the preview text. Bot-voice rules strictly enforced.
 
-    One field per line — ``Field: value`` — with placeholders pointing at
-    the corresponding Edit button when a field is missing. The Confirm
-    affordance is only mentioned in the closing line when the draft is
-    complete; otherwise the closing line tells the user what's blank.
+    One field per line — ``Field: value`` — with placeholders pointing
+    at the corresponding Edit / Set button when a field is missing.
+    The Confirm affordance is only mentioned in the closing line when
+    the draft is complete; otherwise the closing line tells the user
+    what's blank.
     """
-    asset_symbol = asset.get("symbol") or _placeholder("Asset")
+    asset_symbol = asset.get("symbol") or _missing_placeholder("Asset")
     direction = _direction_human(draft.get("direction"))
     horizon = _horizon_human(draft.get("horizon"))
     conviction = _conviction_human(draft.get("conviction"))
-    thesis = (draft.get("thesis_text") or "").strip() or _placeholder("Thesis")
+    thesis = (draft.get("thesis_text") or "").strip() or _missing_placeholder("Thesis")
 
     is_complete = _is_draft_complete(draft, asset)
     footer = (
@@ -200,6 +201,11 @@ def _render_receipt(
     "in 2 weeks" was ambiguous (does it count weekends? what
     timezone?). Timestamps come straight from the server response so
     there's no client-clock skew.
+
+    The entry-price line ("Entry price: $X.YZ") only renders when the
+    server captured a snapshot at submit. If CoinGecko was down at
+    submit time the field is ``None`` and we omit the line — never
+    invent a placeholder, never tell the user "$0.00".
     """
     # Prefer the canonical fields the server echoed back; fall back to
     # the local draft if a field is missing (defensive — should be
@@ -212,14 +218,22 @@ def _render_receipt(
 
     submitted_at = _utc_datetime(result.get("submitted_at", ""))
     resolves_at = _utc_datetime(result.get("resolves_at", ""))
+    entry_price_line = _entry_price_line(
+        result.get("price_usd_at_submit"),
+        asset_symbol,
+    )
 
-    lines = [
+    lines: list[str | None] = [
         "✅ Saved.",
         "",
         f"Asset: {asset_symbol}",
         f"Direction: {direction}",
         f"Horizon: {horizon}",
         f"Conviction: {conviction}",
+        # Entry-price line — None when the server didn't capture a
+        # snapshot (CoinGecko down at submit, legacy rows). Filtered
+        # out by the ``is not None`` join below.
+        entry_price_line,
         "",
         f'"{thesis}"' if thesis else "",
         "" if thesis else None,
@@ -237,22 +251,52 @@ def _build_preview_keyboard(
 ) -> InlineKeyboardMarkup:
     """Build the Edit / (optional) Confirm / Cancel keyboard.
 
-    Confirm is **omitted** until every required field has a value. The
-    user can never click Confirm on an incomplete bet — there's no
-    "confirm-then-error" UX. (Defence in depth: ``on_confirm`` still
-    re-validates via ``_build_submit_payload`` in case a stale message
-    is clicked on after state changed.)
+    Per-field label discriminates **Set** vs **Edit**:
+
+    * Field has a value already → ``"✏️ Edit Asset"`` (tweak what's
+      there).
+    * Field is empty → ``"📝 Set Asset"`` (this is an explicit
+      missing-field action, not an optional touch-up).
+
+    Same callback_data either way — the action is identical, only
+    the label changes. Users reported the old uniform "✏️ Edit X"
+    label hid the difference between "Foo is filled, you can change
+    it" and "Foo is blank, you have to set it before Confirm
+    renders".
+
+    Confirm is **omitted** until every required field has a value.
+    The user can never click Confirm on an incomplete bet — there's
+    no "confirm-then-error" UX. (Defence in depth: ``on_confirm``
+    still re-validates via ``_build_submit_payload`` in case a stale
+    message is clicked on after state changed.)
     """
     rows: list[list[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton("✏️ Edit Asset", callback_data=CB_EDIT_ASSET),
-            InlineKeyboardButton("✏️ Edit Direction", callback_data=CB_EDIT_DIRECTION),
+            InlineKeyboardButton(
+                _field_button_label("Asset", asset.get("coingecko_id")),
+                callback_data=CB_EDIT_ASSET,
+            ),
+            InlineKeyboardButton(
+                _field_button_label("Direction", draft.get("direction")),
+                callback_data=CB_EDIT_DIRECTION,
+            ),
         ],
         [
-            InlineKeyboardButton("✏️ Edit Horizon", callback_data=CB_EDIT_HORIZON),
-            InlineKeyboardButton("✏️ Edit Conviction", callback_data=CB_EDIT_CONVICTION),
+            InlineKeyboardButton(
+                _field_button_label("Horizon", draft.get("horizon")),
+                callback_data=CB_EDIT_HORIZON,
+            ),
+            InlineKeyboardButton(
+                _field_button_label("Conviction", draft.get("conviction")),
+                callback_data=CB_EDIT_CONVICTION,
+            ),
         ],
-        [InlineKeyboardButton("✏️ Edit Thesis", callback_data=CB_EDIT_THESIS)],
+        [
+            InlineKeyboardButton(
+                _field_button_label("Thesis", (draft.get("thesis_text") or "").strip()),
+                callback_data=CB_EDIT_THESIS,
+            ),
+        ],
     ]
     if _is_draft_complete(draft, asset):
         rows.insert(0, [InlineKeyboardButton("✅ Confirm", callback_data=CB_CONFIRM)])
@@ -330,14 +374,28 @@ def _clear(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _placeholder(field_title: str) -> str:
-    """Inline placeholder for an unset field — invites an Edit click.
+def _field_button_label(field_title: str, current_value: object) -> str:
+    """Return ``"📝 Set X"`` for an unset field, ``"✏️ Edit X"`` otherwise.
 
-    ``field_title`` is the same title-cased noun used on the matching
-    Edit button (``Asset``, ``Direction``, …) so the user's eye can
-    jump from "blank line" to "matching button" without translation.
+    The single source of truth for the per-field button label —
+    used by ``_build_preview_keyboard`` and mirrored by
+    ``_missing_placeholder`` so the inline placeholder text and the
+    button label stay in lockstep (user's eye jumps from blank line
+    to matching button without translation).
     """
-    return f"(tap ✏️ Edit {field_title})"
+    if current_value:
+        return f"✏️ Edit {field_title}"
+    return f"📝 Set {field_title}"
+
+
+def _missing_placeholder(field_title: str) -> str:
+    """Inline placeholder shown next to a field with no value yet.
+
+    Mirrors ``_field_button_label``'s "Set" branch — the button that
+    fixes the blank uses the same emoji + verb, so the eye doesn't
+    have to translate "(tap Edit X)" → "📝 Set X".
+    """
+    return f"(tap 📝 Set {field_title})"
 
 
 def _direction_human(value: str | None) -> str:
@@ -346,7 +404,7 @@ def _direction_human(value: str | None) -> str:
         return "Long"
     if value == "short":
         return "Short"
-    return _placeholder("Direction")
+    return _missing_placeholder("Direction")
 
 
 def _horizon_human(value: str | None) -> str:
@@ -361,7 +419,7 @@ def _horizon_human(value: str | None) -> str:
         "30d": "1 month",
         "90d": "3 months",
     }
-    return mapping.get(value or "", _placeholder("Horizon"))
+    return mapping.get(value or "", _missing_placeholder("Horizon"))
 
 
 def _conviction_human(value: str | None) -> str:
@@ -376,7 +434,46 @@ def _conviction_human(value: str | None) -> str:
         "strong": "Strong",
         "very_strong": "Very strong",
     }
-    return mapping.get(value or "", _placeholder("Conviction"))
+    return mapping.get(value or "", _missing_placeholder("Conviction"))
+
+
+def _entry_price_line(price: object, asset_symbol: str) -> str | None:
+    """Render the "Entry price: $X.YZ ASSET" line, or ``None`` to omit.
+
+    ``price`` comes off the ``ClaimResponse.price_usd_at_submit``
+    field — server may return ``None`` when CoinGecko was down at
+    submit time. In that case we omit the line entirely (the bot
+    never invents a placeholder, never tells the user "$0.00").
+
+    Formatting: dollar-sign + two-decimal USD for the round-number
+    bucket, four decimals for sub-dollar tickers (memecoins, AI
+    micro-caps). The asset symbol is appended so a user scanning a
+    list of receipts can tell at a glance which currency this
+    relates to.
+    """
+    if price is None:
+        return None
+    try:
+        amount = float(price)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f"Entry price: {_format_usd(amount)} per {asset_symbol}"
+
+
+def _format_usd(amount: float) -> str:
+    """Render a USD amount with adaptive decimals.
+
+    Big tickers (BTC, ETH) read better at 2dp; sub-dollar tickers
+    need more digits to be meaningful ($0.0003 vs an unhelpful
+    $0.00). Threshold at $1: above is 2dp with thousands separator;
+    below is 4dp; tiny values (< $0.01) get 8dp so a $0.00000123
+    memecoin entry doesn't render as $0.00.
+    """
+    if amount >= 1.0:
+        return f"${amount:,.2f}"
+    if amount >= 0.01:
+        return f"${amount:.4f}"
+    return f"${amount:.8f}"
 
 
 def _calendar_date(iso: str) -> str:

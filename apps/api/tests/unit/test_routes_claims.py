@@ -42,6 +42,7 @@ from merlin_core.application.ports import (
     ClaimDrafterError,
     ClaimRecord,
     MarketDataError,
+    PricePoint,
 )
 from merlin_core.domain import (
     AssetCandidate,
@@ -74,13 +75,24 @@ class _FakeDrafter:
 
 @dataclass
 class _FakeMarketData:
-    """Records every ``search_assets`` query so the test can pin the contract."""
+    """Records every ``search_assets`` query so the test can pin the contract.
+
+    Also fakes ``get_price_at`` because ``POST /claims`` calls it
+    at submit time to capture the entry-price snapshot. Tests that
+    want to assert the failure path (CoinGecko down at submit) set
+    ``price_raise_with``; tests that want a price set
+    ``price_response``. The default is an arbitrary but recognisable
+    fixture price so existing test paths don't need to seed one.
+    """
 
     candidates: list[AssetCandidate] = field(default_factory=list)
     search_calls: list[str] = field(default_factory=list)
     raise_with: Exception | None = None
     metadata_response: AssetMetadata | None = None
     metadata_calls: list[str] = field(default_factory=list)
+    price_response: PricePoint | None = None
+    price_calls: list[tuple[str, datetime]] = field(default_factory=list)
+    price_raise_with: Exception | None = None
 
     async def search_assets(self, query: str) -> list[AssetCandidate]:
         self.search_calls.append(query)
@@ -95,6 +107,22 @@ class _FakeMarketData:
                 f"test forgot to seed get_asset_metadata for {coingecko_id!r}",
             )
         return self.metadata_response
+
+    async def get_price_at(self, coingecko_id: str, when: datetime) -> PricePoint:
+        self.price_calls.append((coingecko_id, when))
+        if self.price_raise_with is not None:
+            raise self.price_raise_with
+        if self.price_response is not None:
+            return self.price_response
+        # Sensible default: $2,438.12 at the requested timestamp.
+        # Tests that pin the price-capture wiring override this; tests
+        # that don't care just want the route to succeed.
+        return PricePoint(
+            coingecko_id=coingecko_id,
+            requested_at=when,
+            returned_at=when,
+            price_usd=2438.12,
+        )
 
 
 @dataclass
@@ -593,6 +621,109 @@ async def test_submit_claim_jsonb_columns_are_json_serializable(
         "parse_metadata.extracted_at must be serialized to a string "
         "before reaching the JSONB column."
     )
+
+
+async def test_submit_claim_captures_entry_price_snapshot(
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Submit must persist + return the price-at-submit snapshot.
+
+    User-visible promise: receipt + /me show the price the user was
+    betting against. The API takes one CoinGecko ``get_price_at``
+    reading at ``submitted_at`` and threads the result down to the
+    repository (NULLABLE column) and back up to ``ClaimResponse``.
+    """
+    drafter = _FakeDrafter(response=_draft_with(asset_query="ETH", thesis="..."))
+    submit_ts_capture: list[datetime] = []
+    market = _FakeMarketData(
+        metadata_response=_eth_metadata(),
+        price_response=PricePoint(
+            coingecko_id="ethereum",
+            requested_at=datetime.now(tz=UTC),
+            returned_at=datetime.now(tz=UTC),
+            price_usd=2438.12,
+        ),
+    )
+    queue = _RecordingQueue()
+    session = _FakeSession()
+    session.identities.by_tg_id[42] = "tg:" + "a" * 32
+
+    # Sanity-check that the route asks for the price at submitted_at
+    # (not some other timestamp). We capture what the fake saw.
+    real_get_price_at = market.get_price_at
+
+    async def _capturing_get_price_at(coingecko_id: str, when: datetime) -> PricePoint:
+        submit_ts_capture.append(when)
+        return await real_get_price_at(coingecko_id, when)
+
+    market.get_price_at = _capturing_get_price_at  # type: ignore[method-assign]
+
+    app = _build_app(
+        drafter=drafter,
+        market=market,
+        queue=queue,
+        session=session,
+        monkeypatch=monkeypatch,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/claims", json=_submit_payload(), headers=auth_headers)
+
+    assert response.status_code == 201, response.text
+    # Persisted on the row.
+    kwargs = session.claims.created[0]
+    assert kwargs["price_usd_at_submit"] == pytest.approx(2438.12)
+    # Echoed back to the bot in the response so the receipt can
+    # render the entry-price line without a second round-trip.
+    assert response.json()["price_usd_at_submit"] == pytest.approx(2438.12)
+    # The snapshot was taken at submitted_at (within the same
+    # request — the route doesn't reuse a stale timestamp).
+    assert len(submit_ts_capture) == 1
+    assert submit_ts_capture[0] == kwargs["submitted_at"]
+
+
+async def test_submit_claim_market_data_failure_does_not_block_submit(
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CoinGecko being down at submit must NOT fail the bet.
+
+    Same UX-acceleration-not-system-dependency rule as the LLM
+    fallback: market data is best-effort. The route persists
+    ``price_usd_at_submit=NULL`` and returns 201 with the field set
+    to ``None`` so the bot's receipt renderer omits the price line
+    (never invents a placeholder, never shows ``$0.00``).
+    """
+    drafter = _FakeDrafter(response=_draft_with(asset_query="ETH", thesis="..."))
+    market = _FakeMarketData(
+        metadata_response=_eth_metadata(),
+        price_raise_with=MarketDataError("coingecko down at submit"),
+    )
+    queue = _RecordingQueue()
+    session = _FakeSession()
+    session.identities.by_tg_id[42] = "tg:" + "a" * 32
+
+    app = _build_app(
+        drafter=drafter,
+        market=market,
+        queue=queue,
+        session=session,
+        monkeypatch=monkeypatch,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/claims", json=_submit_payload(), headers=auth_headers)
+
+    # Submit still succeeded.
+    assert response.status_code == 201, response.text
+    # But the price column is NULL — both on the persisted row and
+    # in the wire response.
+    assert session.claims.created[0]["price_usd_at_submit"] is None
+    assert response.json()["price_usd_at_submit"] is None
+    # And the bet still got enqueued — market-data failure must not
+    # leave the row stranded.
+    assert len(queue.enqueues) == 1
 
 
 async def test_submit_claim_rq_job_id_uses_dash_separator(

@@ -59,6 +59,7 @@ def _to_record(row: Claim) -> ClaimRecord:
         submitted_at=row.submitted_at,
         resolves_at=row.resolves_at,
         parsed_via=row.parsed_via,
+        price_usd_at_submit=row.price_usd_at_submit,
         extracted_fields=dict(row.extracted_fields or {}),
         parse_metadata=dict(row.parse_metadata or {}),
     )
@@ -94,6 +95,7 @@ class ClaimRepository(ClaimRepositoryPort):
         parsed_via: str,
         extracted_fields: dict[str, Any],
         parse_metadata: dict[str, Any],
+        price_usd_at_submit: float | None = None,
     ) -> ClaimRecord:
         """INSERT a new claim row. Flushes; does not commit."""
         row = Claim(
@@ -110,6 +112,7 @@ class ClaimRepository(ClaimRepositoryPort):
             submitted_at=submitted_at,
             resolves_at=resolves_at,
             parsed_via=parsed_via,
+            price_usd_at_submit=price_usd_at_submit,
             extracted_fields=dict(extracted_fields),
             parse_metadata=dict(parse_metadata),
         )

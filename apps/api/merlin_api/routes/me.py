@@ -78,6 +78,10 @@ async def get_me(
                 direction=row.direction,
                 horizon=row.horizon,
                 resolves_at=row.resolves_at,
+                # NULL on legacy rows (predating the column) and on
+                # rows where CoinGecko was down at submit time. The
+                # bot renders the entry-price line iff this is set.
+                entry_price_usd=row.price_usd_at_submit,
             )
             for row in open_claims
         ],

@@ -36,12 +36,14 @@ def test_render_preview_full_draft() -> None:
 
 def test_render_preview_uses_placeholders_when_blank() -> None:
     text = sp._render_preview({}, {})
-    # Placeholders match the title-cased Edit button labels so the
-    # user's eye can jump from blank line to matching button.
-    assert "Asset: (tap ✏️ Edit Asset)" in text
-    assert "Direction: (tap ✏️ Edit Direction)" in text
-    assert "Horizon: (tap ✏️ Edit Horizon)" in text
-    assert "Conviction: (tap ✏️ Edit Conviction)" in text
+    # Placeholders mirror the matching "📝 Set X" button label so the
+    # user's eye can jump from blank line to matching button without
+    # translation. An unset field is an explicit missing-field action,
+    # not an optional touch-up — "Set" rather than "Edit".
+    assert "Asset: (tap 📝 Set Asset)" in text
+    assert "Direction: (tap 📝 Set Direction)" in text
+    assert "Horizon: (tap 📝 Set Horizon)" in text
+    assert "Conviction: (tap 📝 Set Conviction)" in text
     # Footer must NOT invite Confirm when fields are missing.
     assert "Confirm" not in text
     assert "Fill in the missing fields" in text
@@ -61,6 +63,7 @@ def test_render_receipt_includes_all_fields_and_utc_timestamps() -> None:
             "thesis_text": "Vitalik rumour",
             "submitted_at": "2026-05-29T16:32:00Z",
             "resolves_at": "2026-06-12T16:32:00Z",
+            "price_usd_at_submit": 2438.12,
         },
         draft={
             "direction": "long",
@@ -77,11 +80,80 @@ def test_render_receipt_includes_all_fields_and_utc_timestamps() -> None:
     assert "Horizon: 2 weeks" in text
     assert "Conviction: Strong" in text
     assert "Vitalik rumour" in text
+    # Entry-price line — the user must see the price they were
+    # betting against; thousands separator + 2dp for >= $1 tickers.
+    assert "Entry price: $2,438.12 per ETH" in text
     # Full UTC date+time (not just "Jun 12", not just "in 2 weeks").
     assert "2026-05-29 16:32 UTC" in text
     assert "2026-06-12 16:32 UTC" in text
     # Pointer to where the user can see open calls.
     assert "/me" in text
+
+
+def test_render_receipt_omits_entry_price_when_not_captured() -> None:
+    """If CoinGecko was down at submit, ``price_usd_at_submit`` is
+    ``None`` and the receipt must omit the line entirely. The bot
+    never invents a placeholder, never shows "Entry price: $0.00"
+    (which would lie about the market state).
+    """
+    text = sp._render_receipt(
+        result={
+            "asset_symbol": "ETH",
+            "direction": "long",
+            "horizon": "14d",
+            "conviction": "strong",
+            "thesis_text": "Vitalik rumour",
+            "submitted_at": "2026-05-29T16:32:00Z",
+            "resolves_at": "2026-06-12T16:32:00Z",
+            "price_usd_at_submit": None,
+        },
+        draft={"direction": "long"},
+        asset={"symbol": "ETH"},
+    )
+    assert "Entry price" not in text
+    assert "$0" not in text  # no placeholder leaks
+
+
+def test_render_receipt_entry_price_adaptive_decimals_subdollar() -> None:
+    """Memecoins / micro-caps need more decimals to be meaningful —
+    a $0.000123 entry must NOT round to $0.00. The threshold matches
+    the /me handler so a user sees the same number in both places."""
+    text = sp._render_receipt(
+        result={
+            "asset_symbol": "DOGE",
+            "direction": "long",
+            "horizon": "24h",
+            "conviction": "weak",
+            "thesis_text": "memecoin season",
+            "submitted_at": "2026-05-29T16:32:00Z",
+            "resolves_at": "2026-05-30T16:32:00Z",
+            "price_usd_at_submit": 0.000123,
+        },
+        draft={},
+        asset={"symbol": "DOGE"},
+    )
+    assert "Entry price: $0.00012300 per DOGE" in text
+
+
+def test_render_receipt_entry_price_adaptive_decimals_midrange() -> None:
+    """Mid-range tickers (sub-dollar but not micro-cap) render at
+    4dp so the user gets a meaningful number without trailing zeros
+    crowding the line."""
+    text = sp._render_receipt(
+        result={
+            "asset_symbol": "RNDR",
+            "direction": "long",
+            "horizon": "7d",
+            "conviction": "medium",
+            "thesis_text": "AI tokens running",
+            "submitted_at": "2026-05-29T16:32:00Z",
+            "resolves_at": "2026-06-05T16:32:00Z",
+            "price_usd_at_submit": 0.4231,
+        },
+        draft={},
+        asset={"symbol": "RNDR"},
+    )
+    assert "Entry price: $0.4231 per RNDR" in text
 
 
 def test_utc_datetime_normalises_offset_timestamps() -> None:
@@ -123,8 +195,8 @@ def test_horizon_human_maps_codes(code: str, expected: str) -> None:
 
 
 def test_horizon_human_unknown_returns_placeholder() -> None:
-    assert sp._horizon_human(None) == "(tap ✏️ Edit Horizon)"
-    assert sp._horizon_human("99y") == "(tap ✏️ Edit Horizon)"
+    assert sp._horizon_human(None) == "(tap 📝 Set Horizon)"
+    assert sp._horizon_human("99y") == "(tap 📝 Set Horizon)"
 
 
 @pytest.mark.parametrize("code,expected", [("long", "Long"), ("short", "Short")])
@@ -133,7 +205,7 @@ def test_direction_human(code: str, expected: str) -> None:
 
 
 def test_direction_human_unknown_returns_placeholder() -> None:
-    assert sp._direction_human(None) == "(tap ✏️ Edit Direction)"
+    assert sp._direction_human(None) == "(tap 📝 Set Direction)"
 
 
 @pytest.mark.parametrize(
@@ -276,10 +348,49 @@ def test_keyboard_hides_confirm_when_asset_missing() -> None:
     assert "✅ Confirm" not in labels
 
 
-def test_keyboard_always_shows_edit_and_cancel() -> None:
-    """Edit + Cancel must remain reachable even when the draft is
-    incomplete — otherwise the user has no way to recover."""
+def test_keyboard_uses_set_labels_for_empty_draft() -> None:
+    """An empty draft is "missing-field" territory — every action
+    button reads "📝 Set X", not "✏️ Edit X". The pencil emoji
+    suggests an optional touch-up; users reported they didn't
+    realise the fields were *required* until Confirm refused to
+    render. The clipboard + "Set" verb signals "you have to put
+    something here first".
+
+    Cancel must remain reachable even when the draft is incomplete
+    — otherwise the user has no way to bail.
+    """
     kb = sp._build_preview_keyboard({}, {})
+    labels = _button_labels(kb)
+    for expected in [
+        "📝 Set Asset",
+        "📝 Set Direction",
+        "📝 Set Horizon",
+        "📝 Set Conviction",
+        "📝 Set Thesis",
+        "❌ Cancel",
+    ]:
+        assert expected in labels, f"missing button: {expected!r} in {labels!r}"
+    # And none of the "Edit X" flavours leak in — the discriminator
+    # is set-vs-edit, not both.
+    for forbidden in [
+        "✏️ Edit Asset",
+        "✏️ Edit Direction",
+        "✏️ Edit Horizon",
+        "✏️ Edit Conviction",
+        "✏️ Edit Thesis",
+    ]:
+        assert forbidden not in labels, (
+            f"unset field rendered the 'Edit' label {forbidden!r}; "
+            "empty fields must read '📝 Set X' so the user knows it's missing"
+        )
+
+
+def test_keyboard_uses_edit_labels_when_fields_are_set() -> None:
+    """Mirror of the empty case: a fully-populated draft renders
+    "✏️ Edit X" for every field. The pencil reads as "you can
+    change what's here"; we never downgrade a populated field to
+    "Set" (that would be misleading)."""
+    kb = sp._build_preview_keyboard(_FULL_DRAFT, _FULL_ASSET)
     labels = _button_labels(kb)
     for expected in [
         "✏️ Edit Asset",
@@ -287,9 +398,38 @@ def test_keyboard_always_shows_edit_and_cancel() -> None:
         "✏️ Edit Horizon",
         "✏️ Edit Conviction",
         "✏️ Edit Thesis",
-        "❌ Cancel",
     ]:
         assert expected in labels, f"missing button: {expected!r} in {labels!r}"
+    # And the "Set X" variants are absent — a populated field is
+    # never an explicit "missing" action.
+    for forbidden in [
+        "📝 Set Asset",
+        "📝 Set Direction",
+        "📝 Set Horizon",
+        "📝 Set Conviction",
+        "📝 Set Thesis",
+    ]:
+        assert forbidden not in labels
+
+
+def test_keyboard_mixes_set_and_edit_per_field() -> None:
+    """Per-field discriminator: a draft with some fields set and
+    some empty must render "Edit" on the set ones and "Set" on the
+    empty ones — the button labels reflect the *per-field* state,
+    not a global toggle."""
+    partial_draft = {
+        "direction": "long",
+        # No horizon → "Set Horizon"
+        "conviction": "strong",
+        "thesis_text": "",  # blank → "Set Thesis"
+    }
+    kb = sp._build_preview_keyboard(partial_draft, _FULL_ASSET)
+    labels = _button_labels(kb)
+    assert "✏️ Edit Asset" in labels  # asset is set
+    assert "✏️ Edit Direction" in labels  # direction is set
+    assert "📝 Set Horizon" in labels  # horizon empty
+    assert "✏️ Edit Conviction" in labels  # conviction set
+    assert "📝 Set Thesis" in labels  # thesis empty
 
 
 def test_is_draft_complete_mirrors_submit_payload_preconditions() -> None:
