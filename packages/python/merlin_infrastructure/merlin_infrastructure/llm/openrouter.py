@@ -59,6 +59,16 @@ _DIRECTION_CONFIDENCE_FLOOR = 0.9
 _HORIZON_CONFIDENCE_FLOOR = 0.85
 _CONVICTION_CONFIDENCE_FLOOR = 0.7
 
+# Conviction reads tone ("could moon", "I'm pretty sure"), not keywords —
+# the model gets it right less often than direction (explicit "long"/"short")
+# or horizon (explicit "14d"/"2 weeks"). Insisting on a high-confidence read
+# would force a manual pick on most freeform claims. "medium" is the centre
+# of the four-value scale, so defaulting there is the lowest-information /
+# least-prejudicial choice; the user can still tap Edit on the preview to
+# change it. The default is applied *only* on the freeform-LLM path: the
+# form path collects conviction via an explicit picker, never via this code.
+_CONVICTION_DEFAULT: Conviction = "medium"
+
 _DEFAULT_TIMEOUT_S = 15.0
 
 
@@ -234,13 +244,26 @@ class OpenRouterClaimDrafter:
             _ASSET_CONFIDENCE_FLOOR,
         )
 
+        typed_conviction: Conviction = _typed(
+            conviction, ("weak", "medium", "strong", "very_strong")
+        )
+        if typed_conviction is None:
+            # See _CONVICTION_DEFAULT — fall through to "medium" instead of
+            # surfacing conviction as a missing field. Log so a low-confidence
+            # or out-of-domain extraction is still visible post-hoc.
+            _log.info(
+                "LLM extraction missing conviction (raw=%r, confidence=%s); " "defaulting to %r",
+                extracted.get("conviction"),
+                confidences.get("conviction"),
+                _CONVICTION_DEFAULT,
+            )
+            typed_conviction = _CONVICTION_DEFAULT
+
         missing: list[str] = []
         if direction is None:
             missing.append("direction")
         if horizon is None:
             missing.append("horizon")
-        if conviction is None:
-            missing.append("conviction")
         if asset_query is None:
             missing.append("asset")
 
@@ -263,7 +286,7 @@ class OpenRouterClaimDrafter:
                 horizon,
                 ("1h", "4h", "24h", "3d", "7d", "14d", "30d", "90d"),
             ),
-            conviction=_typed(conviction, ("weak", "medium", "strong", "very_strong")),
+            conviction=typed_conviction,
             thesis_text=extracted.get("thesis_text") or user_text,
             extracted_fields=extracted_fields,
             parse_metadata=ParseMetadata(

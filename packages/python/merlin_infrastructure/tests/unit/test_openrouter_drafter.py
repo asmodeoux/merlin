@@ -133,6 +133,96 @@ async def test_low_confidence_field_is_marked_missing(
     assert "horizon" in draft.missing_fields
 
 
+async def test_low_confidence_conviction_defaults_to_medium(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """Conviction reads tone, not keywords — the model gets it right less
+    reliably than direction/horizon. When confidence is below the floor we
+    default to ``"medium"`` (the centre of the four-value scale) instead of
+    surfacing it as a missing field; the user can still retune it via the
+    preview's Edit button."""
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon": "14d",
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.95,
+                "direction": 0.95,
+                "horizon": 0.9,
+                "conviction": 0.3,  # below 0.7 floor
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long 2 weeks, might pop")
+
+    assert draft.conviction == "medium"
+    assert "conviction" not in draft.missing_fields
+
+
+async def test_null_conviction_defaults_to_medium(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """When the LLM emits ``conviction: null`` (no signal in the message),
+    we still hand the preview a usable default rather than asking the user
+    to pick one. See ``_CONVICTION_DEFAULT``."""
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon": "14d",
+            "conviction": None,
+            "confidences": {
+                "asset_query": 0.95,
+                "direction": 0.95,
+                "horizon": 0.9,
+                "conviction": 0.0,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long 2 weeks")
+
+    assert draft.conviction == "medium"
+    assert "conviction" not in draft.missing_fields
+
+
+async def test_out_of_domain_conviction_defaults_to_medium(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """If the LLM ignores the enum and returns something like
+    ``"moderate"``, ``_typed`` rejects it; we then default to ``"medium"``
+    rather than dropping the field on the floor with a misleading
+    high-confidence audit trail."""
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon": "14d",
+            "conviction": "moderate",  # not in {weak, medium, strong, very_strong}
+            "confidences": {
+                "asset_query": 0.95,
+                "direction": 0.95,
+                "horizon": 0.9,
+                "conviction": 0.9,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long 2 weeks moderate")
+
+    assert draft.conviction == "medium"
+    assert "conviction" not in draft.missing_fields
+
+
 async def test_5xx_raises_claim_drafter_error(http_client: httpx.AsyncClient) -> None:
     drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
     with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
