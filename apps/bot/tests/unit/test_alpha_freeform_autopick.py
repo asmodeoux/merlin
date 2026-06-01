@@ -64,10 +64,42 @@ def test_auto_pick_matches_full_name() -> None:
     assert pick["coingecko_id"] == "bitcoin"
 
 
-def test_auto_pick_returns_none_when_top_is_a_mismatch() -> None:
-    """Q="eth" but the top hit is something else (e.g. Ethena USDe
-    if CoinGecko ranks USDE above ETH for a weirder query). Don't
-    auto-pick — let the user choose."""
+def test_auto_pick_prefers_exact_symbol_match_over_top_substring_hit() -> None:
+    """Live Sprint-1 bug: q="TON" but CoinGecko's top hit is "Canton"
+    (rank 21, symbol=CC) because its *name* substring-matches "ton";
+    Toncoin (rank 23, symbol=TON) sits at #2. The previous top-only
+    check returned None and left the user to open Edit Asset manually.
+    An exact symbol match anywhere in the list must beat a substring
+    hit at the top — Toncoin is the only coin whose ticker actually
+    is "TON".
+    """
+    candidates = [
+        {"coingecko_id": "canton-network", "symbol": "CC", "name": "Canton", "market_cap_rank": 21},
+        {
+            "coingecko_id": "the-open-network",
+            "symbol": "TON",
+            "name": "Toncoin",
+            "market_cap_rank": 23,
+        },
+        {
+            "coingecko_id": "tokamak-network",
+            "symbol": "TON",
+            "name": "Tokamak Network",
+            "market_cap_rank": 701,
+        },
+    ]
+    pick = step_freeform._auto_pick("TON", candidates)
+    assert pick is not None
+    assert pick["coingecko_id"] == "the-open-network", (
+        "exact symbol match must win over a higher-ranked substring hit, "
+        "and ties on symbol break by CoinGecko's market-cap-rank order"
+    )
+
+
+def test_auto_pick_returns_none_when_no_candidate_matches() -> None:
+    """Truly ambiguous: no candidate's symbol or name equals the query.
+    The user gets the picker (no false-positive auto-pick).
+    """
     candidates = [
         {
             "coingecko_id": "ethena-usde",
@@ -75,7 +107,12 @@ def test_auto_pick_returns_none_when_top_is_a_mismatch() -> None:
             "name": "Ethena USDe",
             "market_cap_rank": 25,
         },
-        {"coingecko_id": "ethereum", "symbol": "ETH", "name": "Ethereum", "market_cap_rank": 2},
+        {
+            "coingecko_id": "ethereum-name-service",
+            "symbol": "ENS",
+            "name": "Ethereum Name Service",
+            "market_cap_rank": 60,
+        },
     ]
     assert step_freeform._auto_pick("ETH", candidates) is None
 

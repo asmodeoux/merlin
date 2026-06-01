@@ -103,14 +103,24 @@ def _auto_pick(
     asset_query: str | None,
     candidates: list[dict[str, object]],
 ) -> dict[str, object] | None:
-    """Return the top candidate iff it's clearly the LLM's intended asset.
+    """Return the candidate that's clearly the LLM's intended asset.
 
-    Conservative heuristic: the top candidate's ``symbol`` or ``name``
-    matches the LLM's ``asset_query`` case-insensitively. This catches
-    the common case ("ETH" → Ethereum ETH, "BTC" → Bitcoin BTC,
-    "bitcoin" → Bitcoin) without auto-locking on ambiguity ("eth" in a
-    sentence about Ethena would still trigger the picker because the
-    top hit's symbol is "USDE" — no match).
+    Scan all candidates for an exact ``symbol`` match against the
+    LLM's ``asset_query`` (case-insensitive); fall back to an exact
+    ``name`` match. CoinGecko's ``/search`` orders the result list by
+    market-cap rank, so the *first* exact-ticker match is the most
+    popular coin holding that ticker — which is what an unqualified
+    "TON" / "ETH" / "BTC" in a freeform claim means.
+
+    Why not just inspect ``candidates[0]``: CoinGecko's fuzzy search
+    ranks **substring** hits on ``name`` too, so any higher-market-cap
+    coin whose name contains the query as a substring will outrank
+    the real ticker holder. Live Sprint-1 bug: "TON" → Canton (rank
+    21, symbol=CC) at the top, Toncoin (rank 23, symbol=TON) at #2.
+    The previous top-only check left "TON" un-auto-picked despite an
+    exact symbol match a single position down. Same shape would bite
+    "DOT" (Polkadot vs. anything with "dot" in the name), "OP"
+    (Optimism vs. coins with "op…" in name), etc.
 
     On Confirm, ``POST /claims`` still calls CoinGecko ``get_asset_metadata``
     server-side as a defence against forged ids, so an auto-pick can
@@ -120,11 +130,14 @@ def _auto_pick(
     if not asset_query or not candidates:
         return None
     q = asset_query.strip().lower()
-    top = candidates[0]
-    symbol = str(top.get("symbol", "")).lower()
-    name = str(top.get("name", "")).lower()
-    if q in {symbol, name}:
-        return top
+    if not q:
+        return None
+    for c in candidates:
+        if str(c.get("symbol", "")).lower() == q:
+            return c
+    for c in candidates:
+        if str(c.get("name", "")).lower() == q:
+            return c
     return None
 
 
