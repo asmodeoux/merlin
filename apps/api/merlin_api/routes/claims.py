@@ -286,7 +286,7 @@ async def _snapshot_entry_price(
 
     Best-effort by design — a CoinGecko outage at submit time must
     NOT block the bet (the same UX-acceleration-not-system-dependency
-    rule that governs the LLM fallback). On failure we log and
+    rule that governs the LLM fallback). On *any* failure we log and
     return ``None``; the column stays NULL and the bot's renderer
     omits the entry-price line.
 
@@ -295,21 +295,39 @@ async def _snapshot_entry_price(
     bucket window is more than fine for ``now`` and (b) it keeps the
     adapter surface narrow — the worker's resolution path already
     uses the same call.
+
+    We catch ``Exception`` broadly (not just ``MarketDataError``)
+    because the adapter only wraps ``httpx.HTTPError`` and status
+    codes. A 200-OK response with a malformed JSON body or an
+    unexpected payload shape (CoinGecko has changed shapes before;
+    a future migration could change it again) raises
+    ``json.JSONDecodeError`` / ``KeyError`` / ``TypeError`` /
+    ``ValueError`` directly. Letting any of those escape would 500
+    the submit even though the bet itself is fine without a price.
+    Treat every failure as "no snapshot" and let the bot's renderer
+    omit the entry-price line. ``BaseException`` subclasses
+    (``KeyboardInterrupt``, ``SystemExit``, ``asyncio.CancelledError``)
+    still propagate — those are operator-controlled signals, not
+    market-data noise.
     """
     try:
         point = await ports.market_data.get_price_at(coingecko_id, submitted_at)
-    except MarketDataError as e:
+        price = float(point.price_usd)
+    except Exception as e:
         # Non-fatal — the bet still submits. The receipt + /me will
         # render without an entry-price line. We surface the failure
-        # in the logs so an operator running ``make dev-logs`` during
-        # a CoinGecko incident sees the impact.
+        # type + message in the logs so an operator running ``make
+        # dev-logs`` during a CoinGecko incident sees the impact
+        # (and can distinguish a known ``MarketDataError`` from an
+        # unexpected payload-shape change).
         _log.warning(
-            "entry-price snapshot failed for %s at submit: %s; persisting NULL",
+            "entry-price snapshot failed for %s at submit: %s: %s; persisting NULL",
             coingecko_id,
+            type(e).__name__,
             e,
         )
         return None
-    return float(point.price_usd)
+    return price
 
 
 def _to_draft_response(

@@ -726,6 +726,49 @@ async def test_submit_claim_market_data_failure_does_not_block_submit(
     assert len(queue.enqueues) == 1
 
 
+async def test_submit_claim_unexpected_market_data_exception_does_not_block_submit(
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-``MarketDataError`` from the adapter must NOT 500 the submit.
+
+    The adapter only wraps ``httpx.HTTPError`` + status codes into
+    ``MarketDataError``. A 200-OK from CoinGecko with a malformed body
+    or an unexpected shape (CoinGecko has changed its response shape
+    in the past) raises ``json.JSONDecodeError`` / ``KeyError`` /
+    ``TypeError`` directly. Those must be treated as "no snapshot",
+    not "failed request": the entry-price line is *acceleration*, the
+    bet itself is the system of record.
+
+    Regression guard for the ``except MarketDataError`` narrow-catch
+    that used to be the only protection.
+    """
+    drafter = _FakeDrafter(response=_draft_with(asset_query="ETH", thesis="..."))
+    market = _FakeMarketData(
+        metadata_response=_eth_metadata(),
+        price_raise_with=ValueError("malformed coingecko payload"),
+    )
+    queue = _RecordingQueue()
+    session = _FakeSession()
+    session.identities.by_tg_id[42] = "tg:" + "a" * 32
+
+    app = _build_app(
+        drafter=drafter,
+        market=market,
+        queue=queue,
+        session=session,
+        monkeypatch=monkeypatch,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/claims", json=_submit_payload(), headers=auth_headers)
+
+    assert response.status_code == 201, response.text
+    assert session.claims.created[0]["price_usd_at_submit"] is None
+    assert response.json()["price_usd_at_submit"] is None
+    assert len(queue.enqueues) == 1
+
+
 async def test_submit_claim_rq_job_id_uses_dash_separator(
     auth_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
