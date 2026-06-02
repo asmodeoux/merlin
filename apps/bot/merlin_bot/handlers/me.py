@@ -114,17 +114,21 @@ def _render_me(payload: dict[str, Any]) -> str:
 def _render_open_call(call: dict[str, Any]) -> str:
     """One open-call bullet line.
 
-    Inline shape: ``ASSET direction — horizon, [entry $X.YY,] resolves <utc>``.
-    The entry-price chunk only appears when the server captured a
-    snapshot at submit time — see ``_format_entry_price`` for the
-    adaptive decimal logic.
+    Inline shape:
+        ``ASSET direction — horizon, [entry $X.YY,] resolves <chunk>``
+
+    ``<chunk>`` is the resolves-at fragment from ``_resolves_at_chunk``:
+    relative ("in 2 hours 11 minutes") when the deadline is < 24h
+    away, absolute ("2026-06-12 16:35 UTC") otherwise. The entry-price
+    chunk only appears when the server captured a snapshot at submit
+    time — see ``_format_entry_price`` for the adaptive decimal logic.
     """
     asset = str(call.get("asset_symbol") or "?").upper()
     direction = _direction_human(str(call.get("direction") or ""))
     horizon = _horizon_human(call.get("horizon_seconds"))
-    resolves_at = _utc_datetime(str(call.get("resolves_at") or ""))
+    resolves_chunk = _resolves_at_chunk(str(call.get("resolves_at") or ""))
     entry_chunk = _format_entry_price(call.get("entry_price_usd"))
-    middle = f"{horizon}, {entry_chunk}resolves {resolves_at}"
+    middle = f"{horizon}, {entry_chunk}{resolves_chunk}"
     return f"  {asset} {direction} — {middle}"
 
 
@@ -215,6 +219,72 @@ def _utc_datetime(iso: str) -> str:
         return "soon"
     dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+# A bet expiring within this many seconds renders as a relative
+# countdown ("in 2 hours 11 minutes") rather than an absolute UTC
+# timestamp. 24 hours keeps the short-horizon UX scannable without
+# trying to compute "in 3 days 4 hours" — past a day, an absolute
+# date is easier to plan against.
+_RELATIVE_RESOLVES_AT_SECONDS = 24 * 60 * 60
+
+
+def _resolves_at_chunk(iso: str, *, now: datetime | None = None) -> str:
+    """Render the resolves-at fragment for an open-call bullet line.
+
+    Two shapes, gated by ``_RELATIVE_RESOLVES_AT_SECONDS``:
+
+    * ``< 24h, > 0``: ``"resolves in 2 hours 11 minutes"`` — friendlier
+      to scan when the deadline is imminent.
+    * ``>= 24h`` (or overdue / unparseable): ``"resolves 2026-06-12
+      16:35 UTC"`` — the same absolute UTC format as the /alpha
+      receipt. Overdue rows are a transient pre-resolution state; we
+      keep showing the absolute time rather than "in -5 minutes".
+
+    ``now`` is injectable for tests so the relative-branch assertions
+    aren't flaky against wall-clock drift. Production passes ``None``
+    and gets ``datetime.now(UTC)``.
+    """
+    if not iso:
+        return "resolves soon"
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return "resolves soon"
+    dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    current = now.astimezone(UTC) if now is not None else datetime.now(UTC)
+    seconds_to_go = int((dt - current).total_seconds())
+    if 0 < seconds_to_go < _RELATIVE_RESOLVES_AT_SECONDS:
+        return f"resolves in {_humanise_seconds_left(seconds_to_go)}"
+    return f"resolves {dt.strftime('%Y-%m-%d %H:%M UTC')}"
+
+
+def _humanise_seconds_left(seconds: int) -> str:
+    """Render a positive ``< 24h`` countdown as ``"X hours Y minutes"``.
+
+    Suppress zero components and apply singular/plural ("1 hour 1
+    minute" / "2 hours 11 minutes" / "45 minutes" / "1 hour"). Anything
+    below a minute degrades to ``"less than a minute"`` rather than
+    ``"0 minutes"`` so the bot never shows a misleading zero.
+
+    Stays in hours+minutes (no seconds) — the resolver's price window
+    is ±5 minutes, so sub-minute precision in the countdown would
+    overpromise.
+    """
+    minutes_total = seconds // 60
+    hours, minutes = divmod(minutes_total, 60)
+    if hours and minutes:
+        return f"{hours} {_pluralise(hours, 'hour')} {minutes} {_pluralise(minutes, 'minute')}"
+    if hours:
+        return f"{hours} {_pluralise(hours, 'hour')}"
+    if minutes:
+        return f"{minutes} {_pluralise(minutes, 'minute')}"
+    return "less than a minute"
+
+
+def _pluralise(n: int, noun: str) -> str:
+    """Naive English plural for the small set we need (``hour`` / ``minute``)."""
+    return noun if n == 1 else f"{noun}s"
 
 
 # ---------------------------------------------------------------------------
