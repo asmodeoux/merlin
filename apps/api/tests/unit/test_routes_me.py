@@ -68,7 +68,6 @@ class _FakeIdentityRepo:
 class _FakeClaimRepo:
     open_by_source: dict[str, list[ClaimRecord]] = field(default_factory=dict)
     resolved_count_by_source: dict[str, int] = field(default_factory=dict)
-    leaderboard_rows: list[Any] = field(default_factory=list)
 
     async def list_open_by_source(self, source_id: str) -> list[ClaimRecord]:
         return list(self.open_by_source.get(source_id, []))
@@ -76,8 +75,20 @@ class _FakeClaimRepo:
     async def count_resolved_by_source(self, source_id: str) -> int:
         return self.resolved_count_by_source.get(source_id, 0)
 
-    async def leaderboard(self, _window: str) -> list[Any]:
-        return list(self.leaderboard_rows)
+
+@dataclass
+class _FakeReputationRepo:
+    """In-memory ``SourceReputationRepositoryPort`` stand-in.
+
+    Tests seed ``snapshots_by_source`` to project a populated row, or
+    leave the source out entirely to exercise the cold-start path
+    (``latest_for_source`` returns ``None``).
+    """
+
+    snapshots_by_source: dict[str, Any] = field(default_factory=dict)
+
+    async def latest_for_source(self, source_id: str) -> Any:
+        return self.snapshots_by_source.get(source_id)
 
 
 @dataclass
@@ -85,6 +96,7 @@ class _FakeSession:
     sources: _FakeSourceRepo = field(default_factory=_FakeSourceRepo)
     identities: _FakeIdentityRepo = field(default_factory=_FakeIdentityRepo)
     claims: _FakeClaimRepo = field(default_factory=_FakeClaimRepo)
+    reputation: _FakeReputationRepo = field(default_factory=_FakeReputationRepo)
     committed: bool = False
 
     async def commit(self) -> None:
@@ -125,6 +137,11 @@ async def client(
         lambda _s: fake_session.identities,
     )
     monkeypatch.setattr(_repos_mod, "ClaimRepository", lambda _s: fake_session.claims)
+    monkeypatch.setattr(
+        _repos_mod,
+        "SourceReputationRepository",
+        lambda _s: fake_session.reputation,
+    )
 
     async def _fake_get_session() -> AsyncIterator[_FakeSession]:
         yield fake_session
@@ -379,3 +396,62 @@ async def test_get_me_requires_tg_user_id_param(
     caller — must 422, never silently default to a magic source."""
     response = await client.get("/me", headers=auth_headers)
     assert response.status_code == 422
+
+
+async def test_get_me_uses_reputation_snapshot_when_available(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """When ``source_reputation_history`` has a row, ``/me`` projects
+    its denormalised counts + accuracy_pct.
+
+    Pins the contract that the recompute job's output reaches the bot.
+    Without this, the route could silently keep returning ``accuracy_pct
+    is None`` even after outcomes start resolving — the user would
+    never see their hit rate.
+    """
+    from merlin_core.application.ports import SourceReputationRecord
+
+    src_id = "tg:" + "c" * 32
+    _seed_onboarded(fake_session, tg_user_id=99, source_id=src_id)
+    fake_session.reputation.snapshots_by_source[src_id] = SourceReputationRecord(
+        id=uuid4(),
+        source_id=src_id,
+        outcomes_resolved=4,
+        outcomes_correct=3,
+        accuracy_pct=75.0,
+        triggering_outcome_id=None,
+        effective_at=datetime.now(tz=UTC),
+    )
+
+    response = await client.get("/me", params={"tg_user_id": 99}, headers=auth_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["calls_resolved_total"] == 4
+    assert body["accuracy_pct"] == pytest.approx(75.0)
+
+
+async def test_get_me_cold_start_falls_back_to_horizon_count(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """No reputation snapshot yet → ``calls_resolved_total`` falls
+    back to the ``count_resolved_by_source`` proxy.
+
+    Mid-recompute users (claim resolved on the wall clock but the
+    worker hasn't INSERTed the snapshot yet) still see an honest
+    count rather than 0. ``accuracy_pct`` stays ``None`` because we
+    only have proxy data, not a real hit-rate calculation.
+    """
+    src_id = "tg:" + "d" * 32
+    _seed_onboarded(fake_session, tg_user_id=100, source_id=src_id)
+    fake_session.claims.resolved_count_by_source[src_id] = 2
+    # No reputation snapshot seeded.
+
+    response = await client.get("/me", params={"tg_user_id": 100}, headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["calls_resolved_total"] == 2
+    assert body["accuracy_pct"] is None

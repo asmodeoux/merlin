@@ -53,6 +53,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Double,
@@ -330,3 +331,297 @@ class Claim(Base):
         Index("ix_claims_source_resolves", "source_id", "resolves_at"),
         Index("ix_claims_source", "source_id"),
     )
+
+
+# ---------------------------------------------------------------------------
+# outcomes — one row per resolution event (MVP §13 + §15 invariants 7/8).
+# ---------------------------------------------------------------------------
+
+
+class Outcome(Base):
+    """A resolved outcome for a single claim — append-only.
+
+    The resolver INSERTs one row per ``resolve_outcome`` execution.
+    Corrections happen by INSERTing a new row with
+    ``supersedes_outcome_id`` pointing at the previous head; readers
+    of "latest outcome for this claim" walk the supersedes chain
+    (MVP §15 invariant 6). The application layer never UPDATEs or
+    DELETEs an outcome row (invariants 7/8) — the migration ships
+    PL/pgSQL triggers that enforce this at the database too.
+
+    ``status`` discriminates the three end states the resolver can
+    write:
+
+    * ``'resolved'`` — the canonical happy path. Outcome row carries
+      a real ``observed_return_pct`` and an ``is_correct`` flag.
+    * ``'rejected_asset_mutation'`` — Q-023. CoinGecko 404'd the
+      asset between ``t0`` and ``t_resolve``. ``observed_return_pct``
+      is NULL; the row exists for auditability and to make the
+      resolver idempotent (subsequent retries see the row and
+      short-circuit).
+    * ``'resolution_failed_final'`` — every RQ retry exhausted. The
+      operator-rerun path INSERTs a corrective row later.
+
+    ``is_correct`` is denormalised — yes, it's derivable from
+    ``observed_return_pct`` + the claim's ``direction``, but the
+    reputation aggregation query reads ten thousand rows at a time
+    and the join+CASE is an order of magnitude slower than reading
+    a precomputed boolean. The resolver writes both columns in the
+    same INSERT so they cannot drift (see ``is_correct_call`` in
+    ``merlin_core.domain.scoring`` — the single source of the rule).
+    """
+
+    __tablename__ = "outcomes"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    claim_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sources.source_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    observed_return_pct: Mapped[float | None] = mapped_column(
+        Double(),
+        nullable=True,
+    )
+    is_correct: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+    )
+    price_t0_usd: Mapped[float | None] = mapped_column(Double(), nullable=True)
+    price_resolve_usd: Mapped[float | None] = mapped_column(Double(), nullable=True)
+    price_t0_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    price_resolve_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    supersedes_outcome_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("outcomes.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('resolved','rejected_asset_mutation','resolution_failed_final')",
+            name="ck_outcomes_status",
+        ),
+        # ``is_correct`` is meaningful only on ``status='resolved'``
+        # rows. Rejected / failed rows must leave it NULL so any
+        # downstream reader that filters ``is_correct IS TRUE`` does
+        # the right thing without having to JOIN ``status`` too.
+        CheckConstraint(
+            "(status = 'resolved') = (observed_return_pct IS NOT NULL)",
+            name="ck_outcomes_resolved_has_return",
+        ),
+        CheckConstraint(
+            "(status = 'resolved') = (is_correct IS NOT NULL)",
+            name="ck_outcomes_resolved_has_is_correct",
+        ),
+        Index("ix_outcomes_source_resolved", "source_id", "resolved_at"),
+        Index("ix_outcomes_claim", "claim_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# source_reputation_history — append-only reputation snapshots (MVP §11.1.A).
+# ---------------------------------------------------------------------------
+
+
+class SourceReputationHistory(Base):
+    """One row per recompute — append-only (MVP §15 invariant 10).
+
+    Q-029 keeps reputation reactive: the resolver enqueues a
+    ``recompute_source_reputation`` job after each outcome lands, the
+    job counts the source's resolved + correct outcomes, and INSERTs
+    one row capturing the snapshot. Readers ask for
+    ``ORDER BY effective_at DESC LIMIT 1`` per source.
+
+    v0 reputation is plain hit rate (no Bayesian shrinkage, no
+    Admiralty axes — those land in Sprint 3+). User-locked design
+    choices that shape the columns:
+
+    * ``flat_handling = wash_zero``: ``outcomes_resolved`` counts
+      every non-mutation outcome (won + lost + flat). Only
+      ``outcomes_correct`` excludes flats.
+    * ``min_calls_for_rank = show_all``: there's no minimum-N gate
+      here — surfacing decisions live with the readers.
+    * ``store_redundant = yes_denorm``: ``accuracy_pct`` is stored
+      alongside the counts so ``/board`` doesn't need a CASE
+      expression per row.
+    """
+
+    __tablename__ = "source_reputation_history"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sources.source_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    outcomes_resolved: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcomes_correct: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ``NULL`` when ``outcomes_resolved = 0`` — the cold-start signal
+    # that ``/me`` / ``/board`` need to distinguish "no data yet" from
+    # an honest 0%.
+    accuracy_pct: Mapped[float | None] = mapped_column(Double(), nullable=True)
+    triggering_outcome_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("outcomes.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    effective_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "outcomes_resolved >= 0",
+            name="ck_srh_outcomes_resolved_nonneg",
+        ),
+        CheckConstraint(
+            "outcomes_correct >= 0 AND outcomes_correct <= outcomes_resolved",
+            name="ck_srh_outcomes_correct_bounded",
+        ),
+        CheckConstraint(
+            "(outcomes_resolved = 0) = (accuracy_pct IS NULL)",
+            name="ck_srh_accuracy_null_iff_cold_start",
+        ),
+        Index(
+            "ix_srh_source_effective",
+            "source_id",
+            "effective_at",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# attribution_ledger — append-only "who said it first" record (MVP §15 inv 12).
+# ---------------------------------------------------------------------------
+
+
+class AttributionLedger(Base):
+    """First-mover credit per (asset_coingecko_id, direction, window).
+
+    Reserved for the attribution feature (MVP §11.4). Sprint 1 ships
+    the table empty so the append-only triggers can apply cleanly and
+    the reputation pipeline has its destination ready when the
+    attribution worker lands.
+
+    Append-only (MVP §15 invariant 12) — every fact is a fresh row.
+    """
+
+    __tablename__ = "attribution_ledger"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    claim_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sources.source_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    asset_coingecko_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    is_first_mover: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "direction IN ('long', 'short')",
+            name="ck_attribution_direction",
+        ),
+        Index(
+            "ix_attribution_asset_direction",
+            "asset_coingecko_id",
+            "direction",
+            "recorded_at",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# override_log — append-only operator-action trail (MVP §15 invariant 11/12).
+# ---------------------------------------------------------------------------
+
+
+class OverrideLog(Base):
+    """Operator override events — append-only audit trail.
+
+    Manual outcome correction (the ``make admin-rerun`` path),
+    forced-resolve interventions, and the future bot-side
+    ``/admin/dispute`` flow all INSERT a row here capturing what the
+    operator did and why. No row is ever UPDATEd or DELETEd
+    (MVP §15 invariant 11) so an external audit can replay the full
+    history of human intervention.
+    """
+
+    __tablename__ = "override_log"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    actor_source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sources.source_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_claim_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    target_outcome_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("outcomes.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reason_text: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (Index("ix_override_log_actor_recorded", "actor_source_id", "recorded_at"),)

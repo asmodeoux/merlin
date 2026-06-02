@@ -17,6 +17,19 @@ Per plan §3:
   same protection as immediate ones.
 - ``cancel()`` is best-effort: returns True if a job was cancelled,
   False if it had already fired or didn't exist.
+
+Queue-name policy (post Sprint-1 ``"merlin"`` mismatch bug):
+
+* ``queue_name`` is a **required** keyword argument. Callers must
+  reach for one of the constants in
+  ``merlin_infrastructure.queue.names`` (``RESOLUTION_QUEUE_NAME`` for
+  the API's enqueue, ``REPUTATION_QUEUE_NAME`` for the resolver's
+  follow-up). Letting the adapter silently default to ``"merlin"``
+  caused the live "I never got my outcome message" bug — RQ happily
+  parked the job on a queue the worker wasn't draining.
+* The preflight suite cross-checks the names against
+  ``Settings.rq_queues`` so a future drift fails CI long before it
+  reaches a user.
 """
 
 from __future__ import annotations
@@ -49,15 +62,39 @@ class RQQueueAdapter:
         self,
         *,
         redis: Redis,
-        queue_name: str = "merlin",
+        queue_name: str,
         retry_max: int = DEFAULT_RETRY_MAX,
         retry_intervals: list[int] | None = None,
     ) -> None:
-        """Build an RQ ``Queue`` pinned to ``redis`` for both enqueue paths."""
+        """Build an RQ ``Queue`` pinned to ``redis`` for both enqueue paths.
+
+        ``queue_name`` is required — pass one of the constants from
+        ``merlin_infrastructure.queue.names`` to keep the API enqueue
+        path, the resolver's follow-up enqueue, and the worker's
+        drained-queues list aligned. The silent-default behaviour of
+        prior revisions caused the Sprint-1 ``"merlin"`` mismatch
+        regression where the worker drained queues the API never
+        touched.
+        """
+        if not queue_name:
+            raise ValueError(
+                "RQQueueAdapter.queue_name must be a non-empty string — "
+                "pass one of merlin_infrastructure.queue.names."
+            )
         self._redis = redis
+        self._queue_name = queue_name
         self._queue = Queue(queue_name, connection=redis)
         self._retry_max = retry_max
         self._retry_intervals = retry_intervals or DEFAULT_RETRY_INTERVALS
+
+    @property
+    def queue_name(self) -> str:
+        """Return the queue name passed at construction time.
+
+        Preflight tests + ``/admin`` diagnostics read this to verify
+        wiring without poking at private state.
+        """
+        return self._queue_name
 
     def enqueue_at(
         self,

@@ -37,9 +37,9 @@ async def get_board(
     so the swap-in is a one-line change in the repository when the
     worker lands — bot, contract, and route stay put.
     """
-    from merlin_infrastructure.db.repositories import ClaimRepository
+    from merlin_infrastructure.db.repositories import SourceReputationRepository
 
-    repo = ClaimRepository(session)
+    repo = SourceReputationRepository(session)
     rows = await repo.leaderboard(window)
     return BoardResponse(
         window=window,

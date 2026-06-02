@@ -2,21 +2,25 @@
 
 Fires at ``t_resolve`` (RQ Scheduler held the job). Steps:
 
-1. Load claim + event + asset rows from Postgres.
-2. Idempotency guard — abort if ``event.status != 'pending'``.
+1. Load claim + source identity from Postgres.
+2. Idempotency guard — abort if ``outcomes`` already has a row for
+   this claim (retried RQ jobs must not double-notify the user).
 3. Fetch CoinGecko prices at ``t0`` and ``t_resolve`` (±5 min per
    Q-026 rounding policy).
-4. Compute observed return + PnL-if-followed (formula stub).
-5. INSERT ``outcomes`` row.
-6. UPDATE ``events.status = 'resolved'``.
-7. Enqueue ``recompute_source_reputation(source_id)`` — reactive
-   reputation (Q-029 proposal). No daily cron.
-8. Send the user notification via the Telegram Bot API directly
+4. Compute observed return + ``is_correct`` via the shared
+   ``merlin_core.domain.scoring`` helpers (so the user's
+   "you called it right" notification and the leaderboard tally
+   agree by construction).
+5. INSERT an ``outcomes`` row.
+6. Enqueue ``recompute_source_reputation`` on the dedicated
+   ``reputation`` queue (Q-029 reactive reputation — no daily cron).
+7. Send the user notification via the Telegram Bot API directly
    (one less hop than relaying through the bot service).
 
 On ``AssetNotFoundError`` (CoinGecko 404 between t0 and t_resolve —
-Q-023 asset mutation): UPDATE ``events.status = 'rejected_asset_mutation'``,
-skip the outcome row, send the rejection notification.
+Q-023 asset mutation): INSERT an outcome row with
+``status='rejected_asset_mutation'`` (auditability + idempotency),
+skip the reputation enqueue, send the rejection notification.
 
 On any other ``MarketDataError``: raise. RQ's ``Retry(max=3,
 interval=[60, 300, 900])`` policy retries 1m / 5m / 15m. After the
@@ -31,11 +35,15 @@ doesn't choke on the worker's module-level state.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
+import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
-    pass
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _log = logging.getLogger("merlin.worker.jobs.resolve_outcome")
 
@@ -46,10 +54,14 @@ def resolve_outcome(claim_id: str) -> None:
 
 
 async def _resolve_outcome_async(claim_id: str) -> None:
-    """Run the eight-step resolution sequence for ``claim_id``."""
+    """Run the resolution sequence for ``claim_id``."""
     # Lazy imports keep RQ's pickle-based job-dispatch happy and let
-    # the worker boot when alembic models haven't all landed yet.
+    # the worker boot even when not all modules import cleanly under
+    # collection.
     from merlin_core.application.ports import AssetNotFoundError, MarketDataError
+    from merlin_core.domain.scoring import is_correct_call
+    from merlin_infrastructure.db.repositories import OutcomeRepository
+    from merlin_infrastructure.db.session import get_session_factory
     from merlin_infrastructure.market_data.coingecko import CoinGeckoAdapter
     from merlin_infrastructure.notify.telegram.notifier import TelegramNotifier
     from merlin_infrastructure.notify.telegram.templates import (
@@ -61,12 +73,27 @@ async def _resolve_outcome_async(claim_id: str) -> None:
     from merlin_worker.config import Settings
 
     settings = Settings()
+    session_factory = get_session_factory(settings.database_url)
 
-    # Sprint 1: load claim + event + asset from the DB. Until then the
-    # job is a thin scaffold that exercises the wire path — RQ enqueue
-    # → worker dispatch → market-data lookup → notifier — so the
-    # integration test layer can assert the contract.
-    claim_ctx = _ClaimContext.load(claim_id)
+    # Hydrate the context first — if the claim row doesn't exist we
+    # abort before doing any I/O, and ``load`` raises the most useful
+    # error for the operator to see in the failed-jobs registry.
+    async with session_factory() as session:
+        claim_ctx = await _ClaimContext.load(session=session, claim_id=claim_id)
+
+        # Idempotency guard. RQ retries call the same job twice; a
+        # corrective ``make admin-rerun`` can also re-fire. In both
+        # cases we MUST NOT INSERT a duplicate outcome and we MUST
+        # NOT re-notify the user.
+        outcome_repo = OutcomeRepository(session)
+        existing = await outcome_repo.latest_for_claim(claim_ctx.claim_id)
+        if existing is not None:
+            _log.info(
+                "resolve_outcome: outcome already exists for claim %s (status=%s) — skipping",
+                claim_id,
+                existing.status,
+            )
+            return
 
     market = CoinGeckoAdapter(
         api_key=settings.coingecko_api_key or None,
@@ -78,13 +105,19 @@ async def _resolve_outcome_async(claim_id: str) -> None:
 
     try:
         price_t0 = await market.get_price_at(claim_ctx.coingecko_id, claim_ctx.t0)
-        price_resolve = await market.get_price_at(claim_ctx.coingecko_id, claim_ctx.t_resolve)
+        price_resolve = await market.get_price_at(
+            claim_ctx.coingecko_id,
+            claim_ctx.t_resolve,
+        )
     except AssetNotFoundError:
         _log.warning(
             "asset disappeared during window for claim %s — Q-023 reject",
             claim_id,
         )
-        # Sprint 1: UPDATE events.status = 'rejected_asset_mutation'.
+        await _persist_rejected_asset_mutation(
+            session_factory=session_factory,
+            claim_ctx=claim_ctx,
+        )
         await notifier.notify_user(
             claim_ctx.tg_user_id,
             rejected_asset_mutation(asset_symbol=claim_ctx.asset_symbol),
@@ -103,12 +136,15 @@ async def _resolve_outcome_async(claim_id: str) -> None:
 
     observed_return = (price_resolve.price_usd - price_t0.price_usd) / price_t0.price_usd
     observed_pct = observed_return * 100.0
+    is_correct = is_correct_call(claim_ctx.direction, observed_pct)
 
-    # Sprint 1: INSERT outcomes + UPDATE events.status='resolved' +
-    # enqueue recompute_source_reputation (Q-029 reactive reputation).
-    _persist_outcome(
+    await _persist_resolved(
+        session_factory=session_factory,
         claim_ctx=claim_ctx,
-        observed_return=observed_return,
+        observed_return_pct=observed_pct,
+        is_correct=is_correct,
+        price_t0_usd=price_t0.price_usd,
+        price_resolve_usd=price_resolve.price_usd,
         price_t0_ref=price_t0.returned_at.isoformat(),
         price_resolve_ref=price_resolve.returned_at.isoformat(),
     )
@@ -123,70 +159,141 @@ async def _resolve_outcome_async(claim_id: str) -> None:
     await notifier.notify_user(claim_ctx.tg_user_id, text)
 
 
+@dataclass(frozen=True)
 class _ClaimContext:
     """Lightweight value object holding what the resolver needs.
 
-    Sprint 1 wires ``load`` against the real Postgres tables (claims,
-    events, assets, source_identity). For now it raises so the job
-    is structurally complete but advertises the missing wiring loudly.
+    Frozen so the resolver can't accidentally mutate the loaded snapshot
+    halfway through the sequence — every consumer reads from the same
+    immutable dataclass.
     """
 
-    def __init__(
-        self,
-        *,
-        claim_id: str,
-        source_id: str,
-        tg_user_id: int,
-        coingecko_id: str,
-        asset_symbol: str,
-        direction: str,
-        horizon_seconds: int,
-        t0: _dt.datetime,
-        t_resolve: _dt.datetime,
-        event_id: str,
-    ) -> None:
-        self.claim_id = claim_id
-        self.source_id = source_id
-        self.tg_user_id = tg_user_id
-        self.coingecko_id = coingecko_id
-        self.asset_symbol = asset_symbol
-        self.direction = direction
-        self.horizon_seconds = horizon_seconds
-        self.t0 = t0
-        self.t_resolve = t_resolve
-        self.event_id = event_id
+    claim_id: UUID
+    source_id: str
+    tg_user_id: int
+    coingecko_id: str
+    asset_symbol: str
+    direction: str
+    horizon_seconds: int
+    t0: _dt.datetime
+    t_resolve: _dt.datetime
 
     @classmethod
-    def load(cls, claim_id: str) -> _ClaimContext:
-        """Hydrate the context from the DB. Sprint 1 wires this against real tables."""
-        raise NotImplementedError(
-            "resolve_outcome.load is wired against the DB in Sprint 1; "
-            "integration tests pass a fake claim context via monkeypatching."
+    async def load(cls, *, session: AsyncSession, claim_id: str) -> _ClaimContext:
+        """Hydrate the resolver context from ``claims`` + ``source_identity``.
+
+        One round-trip via ``select(Claim, SourceIdentity.tg_user_id)``
+        joined on ``source_id``. Both rows are required for the
+        resolver to do its job — a claim with no identity row means
+        the source was cascade-deleted between submit and resolve and
+        we should let the failure surface for the operator to
+        investigate (we don't silently no-op).
+        """
+        # Local imports keep ``rq``'s pickle dispatch happy.
+        from merlin_infrastructure.db.models import Claim, SourceIdentity
+        from sqlalchemy import select
+
+        try:
+            claim_uuid = UUID(claim_id)
+        except ValueError as e:
+            raise ValueError(
+                f"resolve_outcome got invalid claim_id={claim_id!r}; "
+                "expected a UUID string from the API's enqueue path."
+            ) from e
+
+        stmt = (
+            select(Claim, SourceIdentity.tg_user_id)
+            .join(SourceIdentity, SourceIdentity.source_id == Claim.source_id)
+            .where(Claim.id == claim_uuid)
+        )
+        result = await session.execute(stmt)
+        row = result.first()
+        if row is None:
+            raise LookupError(
+                f"resolve_outcome: no claim row for id={claim_id!r}. "
+                "Either the row was never inserted or the source's "
+                "identity record was deleted. Operator action required."
+            )
+        claim, tg_user_id = row
+
+        return cls(
+            claim_id=claim.id,
+            source_id=claim.source_id,
+            tg_user_id=int(tg_user_id),
+            coingecko_id=claim.asset_coingecko_id,
+            asset_symbol=claim.asset_symbol,
+            direction=claim.direction,
+            horizon_seconds=claim.horizon_seconds,
+            t0=claim.submitted_at,
+            t_resolve=claim.resolves_at,
         )
 
 
-def _persist_outcome(
+async def _persist_resolved(
     *,
+    session_factory: async_sessionmaker[AsyncSession],
     claim_ctx: _ClaimContext,
-    observed_return: float,
+    observed_return_pct: float,
+    is_correct: bool,
+    price_t0_usd: float,
+    price_resolve_usd: float,
     price_t0_ref: str,
     price_resolve_ref: str,
 ) -> None:
-    """INSERT the outcome row + UPDATE event status. Sprint 1 wiring."""
-    raise NotImplementedError(
-        "outcomes / events writes land in Sprint 1 with the SQLAlchemy session"
-    )
+    """INSERT a happy-path outcome row. Caller-owned TX commits here."""
+    from merlin_infrastructure.db.repositories import OutcomeRepository
+
+    async with session_factory() as session:
+        repo = OutcomeRepository(session)
+        await repo.insert_resolved(
+            claim_id=claim_ctx.claim_id,
+            source_id=claim_ctx.source_id,
+            observed_return_pct=observed_return_pct,
+            is_correct=is_correct,
+            price_t0_usd=price_t0_usd,
+            price_resolve_usd=price_resolve_usd,
+            price_t0_ref=price_t0_ref,
+            price_resolve_ref=price_resolve_ref,
+            resolved_at=_dt.datetime.now(tz=_dt.UTC),
+        )
+        await session.commit()
+
+
+async def _persist_rejected_asset_mutation(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    claim_ctx: _ClaimContext,
+) -> None:
+    """INSERT a Q-023 rejection row. Caller-owned TX commits here."""
+    from merlin_infrastructure.db.repositories import OutcomeRepository
+
+    async with session_factory() as session:
+        repo = OutcomeRepository(session)
+        await repo.insert_rejected_asset_mutation(
+            claim_id=claim_ctx.claim_id,
+            source_id=claim_ctx.source_id,
+            resolved_at=_dt.datetime.now(tz=_dt.UTC),
+        )
+        await session.commit()
 
 
 def _enqueue_reputation_recompute(*, source_id: str) -> None:
-    """Enqueue ``recompute_source_reputation`` reactively (Q-029)."""
-    import os
+    """Enqueue ``recompute_source_reputation`` reactively (Q-029).
 
+    Targets the dedicated ``reputation`` queue so it doesn't compete
+    with ``resolve_outcome`` jobs for worker slots. The constant comes
+    from ``merlin_infrastructure.queue.names`` — letting this default
+    silently to ``"merlin"`` was the original Sprint-1 mismatch bug.
+    """
+    from merlin_infrastructure.queue.names import REPUTATION_QUEUE_NAME
     from merlin_infrastructure.queue.rq import RQQueueAdapter
     from redis import Redis
 
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    queue = RQQueueAdapter(redis=Redis.from_url(redis_url))
+    queue = RQQueueAdapter(
+        redis=Redis.from_url(redis_url),
+        queue_name=REPUTATION_QUEUE_NAME,
+    )
     # RQ's ``validate_job_id`` rejects ``:`` — use a dash separator
     # to match the ``resolve-{claim_id}`` convention.
     queue.enqueue(
@@ -194,7 +301,3 @@ def _enqueue_reputation_recompute(*, source_id: str) -> None:
         source_id,
         job_id=f"reputation-{source_id}",
     )
-
-
-# datetime alias kept local to satisfy the forward-ref in _ClaimContext.
-import datetime as _dt  # noqa: E402

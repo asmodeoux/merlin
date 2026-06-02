@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+from merlin_infrastructure.queue.names import ALL_QUEUE_NAMES
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -41,10 +42,15 @@ class Settings(BaseSettings):
     # than being rejected as malformed JSON. Mirrors the same pattern
     # we use in apps/bot for ``TELEGRAM_ADMIN_CHAT_IDS``.
     rq_queues: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["default", "resolution", "reputation"],
+        default_factory=lambda: list(ALL_QUEUE_NAMES),
         description=(
             "Queues this worker drains, comma-separated. RQ workers are "
-            "queue-scoped. Example: ``default,resolution,reputation``."
+            "queue-scoped. Default mirrors "
+            "``merlin_infrastructure.queue.names.ALL_QUEUE_NAMES`` "
+            "(``default,resolution,reputation``) so the worker always "
+            "drains every queue the API + resolver enqueue on. "
+            "Preflight tests cross-check this list against the "
+            "queue names the producers pass to ``RQQueueAdapter``."
         ),
     )
     rq_default_timeout_s: int = Field(default=300, gt=0)
@@ -59,7 +65,7 @@ class Settings(BaseSettings):
         ``.env.example`` comment.
         """
         if raw is None or raw == "":
-            return ["default", "resolution", "reputation"]
+            return list(ALL_QUEUE_NAMES)
         if isinstance(raw, str):
             return [part.strip() for part in raw.split(",") if part.strip()]
         return raw

@@ -52,11 +52,13 @@ async def get_me(
         ClaimRepository,
         SourceIdentityRepository,
         SourceRepository,
+        SourceReputationRepository,
     )
 
     identity_repo = SourceIdentityRepository(session)
     source_repo = SourceRepository(session)
     claim_repo = ClaimRepository(session)
+    reputation_repo = SourceReputationRepository(session)
 
     source_id = await identity_repo.get_source_id_by_tg_user_id(tg_user_id)
     if source_id is None:
@@ -67,7 +69,20 @@ async def get_me(
 
     source = await source_repo.get_by_source_id(source_id)
     open_claims = await claim_repo.list_open_by_source(source_id)
-    resolved_total = await claim_repo.count_resolved_by_source(source_id)
+    # ``count_resolved_by_source`` proxies "claims whose horizon has
+    # passed" — kept as the fallback so a user mid-recompute (the
+    # worker hasn't INSERTed the reputation snapshot yet) still sees
+    # an honest "you have N past-horizon calls" rather than a zero.
+    resolved_total_proxy = await claim_repo.count_resolved_by_source(source_id)
+    # ``source_reputation_history`` row is the canonical answer when
+    # it exists. Cold-start sources return ``None`` and the bot
+    # renders the "tracking your first resolutions" empty-state.
+    reputation = await reputation_repo.latest_for_source(source_id)
+
+    calls_resolved_total = (
+        reputation.outcomes_resolved if reputation is not None else resolved_total_proxy
+    )
+    accuracy_pct = reputation.accuracy_pct if reputation is not None else None
 
     return MeResponse(
         display_name=source.display_name if source is not None else None,
@@ -86,8 +101,13 @@ async def get_me(
             for row in open_claims
         ],
         calls_resolved_recent=[],
-        calls_resolved_total=resolved_total,
-        accuracy_pct=None,
+        calls_resolved_total=calls_resolved_total,
+        accuracy_pct=accuracy_pct,
+        # ``rank`` would require a cross-source query (the user's
+        # row's position in the ordered ``source_reputation_history``
+        # leaderboard). Deferred — the bot doesn't render the value
+        # on /me today, and surfacing it without a clean projection
+        # would couple this route to the full leaderboard query.
         rank=None,
     )
 

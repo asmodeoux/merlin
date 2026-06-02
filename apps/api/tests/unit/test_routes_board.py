@@ -1,10 +1,11 @@
 """Unit tests for ``GET /board``.
 
-The route is a thin pass-through to ``ClaimRepository.leaderboard``,
-which returns an empty list today (no outcomes layer yet). The shape
-+ pass-through are pinned here so when the outcomes layer ships, the
-swap-in is just the repository implementation — the route + contract
-stay put.
+The route is a thin pass-through to
+``SourceReputationRepository.leaderboard``, which reads the latest
+snapshot per source from ``source_reputation_history``. Cold-start
+sources are omitted (no snapshot rows). The shape + pass-through are
+pinned here so when the worker starts writing snapshots, the bot
+renders the populated leaderboard with no code change.
 
 We also verify the ``window`` query param is enforced by FastAPI's
 validation (so the bot can't accidentally pass ``window=lifetime``).
@@ -28,7 +29,7 @@ TEST_TOKEN = "test-internal-token"
 
 
 @dataclass
-class _FakeClaimRepo:
+class _FakeReputationRepo:
     leaderboard_rows: list[LeaderboardEntry] = field(default_factory=list)
     window_calls: list[str] = field(default_factory=list)
 
@@ -39,7 +40,7 @@ class _FakeClaimRepo:
 
 @dataclass
 class _FakeSession:
-    claims: _FakeClaimRepo = field(default_factory=_FakeClaimRepo)
+    reputation: _FakeReputationRepo = field(default_factory=_FakeReputationRepo)
 
     async def commit(self) -> None: ...
 
@@ -71,7 +72,11 @@ async def client(
 ) -> AsyncIterator[httpx.AsyncClient]:
     from merlin_infrastructure.db import repositories as _repos_mod
 
-    monkeypatch.setattr(_repos_mod, "ClaimRepository", lambda _s: fake_session.claims)
+    monkeypatch.setattr(
+        _repos_mod,
+        "SourceReputationRepository",
+        lambda _s: fake_session.reputation,
+    )
 
     async def _fake_get_session() -> AsyncIterator[_FakeSession]:
         yield fake_session
@@ -89,20 +94,23 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {TEST_TOKEN}"}
 
 
-async def test_get_board_returns_empty_list_today(
+async def test_get_board_returns_empty_list_cold_start(
     client: httpx.AsyncClient,
     auth_headers: dict[str, str],
     fake_session: _FakeSession,
 ) -> None:
-    """No outcomes layer → empty list. The bot renders the
-    'leaderboard unlocks after the first resolutions' empty-state.
-    Route must NOT 503 here — empty is the honest signal."""
+    """No reputation snapshots yet → empty list.
+
+    The bot renders the 'leaderboard unlocks after the first
+    resolutions' empty-state. Route must NOT 503 here — empty is the
+    honest signal.
+    """
     response = await client.get("/board", headers=auth_headers)
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["entries"] == []
     assert body["window"] == "all_time"
-    assert fake_session.claims.window_calls == ["all_time"]
+    assert fake_session.reputation.window_calls == ["all_time"]
 
 
 async def test_get_board_passes_window_param_to_repo(
@@ -119,7 +127,7 @@ async def test_get_board_passes_window_param_to_repo(
     assert response.status_code == 200
     body = response.json()
     assert body["window"] == "30d"
-    assert fake_session.claims.window_calls == ["30d"]
+    assert fake_session.reputation.window_calls == ["30d"]
 
 
 async def test_get_board_rejects_invalid_window(
@@ -142,10 +150,13 @@ async def test_get_board_renders_populated_entries(
     auth_headers: dict[str, str],
     fake_session: _FakeSession,
 ) -> None:
-    """Forward-compat: when the repo returns rows (post-outcomes-layer),
-    the route must project them through cleanly. We seed two
-    ``LeaderboardEntry``s and assert the wire payload shape."""
-    fake_session.claims.leaderboard_rows = [
+    """When the repo returns rows the route projects them cleanly.
+
+    Seeds two ``LeaderboardEntry``s and asserts the wire payload shape
+    — pins the contract so a future schema/serialization tweak fails
+    here before reaching the bot.
+    """
+    fake_session.reputation.leaderboard_rows = [
         LeaderboardEntry(
             rank=1,
             display_name="Alice",

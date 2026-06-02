@@ -3,8 +3,9 @@
 These exercise the query shape without a live Postgres — the goal is
 to pin the contract the route + bot depend on (``list_open_by_source``
 orders by ``resolves_at`` and filters on ``resolves_at > now()``;
-``count_resolved_by_source`` returns an int; ``leaderboard`` returns
-an empty list until the outcomes layer lands). End-to-end testing
+``count_resolved_by_source`` returns an int). The leaderboard read
+lives on ``SourceReputationRepository`` — it queries
+``source_reputation_history``, not raw claims. End-to-end testing
 against a real DB lives in the integration suite.
 
 Strategy: hand-rolled ``AsyncMock``-backed session that records the
@@ -312,17 +313,18 @@ async def test_count_resolved_by_source_returns_int() -> None:
     assert await repo.count_resolved_by_source("tg:somebody") == 3
 
 
-async def test_leaderboard_returns_empty_for_now() -> None:
-    """No outcomes layer yet → ``leaderboard(window)`` returns ``[]``.
+async def test_claim_repository_has_no_leaderboard_method() -> None:
+    """The leaderboard read moved to ``SourceReputationRepository``.
 
-    This is the contract the route relies on for the honest empty
-    state. When the worker writes outcomes, only the repo
-    implementation changes; this test gets a real ranking-shape
-    counterpart alongside.
+    Pins the layering decision: anything that wants to rank sources
+    by accuracy must go through the reputation-history repository.
+    A regression that re-adds ``leaderboard`` here is a sign that
+    someone reverted the per-snapshot read path back to a per-claim
+    aggregation — which is the historical empty-list bug.
     """
-    sess = _fake_session()
-    repo = ClaimRepository(sess)
-    assert await repo.leaderboard("all_time") == []
-    assert await repo.leaderboard("7d") == []
-    # And the call must not touch the session — there's no query to run.
-    sess.execute.assert_not_awaited()
+    repo = ClaimRepository(_fake_session())
+    assert not hasattr(repo, "leaderboard"), (
+        "ClaimRepository regained a .leaderboard method. Move it to "
+        "SourceReputationRepository — that's where source_reputation_history "
+        "lives."
+    )

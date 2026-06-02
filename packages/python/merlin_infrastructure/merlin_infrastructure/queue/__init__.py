@@ -16,6 +16,19 @@ Sub-modules:
 """
 
 from merlin_infrastructure.queue.fake import FakeJobQueue
+from merlin_infrastructure.queue.names import (
+    ALL_QUEUE_NAMES,
+    DEFAULT_QUEUE_NAME,
+    REPUTATION_QUEUE_NAME,
+    RESOLUTION_QUEUE_NAME,
+)
 from merlin_infrastructure.queue.rq import RQQueueAdapter
 
-__all__ = ["FakeJobQueue", "RQQueueAdapter"]
+__all__ = [
+    "ALL_QUEUE_NAMES",
+    "DEFAULT_QUEUE_NAME",
+    "REPUTATION_QUEUE_NAME",
+    "RESOLUTION_QUEUE_NAME",
+    "FakeJobQueue",
+    "RQQueueAdapter",
+]

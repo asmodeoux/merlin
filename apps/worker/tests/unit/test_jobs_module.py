@@ -48,9 +48,13 @@ def test_recompute_source_reputation_signature() -> None:
 
 
 def test_config_settings_smoke() -> None:
+    from merlin_infrastructure.queue.names import ALL_QUEUE_NAMES
     from merlin_worker.config import Settings
 
     s = Settings()
     assert s.environment in {"dev", "staging", "prod", "test"}
-    assert "default" in s.rq_queues
+    # Default ``rq_queues`` MUST match ``ALL_QUEUE_NAMES`` so the
+    # worker drains exactly the queues the API + resolver enqueue
+    # on. Sprint-1 mismatch regression sits here.
+    assert tuple(s.rq_queues) == ALL_QUEUE_NAMES
     assert s.coingecko_base_url.startswith("http")

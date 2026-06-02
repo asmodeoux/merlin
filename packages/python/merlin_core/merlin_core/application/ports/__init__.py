@@ -52,11 +52,15 @@ from merlin_core.application.ports.repositories import (
     InviteRecord,
     InviteRepositoryPort,
     LeaderboardEntry,
+    OutcomeRecord,
+    OutcomeRepositoryPort,
     RepositoryError,
     SourceAlreadyExistsError,
     SourceIdentityRepositoryPort,
     SourceRecord,
     SourceRepositoryPort,
+    SourceReputationRecord,
+    SourceReputationRepositoryPort,
 )
 
 __all__ = [
@@ -75,10 +79,14 @@ __all__ = [
     "MarketDataError",
     "MarketDataPort",
     "NotifierPort",
+    "OutcomeRecord",
+    "OutcomeRepositoryPort",
     "PricePoint",
     "RepositoryError",
     "SourceAlreadyExistsError",
     "SourceIdentityRepositoryPort",
     "SourceRecord",
     "SourceRepositoryPort",
+    "SourceReputationRecord",
+    "SourceReputationRepositoryPort",
 ]

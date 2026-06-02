@@ -13,14 +13,20 @@ See MVP §15 invariants 7/8/10/12 and
 
 from merlin_infrastructure.db.repositories.claim_repository import ClaimRepository
 from merlin_infrastructure.db.repositories.invite_repository import InviteRepository
+from merlin_infrastructure.db.repositories.outcome_repository import OutcomeRepository
 from merlin_infrastructure.db.repositories.source_identity_repository import (
     SourceIdentityRepository,
 )
 from merlin_infrastructure.db.repositories.source_repository import SourceRepository
+from merlin_infrastructure.db.repositories.source_reputation_repository import (
+    SourceReputationRepository,
+)
 
 __all__ = [
     "ClaimRepository",
     "InviteRepository",
+    "OutcomeRepository",
     "SourceIdentityRepository",
     "SourceRepository",
+    "SourceReputationRepository",
 ]

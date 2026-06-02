@@ -16,8 +16,10 @@ Owns ``claims`` table I/O for the minimum slice that makes ``/me`` and
 * ``count_resolved_by_source`` — the ``GET /me`` resolved tally.
   Honest proxy for "resolved" until the outcomes table exists.
 
-* ``leaderboard`` — returns ``[]`` for now. The shape is pinned here
-  so when the worker writes outcomes, only this method changes.
+The leaderboard read lives on ``SourceReputationRepository`` (it queries
+``source_reputation_history``, not raw claims) — that keeps the
+"reputation = hit rate of resolved outcomes" coupling on one repo and
+out of this one.
 
 Append-only invariant (MVP §15 invariant 7): no ``update()`` /
 ``delete()`` method. Closed-loop columns (``edits`` JSONB +
@@ -33,7 +35,6 @@ from uuid import UUID
 from merlin_core.application.ports import (
     ClaimRecord,
     ClaimRepositoryPort,
-    LeaderboardEntry,
 )
 from sqlalchemy import func, select
 
@@ -141,15 +142,3 @@ class ClaimRepository(ClaimRepositoryPort):
         )
         scalar = result.scalar()
         return int(scalar) if scalar is not None else 0
-
-    async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
-        """Top-N source ranking — empty until the outcomes layer lands.
-
-        The ``window`` parameter is accepted today so the route stays a
-        thin pass-through; we ignore it because there's nothing to
-        window over yet. When outcomes ship, this method gets the
-        real query (resolved-claim accuracy with Bayesian shrinkage,
-        cold-start hidden per MVP §11.1).
-        """
-        del window  # unused until the outcomes layer ships
-        return []

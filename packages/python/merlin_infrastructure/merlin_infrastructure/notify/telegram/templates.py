@@ -19,9 +19,22 @@ from __future__ import annotations
 
 from merlin_core.contracts.horizons import humanise_horizon
 from merlin_core.domain import Direction
+from merlin_core.domain.scoring import FLAT_THRESHOLD_PCT, is_correct_call, is_flat
 
-# A move below this percentage counts as a wash for notification framing.
-FLAT_THRESHOLD_PCT = 0.5
+# Re-exported for callers that historically reached for it from this
+# module (telegram templates were the original home of the flat-cutoff
+# constant). The single definition now lives in ``merlin_core.domain``
+# so the resolver's hit-rate computation and these templates can't
+# disagree on what "won" means.
+__all__ = [
+    "FLAT_THRESHOLD_PCT",
+    "outcome_flat",
+    "outcome_lost",
+    "outcome_won",
+    "rejected_asset_mutation",
+    "render_outcome",
+    "resolution_failed_final",
+]
 
 
 def _direction_phrase(direction: Direction) -> str:
@@ -82,14 +95,13 @@ def render_outcome(
 ) -> str:
     """Dispatch to the right outcome template by sign and magnitude.
 
-    Single entry point for the resolver. Keeps the won/lost/flat
-    decision rule in one place.
+    Single entry point for the resolver. Defers the won/lost decision
+    to ``merlin_core.domain.scoring.is_correct_call`` so this view and
+    the reputation recompute view agree forever.
     """
-    if abs(pct) < FLAT_THRESHOLD_PCT:
+    if is_flat(pct):
         return outcome_flat(asset_symbol=asset_symbol, pct=pct)
-    expected_sign = 1 if direction == "long" else -1
-    actual_sign = 1 if pct >= 0 else -1
-    if expected_sign == actual_sign:
+    if is_correct_call(direction, pct):
         return outcome_won(
             asset_symbol=asset_symbol,
             direction=direction,

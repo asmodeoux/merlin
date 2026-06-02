@@ -16,8 +16,15 @@ from merlin_core.domain.claim_draft import (
     ParsedVia,
     ParseMetadata,
 )
+from merlin_core.domain.scoring import (
+    FLAT_THRESHOLD_PCT,
+    accuracy_pct,
+    is_correct_call,
+    is_flat,
+)
 
 __all__ = [
+    "FLAT_THRESHOLD_PCT",
     "AssetCandidate",
     "ClaimDraft",
     "Conviction",
@@ -27,4 +34,7 @@ __all__ = [
     "Horizon",
     "ParseMetadata",
     "ParsedVia",
+    "accuracy_pct",
+    "is_correct_call",
+    "is_flat",
 ]

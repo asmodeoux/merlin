@@ -84,6 +84,7 @@ def get_ports() -> Ports:
     from merlin_infrastructure.llm.openrouter import OpenRouterClaimDrafter
     from merlin_infrastructure.market_data.coingecko import CoinGeckoAdapter
     from merlin_infrastructure.notify.telegram.notifier import TelegramNotifier
+    from merlin_infrastructure.queue.names import RESOLUTION_QUEUE_NAME
     from merlin_infrastructure.queue.rq import RQQueueAdapter
     from redis import Redis
 
@@ -104,6 +105,13 @@ def get_ports() -> Ports:
         ),
         queue=RQQueueAdapter(
             redis=Redis.from_url(settings.redis_url),
+            # ``POST /claims`` schedules ``resolve_outcome`` jobs on
+            # the dedicated ``resolution`` queue (one of the names the
+            # worker drains by default). Passing the constant — rather
+            # than letting the adapter silently default — closes the
+            # Sprint-1 mismatch regression where the API talked to
+            # ``"merlin"`` while the worker listened on ``resolution``.
+            queue_name=RESOLUTION_QUEUE_NAME,
         ),
         notifier=TelegramNotifier(
             bot_token=settings.telegram_bot_token or "noop",

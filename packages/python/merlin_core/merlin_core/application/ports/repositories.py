@@ -14,13 +14,18 @@ Protocols landed so far:
   ``list_open_by_source`` + ``count_resolved_by_source`` +
   ``leaderboard``) for ``POST /alpha`` Confirm to persist a row and
   for ``GET /me`` + ``GET /board`` to be honest. The leaderboard query
-  is wired here even though it returns ``[]`` for now — when the
-  outcomes layer ships, only the implementation changes.
+  reads from ``source_reputation_history`` once outcomes start landing
+  (Sprint 1).
+* ``OutcomeRepositoryPort`` — append-only outcome events. The resolver
+  INSERTs one row per ``resolve_outcome`` execution.
+* ``SourceReputationRepositoryPort`` — append-only reputation
+  snapshots written by the reactive ``recompute_source_reputation``
+  job (Q-029, no daily cron).
 
-Later sprints add ``OutcomeRepositoryPort``, ``AttributionLedgerPort``,
-``SourceReputationHistoryPort``, and friends. Every append-only
-repository (MVP §15 invariants 7/8/10/12) deliberately does NOT expose
-an ``update()`` / ``delete()`` method.
+Every append-only repository (MVP §15 invariants 7/8/10/12)
+deliberately does NOT expose an ``update()`` / ``delete()`` method;
+the database-layer triggers shipped with the matching migration are
+the second line of defense.
 
 All methods are async — every adapter is built on async SQLAlchemy.
 ``source_id`` is always the opaque ``'tg:<sha256>'`` string from
@@ -301,14 +306,14 @@ class ClaimRepositoryPort(Protocol):
     """Persist + read ``claims`` rows.
 
     Sprint-1 slice: ``create`` (the ``/alpha`` Confirm write),
-    ``list_open_by_source`` (``/me``'s open list),
-    ``count_resolved_by_source`` (``/me``'s resolved tally), and
-    ``leaderboard`` (``/board`` — returns ``[]`` until the worker
-    lands).
+    ``list_open_by_source`` (``/me``'s open list), and
+    ``count_resolved_by_source`` (``/me``'s resolved tally).
 
-    The leaderboard query is wired here even when empty so the route
-    can stay a one-liner: ``await repo.leaderboard(window)``. When
-    outcomes ship, only this method changes — routes and bot stay put.
+    The leaderboard query lives on
+    ``SourceReputationRepositoryPort.leaderboard`` instead — it reads
+    snapshot rows from ``source_reputation_history``, not raw claims,
+    so coupling the read to the reputation repository keeps the
+    layering honest.
 
     Append-only invariant (MVP §15 invariant 7): there is no
     ``update()`` / ``delete()`` method by design. Closed-loop columns
@@ -365,11 +370,153 @@ class ClaimRepositoryPort(Protocol):
         """
         ...
 
-    async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
-        """Top-N source ranking for the window.
 
-        Returns ``[]`` until the outcomes layer exists — there's
-        nothing honest to rank by. Shape is pinned so the route +
-        contract stay stable when the swap-in lands.
+# ---------------------------------------------------------------------------
+# OutcomeRepositoryPort — append-only outcome events.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeRecord:
+    """Read-side projection of a row in ``outcomes``."""
+
+    id: UUID
+    claim_id: UUID
+    source_id: str
+    status: str
+    observed_return_pct: float | None
+    is_correct: bool | None
+    price_t0_usd: float | None
+    price_resolve_usd: float | None
+    price_t0_ref: str | None
+    price_resolve_ref: str | None
+    supersedes_outcome_id: UUID | None
+    resolved_at: datetime
+
+
+class OutcomeRepositoryPort(Protocol):
+    """Persist + read ``outcomes`` rows.
+
+    Append-only (MVP §15 invariants 7/8) — no ``update`` or ``delete``
+    on this port; corrections INSERT a new row with
+    ``supersedes_outcome_id`` pointing at the previous head.
+
+    ``insert_resolved`` is the canonical happy path the resolver hits.
+    ``insert_rejected_asset_mutation`` covers the Q-023 case where
+    CoinGecko 404s an asset between t0 and t_resolve.
+    """
+
+    async def insert_resolved(
+        self,
+        *,
+        claim_id: UUID,
+        source_id: str,
+        observed_return_pct: float,
+        is_correct: bool,
+        price_t0_usd: float,
+        price_resolve_usd: float,
+        price_t0_ref: str,
+        price_resolve_ref: str,
+        resolved_at: datetime,
+    ) -> OutcomeRecord:
+        """INSERT a successful resolution event. Flushes; does not commit."""
+        ...
+
+    async def insert_rejected_asset_mutation(
+        self,
+        *,
+        claim_id: UUID,
+        source_id: str,
+        resolved_at: datetime,
+    ) -> OutcomeRecord:
+        """INSERT a Q-023 rejection row. Flushes; does not commit."""
+        ...
+
+    async def latest_for_claim(self, claim_id: UUID) -> OutcomeRecord | None:
+        """Head of the supersedes chain for the claim, or ``None`` if unresolved.
+
+        Used by the resolver's idempotency guard: if a row already
+        exists for ``claim_id``, ``resolve_outcome`` short-circuits
+        (re-running a retried job never double-notifies the user).
+        """
+        ...
+
+    async def count_resolved_and_correct_for_source(
+        self,
+        source_id: str,
+    ) -> tuple[int, int]:
+        """Return ``(resolved, correct)`` for the source.
+
+        Filters ``status='resolved'`` only — Q-023 rejection rows and
+        ``resolution_failed_final`` rows don't count against (or for)
+        the user's reputation. The "wash_zero" v0 choice means flat
+        outcomes are in ``resolved`` but NOT in ``correct``.
+
+        Used by ``recompute_source_reputation``; one query per recompute
+        beats two round-trips for the same two counts.
+        """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# SourceReputationRepositoryPort — append-only reputation snapshots.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SourceReputationRecord:
+    """Read-side projection of a row in ``source_reputation_history``."""
+
+    id: UUID
+    source_id: str
+    outcomes_resolved: int
+    outcomes_correct: int
+    accuracy_pct: float | None
+    triggering_outcome_id: UUID | None
+    effective_at: datetime
+
+
+class SourceReputationRepositoryPort(Protocol):
+    """Persist + read ``source_reputation_history`` rows.
+
+    Append-only (MVP §15 invariant 10): every recompute INSERTs a new
+    row. Readers ask for ``latest_for_source(source_id)`` to project
+    "what is this source's reputation right now". The leaderboard
+    query is exposed here instead of on ``ClaimRepositoryPort`` so the
+    reading layer joins reputation snapshots, not raw claims.
+    """
+
+    async def insert_snapshot(
+        self,
+        *,
+        source_id: str,
+        outcomes_resolved: int,
+        outcomes_correct: int,
+        accuracy_pct: float | None,
+        triggering_outcome_id: UUID | None,
+        effective_at: datetime,
+    ) -> SourceReputationRecord:
+        """INSERT one history row. Flushes; does not commit."""
+        ...
+
+    async def latest_for_source(
+        self,
+        source_id: str,
+    ) -> SourceReputationRecord | None:
+        """``ORDER BY effective_at DESC LIMIT 1`` for one source.
+
+        Returns ``None`` for a cold-start source (no resolutions yet).
+        Readers map ``None`` → "tracking your first resolutions" in
+        bot-voice terms.
+        """
+        ...
+
+    async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
+        """Top sources by latest snapshot's ``accuracy_pct``.
+
+        ``window`` is accepted for forward compatibility; v0 ignores it
+        and returns the all-time ranking — there's no time-windowed
+        slicing of reputation snapshots yet. Cold-start sources are
+        omitted (their ``accuracy_pct`` is NULL).
         """
         ...
