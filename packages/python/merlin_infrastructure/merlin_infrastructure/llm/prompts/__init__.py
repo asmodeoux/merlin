@@ -23,4 +23,4 @@ def load_prompt(name: str) -> str:
     return Path(str(resource)).read_text(encoding="utf-8")
 
 
-LATEST_CLAIM_EXTRACTION_PROMPT = "claim_extraction_v1.md"
+LATEST_CLAIM_EXTRACTION_PROMPT = "claim_extraction_v2.md"

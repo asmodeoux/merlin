@@ -76,7 +76,7 @@ async def get_me(
                 claim_id=row.id,
                 asset_symbol=row.asset_symbol,
                 direction=row.direction,
-                horizon=row.horizon,
+                horizon_seconds=row.horizon_seconds,
                 resolves_at=row.resolves_at,
                 # NULL on legacy rows (predating the column) and on
                 # rows where CoinGecko was down at submit time. The

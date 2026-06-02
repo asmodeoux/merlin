@@ -10,7 +10,7 @@ from merlin_infrastructure.llm.fake import FakeClaimDrafter
 
 async def test_registered_draft_returned_verbatim() -> None:
     drafter = FakeClaimDrafter()
-    expected = ClaimDraft(direction="long", horizon="14d", conviction="strong")
+    expected = ClaimDraft(direction="long", horizon=1_209_600, conviction="strong")
     drafter.register("ETH long 14d strong", expected)
 
     actual = await drafter.draft("ETH long 14d strong")

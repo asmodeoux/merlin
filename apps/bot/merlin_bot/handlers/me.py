@@ -121,7 +121,7 @@ def _render_open_call(call: dict[str, Any]) -> str:
     """
     asset = str(call.get("asset_symbol") or "?").upper()
     direction = _direction_human(str(call.get("direction") or ""))
-    horizon = _horizon_human(str(call.get("horizon") or ""))
+    horizon = _horizon_human(call.get("horizon_seconds"))
     resolves_at = _utc_datetime(str(call.get("resolves_at") or ""))
     entry_chunk = _format_entry_price(call.get("entry_price_usd"))
     middle = f"{horizon}, {entry_chunk}resolves {resolves_at}"
@@ -175,25 +175,28 @@ def _direction_human(value: str) -> str:
     return value or "?"
 
 
-def _horizon_human(code: str) -> str:
-    """Translate wire codes to user-facing strings.
+def _horizon_human(value: object) -> str:
+    """Render horizon (integer seconds) as a user-facing string.
 
-    Mirrors ``apps.bot.merlin_bot.handlers.alpha.step_preview._horizon_human``
-    — kept as a private copy here so the /me handler doesn't import
-    /alpha internals. The wire codes are stable (MVP §15 invariant 4);
-    if a new horizon lands, both maps update together.
+    The wire format is integer seconds via
+    ``OpenCallEntry.horizon_seconds``; ``humanise_horizon`` picks the
+    cleanest unit (1 hour / 3 hours / 24 hours / 1 week / 30 days /
+    2 months / 3 months). Returns ``"soon"`` as a defensive fallback
+    for the edge case where ``horizon_seconds`` is missing / non-
+    numeric - keeps the bullet line readable even with malformed
+    server output.
     """
-    mapping = {
-        "1h": "1 hour",
-        "4h": "4 hours",
-        "24h": "24 hours",
-        "3d": "3 days",
-        "7d": "1 week",
-        "14d": "2 weeks",
-        "30d": "1 month",
-        "90d": "3 months",
-    }
-    return mapping.get(code, code or "soon")
+    from merlin_core.contracts.horizons import humanise_horizon
+
+    if value is None or value == "":
+        return "soon"
+    try:
+        seconds = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return "soon"
+    if seconds <= 0:
+        return "soon"
+    return humanise_horizon(seconds)
 
 
 def _utc_datetime(iso: str) -> str:

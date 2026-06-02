@@ -37,6 +37,12 @@ from typing import Any
 
 import httpx
 from merlin_core.application.ports import ClaimDrafterError
+from merlin_core.contracts.horizons import (
+    HORIZON_MAX_SECONDS,
+    HORIZON_MIN_SECONDS,
+    HorizonParseError,
+    parse_horizon_text,
+)
 from merlin_core.domain import (
     AssetCandidate,
     ClaimDraft,
@@ -61,7 +67,7 @@ _CONVICTION_CONFIDENCE_FLOOR = 0.7
 
 # Conviction reads tone ("could moon", "I'm pretty sure"), not keywords —
 # the model gets it right less often than direction (explicit "long"/"short")
-# or horizon (explicit "14d"/"2 weeks"). Insisting on a high-confidence read
+# or horizon (explicit "3 hours"/"2 weeks"). Insisting on a high-confidence read
 # would force a manual pick on most freeform claims. "medium" is the centre
 # of the four-value scale, so defaulting there is the lowest-information /
 # least-prejudicial choice; the user can still tap Edit on the preview to
@@ -228,10 +234,20 @@ class OpenRouterClaimDrafter:
             confidences.get("direction"),
             _DIRECTION_CONFIDENCE_FLOOR,
         )
-        horizon = _gated(
-            extracted.get("horizon"),
-            confidences.get("horizon"),
-            _HORIZON_CONFIDENCE_FLOOR,
+        # Horizon is now an integer-seconds count instead of a Literal
+        # bucket. The prompt asks the model to emit ``horizon_seconds``
+        # directly; we accept either key for one prompt-revision of
+        # transition (the older ``horizon`` schema still ships with the
+        # current ``claim_extraction_v1.md`` if the model refuses to
+        # follow v2). Range-bound + confidence-gate before we trust it.
+        horizon_raw = extracted.get("horizon_seconds")
+        if horizon_raw is None:
+            horizon_raw = extracted.get("horizon")
+        horizon_confidence = confidences.get("horizon_seconds")
+        if horizon_confidence is None:
+            horizon_confidence = confidences.get("horizon")
+        horizon_seconds = _coerce_horizon_seconds(
+            _gated(horizon_raw, horizon_confidence, _HORIZON_CONFIDENCE_FLOOR)
         )
         conviction = _gated(
             extracted.get("conviction"),
@@ -252,7 +268,7 @@ class OpenRouterClaimDrafter:
             # surfacing conviction as a missing field. Log so a low-confidence
             # or out-of-domain extraction is still visible post-hoc.
             _log.info(
-                "LLM extraction missing conviction (raw=%r, confidence=%s); " "defaulting to %r",
+                "LLM extraction missing conviction (raw=%r, confidence=%s); defaulting to %r",
                 extracted.get("conviction"),
                 confidences.get("conviction"),
                 _CONVICTION_DEFAULT,
@@ -262,7 +278,7 @@ class OpenRouterClaimDrafter:
         missing: list[str] = []
         if direction is None:
             missing.append("direction")
-        if horizon is None:
+        if horizon_seconds is None:
             missing.append("horizon")
         if asset_query is None:
             missing.append("asset")
@@ -282,10 +298,7 @@ class OpenRouterClaimDrafter:
             asset_candidates=(),  # API layer fills this after CoinGecko /search
             asset_query=asset_query_str,
             direction=_typed(direction, ("long", "short")),
-            horizon=_typed(
-                horizon,
-                ("1h", "4h", "24h", "3d", "7d", "14d", "30d", "90d"),
-            ),
+            horizon=horizon_seconds,
             conviction=typed_conviction,
             thesis_text=extracted.get("thesis_text") or user_text,
             extracted_fields=extracted_fields,
@@ -342,6 +355,61 @@ def _typed(value: object, allowed: tuple[str, ...]) -> Any:
         return None
     if isinstance(value, str) and value in allowed:
         return value
+    return None
+
+
+def _coerce_horizon_seconds(value: object) -> int | None:
+    """Coerce the LLM's horizon extraction into bounded integer seconds.
+
+    Accepts:
+    - ``int`` / ``float`` interpreted as a literal second count.
+    - ``str`` in the old prompt-v1 bucket shape (``"3h"`` / ``"14d"``
+      / ``"3 months"`` / etc.) so a stale prompt or a model that
+      refuses the new schema still works without a 500. Reuses the
+      domain parser to honour the canonical mapping.
+
+    Returns ``None`` when the value can't be coerced or falls outside
+    ``[HORIZON_MIN_SECONDS, HORIZON_MAX_SECONDS]``. The caller treats
+    ``None`` as "the model didn't deliver a usable horizon" and adds
+    it to ``missing_fields``, which the bot surfaces as the picker.
+    """
+    seconds = _value_to_seconds(value)
+    if seconds is None:
+        return None
+    if seconds < HORIZON_MIN_SECONDS or seconds > HORIZON_MAX_SECONDS:
+        return None
+    return seconds
+
+
+def _value_to_seconds(value: object) -> int | None:
+    """Translate the raw LLM payload into an integer second count.
+
+    Single place that owns the "what shapes does the model emit?"
+    decision. The range gate lives in the caller so both the int /
+    float and string paths share one set of bounds.
+
+    ``bool`` is rejected explicitly because it's a subclass of
+    ``int`` — without the guard, ``True`` would slip through as
+    ``1`` second.
+
+    ``HorizonParseError`` and the broader ``ValueError``
+    (``HorizonRangeError`` subclasses ``ValueError``) are caught
+    uniformly: we never want a parse-vs-range distinction to leak
+    out of this helper; the caller's range gate is the single
+    source of truth.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if isinstance(value, str):
+        try:
+            return parse_horizon_text(value)
+        except (HorizonParseError, ValueError):
+            return None
     return None
 
 

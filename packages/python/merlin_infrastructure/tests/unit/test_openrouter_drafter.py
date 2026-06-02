@@ -36,13 +36,13 @@ async def test_successful_extraction_high_confidence(http_client: httpx.AsyncCli
         {
             "asset_query": "ETH",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "Vitalik rumour",
             "confidences": {
                 "asset_query": 0.95,
                 "direction": 0.95,
-                "horizon": 0.9,
+                "horizon_seconds": 0.9,
                 "conviction": 0.85,
             },
             "extracted_fields": {
@@ -58,7 +58,7 @@ async def test_successful_extraction_high_confidence(http_client: httpx.AsyncCli
         draft = await drafter.draft("ETH long 14d strong, Vitalik rumour")
 
     assert draft.direction == "long"
-    assert draft.horizon == "14d"
+    assert draft.horizon == 1_209_600
     assert draft.conviction == "strong"
     assert draft.thesis_text == "Vitalik rumour"
     assert draft.extracted_fields.rumour_referenced is True
@@ -89,12 +89,12 @@ async def test_asset_query_below_confidence_floor_is_none(
         {
             "asset_query": "maybe ETH idk",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "confidences": {
                 "asset_query": 0.3,  # below 0.85 floor
                 "direction": 0.95,
-                "horizon": 0.9,
+                "horizon_seconds": 0.9,
                 "conviction": 0.85,
             },
         }
@@ -115,12 +115,12 @@ async def test_low_confidence_field_is_marked_missing(
         {
             "asset_query": "ETH",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "confidences": {
                 "asset_query": 0.95,
                 "direction": 0.95,
-                "horizon": 0.3,  # below floor
+                "horizon_seconds": 0.3,  # below floor
                 "conviction": 0.9,
             },
         }
@@ -146,12 +146,12 @@ async def test_low_confidence_conviction_defaults_to_medium(
         {
             "asset_query": "ETH",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "confidences": {
                 "asset_query": 0.95,
                 "direction": 0.95,
-                "horizon": 0.9,
+                "horizon_seconds": 0.9,
                 "conviction": 0.3,  # below 0.7 floor
             },
         }
@@ -175,12 +175,12 @@ async def test_null_conviction_defaults_to_medium(
         {
             "asset_query": "ETH",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": None,
             "confidences": {
                 "asset_query": 0.95,
                 "direction": 0.95,
-                "horizon": 0.9,
+                "horizon_seconds": 0.9,
                 "conviction": 0.0,
             },
         }
@@ -205,12 +205,12 @@ async def test_out_of_domain_conviction_defaults_to_medium(
         {
             "asset_query": "ETH",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "moderate",  # not in {weak, medium, strong, very_strong}
             "confidences": {
                 "asset_query": 0.95,
                 "direction": 0.95,
-                "horizon": 0.9,
+                "horizon_seconds": 0.9,
                 "conviction": 0.9,
             },
         }
@@ -338,12 +338,12 @@ async def test_markdown_fenced_json_is_stripped(http_client: httpx.AsyncClient) 
             {
                 "asset_query": "ETH",
                 "direction": "long",
-                "horizon": "14d",
+                "horizon_seconds": 1_209_600,
                 "conviction": "strong",
                 "confidences": {
                     "asset_query": 0.95,
                     "direction": 0.99,
-                    "horizon": 0.95,
+                    "horizon_seconds": 0.95,
                     "conviction": 0.9,
                 },
             }
@@ -358,7 +358,7 @@ async def test_markdown_fenced_json_is_stripped(http_client: httpx.AsyncClient) 
         router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
         draft = await drafter.draft("ETH long 14d strong")
     assert draft.direction == "long"
-    assert draft.horizon == "14d"
+    assert draft.horizon == 1_209_600
     assert draft.conviction == "strong"
 
 
@@ -375,6 +375,94 @@ async def test_plain_code_fence_without_language_tag_is_stripped(
         router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
         draft = await drafter.draft("ambiguous text")
     assert draft.direction is None  # confidences empty → gated out
+
+
+async def test_legacy_bucket_string_horizon_is_coerced(http_client: httpx.AsyncClient) -> None:
+    """Back-compat: if the model ignores the v2 prompt and emits the
+    old bucket string (``"14d"``), we still extract the value via the
+    domain parser instead of dropping it on the floor.
+
+    The new key ``horizon_seconds`` is preferred, but the adapter also
+    accepts the legacy ``horizon`` key during prompt transitions so a
+    stale model snapshot doesn't break extraction.
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon": "14d",  # legacy key + legacy string value
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.95,
+                "direction": 0.95,
+                "horizon": 0.95,
+                "conviction": 0.9,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long 2 weeks strong")
+    assert draft.horizon == 1_209_600
+
+
+async def test_below_range_horizon_is_gated_to_none(http_client: httpx.AsyncClient) -> None:
+    """Model emitting a value below the 1-hour floor must NOT slip
+    through — surface as a missing field so the bot opens the picker.
+
+    Regression-pin for the boundary: we'd rather force the user to
+    pick a longer horizon than commit a 60-second bet that CoinGecko's
+    5-minute bucket can't resolve cleanly.
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon_seconds": 60,  # 1 minute — below 1h floor
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.95,
+                "direction": 0.95,
+                "horizon_seconds": 0.95,
+                "conviction": 0.9,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long 1 minute strong")
+    assert draft.horizon is None
+    assert "horizon" in draft.missing_fields
+
+
+async def test_above_range_horizon_is_gated_to_none(http_client: httpx.AsyncClient) -> None:
+    """Same as above, but for the 90-day ceiling. The eventual
+    leaderboard window assumes resolutions land within a quarter; a
+    one-year bet would sit forever in the open list and never get
+    rendered into a useful outcome.
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon_seconds": 31_536_000,  # 1 year — above 90d ceiling
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.95,
+                "direction": 0.95,
+                "horizon_seconds": 0.95,
+                "conviction": 0.9,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long 1 year strong")
+    assert draft.horizon is None
+    assert "horizon" in draft.missing_fields
 
 
 async def test_request_disables_reasoning(http_client: httpx.AsyncClient) -> None:

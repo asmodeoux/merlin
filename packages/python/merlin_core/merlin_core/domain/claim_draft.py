@@ -12,7 +12,13 @@ from datetime import datetime
 from typing import Literal
 
 Direction = Literal["long", "short"]
-Horizon = Literal["1h", "4h", "24h", "3d", "7d", "14d", "30d", "90d"]
+# Horizon is an integer count of seconds in
+# ``[merlin_core.contracts.horizons.HORIZON_MIN_SECONDS, HORIZON_MAX_SECONDS]``.
+# Historically a Literal of quantised buckets ("1h" / "7d" / ...); the
+# continuous-seconds model lets users say "3 hours" without the
+# nearest-bucket UX trap. Kept as a public alias so signatures read
+# ``Horizon`` rather than a bare ``int``.
+Horizon = int
 Conviction = Literal["weak", "medium", "strong", "very_strong"]
 ParsedVia = Literal["freeform_llm", "form"]
 

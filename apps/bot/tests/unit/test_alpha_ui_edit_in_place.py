@@ -95,7 +95,7 @@ def _context(*, user_data: dict[str, Any] | None = None) -> MagicMock:
 
 _FULL_DRAFT = {
     "direction": "long",
-    "horizon": "14d",
+    "horizon_seconds": 1_209_600,
     "conviction": "strong",
     "thesis_text": "Vitalik rumour",
 }
@@ -292,9 +292,9 @@ async def test_show_preview_sends_new_message_on_freeform_entry() -> None:
         (
             step_horizon,
             "on_pick",
-            f"{step_horizon.CB_PREFIX}14d",
-            "horizon",
-            "14d",
+            f"{step_horizon.CB_PREFIX}1209600",
+            "horizon_seconds",
+            1_209_600,
         ),
         (
             step_conviction,
@@ -310,7 +310,7 @@ async def test_pick_handlers_edit_picker_back_into_preview(
     fn_name: str,
     callback_data: str,
     field: str,
-    value: str,
+    value: Any,
 ) -> None:
     update = _callback_update(data=callback_data)
     ctx = _context(user_data={USER_KEY_ASSET_RESOLUTION: dict(_FULL_ASSET)})

@@ -11,7 +11,7 @@ Per the bot-flow plan §2 "Bet capture":
 3. INSERT the ``hypotheses`` row (1:1 with the claim at v0, per Q-007).
 4. INSERT the ``claims`` row (with ``parsed_via``, ``extracted_fields``,
    ``parse_metadata`` columns).
-5. INSERT the ``events`` row with ``t_resolve = now() + horizon_seconds(horizon)``.
+5. INSERT the ``events`` row with ``t_resolve = now() + horizon_to_timedelta(horizon_seconds)``.
 6. INSERT the ``attribution_ledger`` row (originator passthrough).
 7. ``queue.enqueue_at(t_resolve, "merlin_worker.jobs.resolve_outcome",
    claim_id, job_id=f"resolve-{claim_id}")``.
@@ -25,7 +25,7 @@ for a claim that didn't land.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -35,8 +35,8 @@ from merlin_core.application.ports import (
     MarketDataError,
     MarketDataPort,
 )
+from merlin_core.contracts.horizons import horizon_to_timedelta
 from merlin_core.domain import Conviction, Direction, ExtractedFields, Horizon, ParseMetadata
-from merlin_core.domain.horizons import HORIZON_SECONDS
 
 if TYPE_CHECKING:
     pass
@@ -65,7 +65,7 @@ class SubmitClaimInput:
     source_id: UUID
     coingecko_id: str
     direction: Direction
-    horizon: Horizon
+    horizon_seconds: Horizon
     conviction: Conviction
     thesis_text: str
     extracted_fields: ExtractedFields
@@ -114,7 +114,7 @@ class ClaimWriterPort(Protocol):
         source_id: UUID,
         asset_id: UUID,
         direction: Direction,
-        horizon: Horizon,
+        horizon_seconds: Horizon,
         conviction: Conviction,
         thesis_text: str,
         extracted_fields: ExtractedFields,
@@ -164,12 +164,12 @@ class SubmitClaim:
 
         # 3-6. Atomic commit (hypothesis + claim + event + claim_event + attribution).
         submitted_at = payload.submitted_at or datetime.now(UTC)
-        resolves_at = submitted_at + timedelta(seconds=HORIZON_SECONDS[payload.horizon])
+        resolves_at = submitted_at + horizon_to_timedelta(payload.horizon_seconds)
         claim_id = await self._writer.write_claim(
             source_id=payload.source_id,
             asset_id=asset_id,
             direction=payload.direction,
-            horizon=payload.horizon,
+            horizon_seconds=payload.horizon_seconds,
             conviction=payload.conviction,
             thesis_text=payload.thesis_text,
             extracted_fields=payload.extracted_fields,

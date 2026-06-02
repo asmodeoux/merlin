@@ -244,7 +244,7 @@ async def test_submit_claim_actually_creates_a_row(
     payload = {
         "coingecko_id": "ethereum",
         "direction": "long",
-        "horizon": "14d",
+        "horizon_seconds": 1_209_600,
         "conviction": "strong",
         "thesis_text": "ETH long 2 weeks",
         "tg_user_id": 42,
@@ -269,7 +269,7 @@ async def test_submit_claim_actually_creates_a_row(
     assert kwargs["source_id"] == "tg:" + "a" * 32
     assert kwargs["asset_coingecko_id"] == "ethereum"
     assert kwargs["direction"] == "long"
-    assert kwargs["horizon"] == "14d"
+    assert kwargs["horizon_seconds"] == 1_209_600
     assert kwargs["asset_query"] == "ETH"
     # ``submitted_at`` + ``resolves_at`` are timezone-aware datetimes
     # — the model column is timestamptz; naive datetimes would

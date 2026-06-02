@@ -15,7 +15,7 @@ thesis, resolves date, outcome if any. No internal scoring fields.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -34,9 +34,8 @@ from merlin_core.contracts import (
     ParseMetadataDTO,
     SubmitClaimRequest,
 )
+from merlin_core.contracts.horizons import horizon_to_timedelta
 from merlin_core.domain import ClaimDraft
-from merlin_core.domain.claim_draft import Horizon
-from merlin_core.domain.horizons import HORIZON_SECONDS
 
 from merlin_api.deps import Ports, get_ports, get_session
 
@@ -172,11 +171,12 @@ async def submit_claim(
         )
 
     submitted_at = datetime.now(UTC)
-    # body.horizon is a wire-format ``str`` per merlin_core.contracts; the
-    # domain ``HORIZON_SECONDS`` map is keyed by the Literal alias. The
-    # FastAPI body schema enforces membership, so the cast is safe.
-    horizon_key: Horizon = body.horizon  # type: ignore[assignment]
-    resolves_at = submitted_at + timedelta(seconds=HORIZON_SECONDS[horizon_key])
+    # body.horizon_seconds is integer seconds in the bounded range
+    # ``[HORIZON_MIN_SECONDS, HORIZON_MAX_SECONDS]`` per the DTO's
+    # ``Field(ge=..., le=...)``. We add the duration directly — no
+    # calendar/DST math — upholding MVP §15 invariant 4 by
+    # construction.
+    resolves_at = submitted_at + horizon_to_timedelta(body.horizon_seconds)
     claim_id = uuid4()
 
     # Best-effort entry-price snapshot. The user needs the price they
@@ -209,7 +209,7 @@ async def submit_claim(
         asset_symbol=metadata.symbol,
         asset_name=metadata.name,
         direction=body.direction,
-        horizon=body.horizon,
+        horizon_seconds=body.horizon_seconds,
         conviction=body.conviction,
         thesis_text=body.thesis_text,
         asset_query=body.asset_query,
@@ -244,7 +244,7 @@ async def submit_claim(
         claim_id=claim_id,
         asset_symbol=metadata.symbol,
         direction=body.direction,
-        horizon=body.horizon,
+        horizon_seconds=body.horizon_seconds,
         conviction=body.conviction,
         thesis_text=body.thesis_text,
         submitted_at=submitted_at,
@@ -340,7 +340,7 @@ def _to_draft_response(
     pm = draft.parse_metadata
     return ClaimDraftResponse(
         direction=draft.direction,
-        horizon=draft.horizon,
+        horizon_seconds=draft.horizon,
         conviction=draft.conviction,
         thesis_text=draft.thesis_text,
         asset_query=asset_query,

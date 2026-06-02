@@ -16,7 +16,7 @@ def test_render_preview_full_draft() -> None:
     text = sp._render_preview(
         {
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "Vitalik rumour",
         },
@@ -32,6 +32,23 @@ def test_render_preview_full_draft() -> None:
     assert "Vitalik rumour" in text
     # Footer should invite Confirm only when the draft is complete.
     assert "Confirm" in text
+
+
+def test_render_preview_subhour_horizon_uses_hours_word() -> None:
+    """The gap the continuous-horizon migration was meant to close —
+    a "3 hours" call from "/alpha BTC long 3 hours" must render as
+    "3 hours" in the preview, not "10800 seconds" / "0 days" / a
+    nearest-bucket "4 hours" round-up."""
+    text = sp._render_preview(
+        {
+            "direction": "long",
+            "horizon_seconds": 10_800,  # 3 hours
+            "conviction": "medium",
+            "thesis_text": "scalp the dip",
+        },
+        {"symbol": "BTC", "coingecko_id": "bitcoin"},
+    )
+    assert "Horizon: 3 hours" in text
 
 
 def test_render_preview_uses_placeholders_when_blank() -> None:
@@ -58,7 +75,7 @@ def test_render_receipt_includes_all_fields_and_utc_timestamps() -> None:
         result={
             "asset_symbol": "ETH",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "Vitalik rumour",
             "submitted_at": "2026-05-29T16:32:00Z",
@@ -67,7 +84,7 @@ def test_render_receipt_includes_all_fields_and_utc_timestamps() -> None:
         },
         draft={
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "Vitalik rumour",
         },
@@ -100,7 +117,7 @@ def test_render_receipt_omits_entry_price_when_not_captured() -> None:
         result={
             "asset_symbol": "ETH",
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "Vitalik rumour",
             "submitted_at": "2026-05-29T16:32:00Z",
@@ -122,7 +139,7 @@ def test_render_receipt_entry_price_adaptive_decimals_subdollar() -> None:
         result={
             "asset_symbol": "DOGE",
             "direction": "long",
-            "horizon": "24h",
+            "horizon_seconds": 86_400,
             "conviction": "weak",
             "thesis_text": "memecoin season",
             "submitted_at": "2026-05-29T16:32:00Z",
@@ -143,7 +160,7 @@ def test_render_receipt_entry_price_adaptive_decimals_midrange() -> None:
         result={
             "asset_symbol": "RNDR",
             "direction": "long",
-            "horizon": "7d",
+            "horizon_seconds": 604_800,
             "conviction": "medium",
             "thesis_text": "AI tokens running",
             "submitted_at": "2026-05-29T16:32:00Z",
@@ -180,23 +197,36 @@ def test_utc_datetime_returns_soon_for_garbage_input() -> None:
 
 
 @pytest.mark.parametrize(
-    "code,expected",
+    "seconds,expected",
     [
-        ("1h", "1 hour"),
-        ("24h", "24 hours"),
-        ("7d", "1 week"),
-        ("14d", "2 weeks"),
-        ("30d", "1 month"),
-        ("90d", "3 months"),
+        (3_600, "1 hour"),
+        (10_800, "3 hours"),
+        (86_400, "24 hours"),
+        (604_800, "1 week"),
+        (1_209_600, "2 weeks"),
+        # 30 days renders as "30 days" (ambiguous "this month" vs
+        # "exactly 30 days"); humanise_horizon keeps the explicit
+        # form so the preview matches what the user can text back.
+        (2_592_000, "30 days"),
+        (7_776_000, "3 months"),
     ],
 )
-def test_horizon_human_maps_codes(code: str, expected: str) -> None:
-    assert sp._horizon_human(code) == expected
+def test_horizon_human_maps_seconds(seconds: int, expected: str) -> None:
+    """``_horizon_human`` must accept integer seconds and render the
+    user-facing label via the domain humaniser. Replaces the old
+    Literal-code mapping after the continuous-horizon migration."""
+    assert sp._horizon_human(seconds) == expected
 
 
 def test_horizon_human_unknown_returns_placeholder() -> None:
+    """Defensive: missing / non-numeric / zero / negative values
+    must NOT crash the preview — they render the same Set Horizon
+    placeholder the empty draft does. Pins the contract for stale
+    drafts that survive a schema-shape change."""
     assert sp._horizon_human(None) == "(tap 📝 Set Horizon)"
-    assert sp._horizon_human("99y") == "(tap 📝 Set Horizon)"
+    assert sp._horizon_human("") == "(tap 📝 Set Horizon)"
+    assert sp._horizon_human(0) == "(tap 📝 Set Horizon)"
+    assert sp._horizon_human("garbage") == "(tap 📝 Set Horizon)"
 
 
 @pytest.mark.parametrize("code,expected", [("long", "Long"), ("short", "Short")])
@@ -225,7 +255,7 @@ def test_build_submit_payload_with_full_draft() -> None:
     payload = sp._build_submit_payload(
         {
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "Vitalik rumour",
             "asset_query": "ETH",
@@ -238,6 +268,7 @@ def test_build_submit_payload_with_full_draft() -> None:
     assert payload is not None
     assert payload["coingecko_id"] == "ethereum"
     assert payload["direction"] == "long"
+    assert payload["horizon_seconds"] == 1_209_600
     assert payload["tg_user_id"] == 42
     # ``asset_query`` rides through so the audit row can reconstruct
     # the LLM-extracted symbol → coingecko_id mapping.
@@ -247,7 +278,7 @@ def test_build_submit_payload_with_full_draft() -> None:
 
 def test_build_submit_payload_missing_required_field_returns_none() -> None:
     payload = sp._build_submit_payload(
-        {"direction": "long", "horizon": "14d"},  # no conviction or thesis
+        {"direction": "long", "horizon_seconds": 1_209_600},  # no conviction or thesis
         {"coingecko_id": "ethereum"},
         tg_user_id=42,
     )
@@ -258,7 +289,7 @@ def test_build_submit_payload_no_asset_returns_none() -> None:
     payload = sp._build_submit_payload(
         {
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "ok",
         },
@@ -276,7 +307,7 @@ def test_build_submit_payload_missing_tg_user_id_returns_none() -> None:
     payload = sp._build_submit_payload(
         {
             "direction": "long",
-            "horizon": "14d",
+            "horizon_seconds": 1_209_600,
             "conviction": "strong",
             "thesis_text": "ok",
         },
@@ -312,7 +343,7 @@ def _button_labels(kb: object) -> list[str]:
 
 _FULL_DRAFT = {
     "direction": "long",
-    "horizon": "14d",
+    "horizon_seconds": 1_209_600,
     "conviction": "strong",
     "thesis_text": "Vitalik rumour",
 }
@@ -327,12 +358,12 @@ def test_keyboard_shows_confirm_when_draft_is_complete() -> None:
 
 @pytest.mark.parametrize(
     "missing_field",
-    ["direction", "horizon", "conviction", "thesis_text"],
+    ["direction", "horizon_seconds", "conviction", "thesis_text"],
 )
 def test_keyboard_hides_confirm_when_draft_field_missing(missing_field: str) -> None:
     """User MUST NOT be able to confirm an incomplete bet — the
     Confirm button does not render until every required field is set."""
-    draft = dict(_FULL_DRAFT)
+    draft: dict[str, object] = dict(_FULL_DRAFT)
     draft[missing_field] = "" if missing_field == "thesis_text" else None
     kb = sp._build_preview_keyboard(draft, _FULL_ASSET)
     labels = _button_labels(kb)
@@ -419,7 +450,7 @@ def test_keyboard_mixes_set_and_edit_per_field() -> None:
     not a global toggle."""
     partial_draft = {
         "direction": "long",
-        # No horizon → "Set Horizon"
+        # No horizon_seconds → "Set Horizon"
         "conviction": "strong",
         "thesis_text": "",  # blank → "Set Thesis"
     }
@@ -451,6 +482,6 @@ def test_is_draft_complete_mirrors_submit_payload_preconditions() -> None:
     assert sp._is_draft_complete(_FULL_DRAFT, {}) is False
     assert sp._build_submit_payload(_FULL_DRAFT, {}, tg_user_id=tg) is None
     # Missing horizon → both refuse.
-    bad = dict(_FULL_DRAFT, horizon=None)
+    bad = dict(_FULL_DRAFT, horizon_seconds=None)
     assert sp._is_draft_complete(bad, _FULL_ASSET) is False
     assert sp._build_submit_payload(bad, _FULL_ASSET, tg_user_id=tg) is None

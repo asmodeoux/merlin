@@ -178,7 +178,7 @@ class _FakeClaimRepo:
             asset_symbol=kwargs["asset_symbol"],
             asset_name=kwargs.get("asset_name"),
             direction=kwargs["direction"],
-            horizon=kwargs["horizon"],
+            horizon_seconds=kwargs["horizon_seconds"],
             conviction=kwargs["conviction"],
             thesis_text=kwargs["thesis_text"],
             asset_query=kwargs.get("asset_query"),
@@ -278,7 +278,7 @@ def _draft_with(*, asset_query: str | None, thesis: str) -> ClaimDraft:
     return ClaimDraft(
         asset_query=asset_query,
         direction="long",
-        horizon="14d",
+        horizon=1_209_600,
         conviction="strong",
         thesis_text=thesis,
         parse_metadata=ParseMetadata(
@@ -288,7 +288,7 @@ def _draft_with(*, asset_query: str | None, thesis: str) -> ClaimDraft:
             confidences={
                 "asset_query": 0.95 if asset_query else 0.1,
                 "direction": 0.95,
-                "horizon": 0.9,
+                "horizon_seconds": 0.9,
                 "conviction": 0.85,
             },
             extracted_at=datetime.now(tz=UTC),
@@ -452,7 +452,7 @@ def _submit_payload(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "coingecko_id": "ethereum",
         "direction": "long",
-        "horizon": "14d",
+        "horizon_seconds": 1_209_600,
         "conviction": "strong",
         "thesis_text": "ETH long 2 weeks, Vitalik staking news",
         "tg_user_id": 42,
@@ -527,7 +527,7 @@ async def test_submit_claim_persists_before_enqueueing(
     assert kwargs["asset_coingecko_id"] == "ethereum"
     assert kwargs["asset_symbol"] == "ETH"
     assert kwargs["direction"] == "long"
-    assert kwargs["horizon"] == "14d"
+    assert kwargs["horizon_seconds"] == 1_209_600
     assert kwargs["conviction"] == "strong"
     assert kwargs["asset_query"] == "ETH"
     assert kwargs["parsed_via"] == "freeform_llm"

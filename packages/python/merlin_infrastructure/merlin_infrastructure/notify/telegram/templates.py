@@ -17,8 +17,8 @@ finished string and POSTs it as-is.
 
 from __future__ import annotations
 
-from merlin_core.domain import Direction, Horizon
-from merlin_core.domain.horizons import horizon_human
+from merlin_core.contracts.horizons import humanise_horizon
+from merlin_core.domain import Direction
 
 # A move below this percentage counts as a wash for notification framing.
 FLAT_THRESHOLD_PCT = 0.5
@@ -29,20 +29,24 @@ def _direction_phrase(direction: Direction) -> str:
     return "Long" if direction == "long" else "Short"
 
 
-def outcome_won(*, asset_symbol: str, direction: Direction, horizon: Horizon, pct: float) -> str:
+def outcome_won(
+    *, asset_symbol: str, direction: Direction, horizon_seconds: int, pct: float
+) -> str:
     """Notification for a correct call (sign matches direction, |pct| ≥ flat threshold)."""
     return (
         f"Your {asset_symbol} call resolved. "
-        f"{_direction_phrase(direction)} over {horizon_human(horizon)} "
+        f"{_direction_phrase(direction)} over {humanise_horizon(horizon_seconds)} "
         f"ended {pct:+.1f}% — you called it right."
     )
 
 
-def outcome_lost(*, asset_symbol: str, direction: Direction, horizon: Horizon, pct: float) -> str:
+def outcome_lost(
+    *, asset_symbol: str, direction: Direction, horizon_seconds: int, pct: float
+) -> str:
     """Notification for an incorrect call (sign mismatch, |pct| ≥ flat threshold)."""
     return (
         f"Your {asset_symbol} call resolved. "
-        f"{_direction_phrase(direction)} over {horizon_human(horizon)} "
+        f"{_direction_phrase(direction)} over {humanise_horizon(horizon_seconds)} "
         f"ended {pct:+.1f}% — the market went the other way."
     )
 
@@ -73,7 +77,7 @@ def render_outcome(
     *,
     asset_symbol: str,
     direction: Direction,
-    horizon: Horizon,
+    horizon_seconds: int,
     pct: float,
 ) -> str:
     """Dispatch to the right outcome template by sign and magnitude.
@@ -89,12 +93,12 @@ def render_outcome(
         return outcome_won(
             asset_symbol=asset_symbol,
             direction=direction,
-            horizon=horizon,
+            horizon_seconds=horizon_seconds,
             pct=pct,
         )
     return outcome_lost(
         asset_symbol=asset_symbol,
         direction=direction,
-        horizon=horizon,
+        horizon_seconds=horizon_seconds,
         pct=pct,
     )

@@ -221,7 +221,7 @@
         "type": "object"
       },
       "ClaimDraftResponse": {
-        "description": "Response of ``POST /claims/draft`` \u2014 prefilled fields + asset candidates.",
+        "description": "Response of ``POST /claims/draft`` \u2014 prefilled fields + asset candidates.\n\n``horizon_seconds`` is the LLM's best parse of the user's horizon\nphrase (\"3 hours\" \u2192 10800, \"two weeks\" \u2192 1209600). ``None`` when\nthe LLM's confidence was below the per-field floor or the\nextracted value fell outside the API's allowed range \u2014 the bot\nsurfaces the horizon picker in that case. The bot renders the\nseconds value via ``humanise_horizon`` (e.g. ``\"3 hours\"``)\nbefore showing it to the user; this DTO carries the raw number.",
         "properties": {
           "asset_candidates": {
             "items": {
@@ -266,16 +266,19 @@
           "extracted_fields": {
             "$ref": "#/components/schemas/ExtractedFieldsDTO"
           },
-          "horizon": {
+          "horizon_seconds": {
             "anyOf": [
               {
-                "type": "string"
+                "maximum": 7776000.0,
+                "minimum": 3600.0,
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Horizon"
+            "description": "Horizon in seconds; integer; 1h..90d range.",
+            "title": "Horizon Seconds"
           },
           "parse_metadata": {
             "$ref": "#/components/schemas/ParseMetadataDTO"
@@ -321,9 +324,12 @@
           "extracted_fields": {
             "$ref": "#/components/schemas/ExtractedFieldsDTO"
           },
-          "horizon": {
-            "title": "Horizon",
-            "type": "string"
+          "horizon_seconds": {
+            "description": "Horizon in seconds; integer; 1h..90d range.",
+            "maximum": 7776000.0,
+            "minimum": 3600.0,
+            "title": "Horizon Seconds",
+            "type": "integer"
           },
           "outcome": {
             "anyOf": [
@@ -377,7 +383,7 @@
           "claim_id",
           "asset_symbol",
           "direction",
-          "horizon",
+          "horizon_seconds",
           "conviction",
           "thesis_text",
           "submitted_at",
@@ -597,9 +603,12 @@
             ],
             "title": "Entry Price Usd"
           },
-          "horizon": {
-            "title": "Horizon",
-            "type": "string"
+          "horizon_seconds": {
+            "description": "Horizon in seconds; integer; 1h..90d range.",
+            "maximum": 7776000.0,
+            "minimum": 3600.0,
+            "title": "Horizon Seconds",
+            "type": "integer"
           },
           "resolves_at": {
             "format": "date-time",
@@ -611,7 +620,7 @@
           "claim_id",
           "asset_symbol",
           "direction",
-          "horizon",
+          "horizon_seconds",
           "resolves_at"
         ],
         "title": "OpenCallEntry",
@@ -805,9 +814,12 @@
             "title": "Direction",
             "type": "string"
           },
-          "horizon": {
-            "title": "Horizon",
-            "type": "string"
+          "horizon_seconds": {
+            "description": "Horizon in seconds; integer; 1h..90d range.",
+            "maximum": 7776000.0,
+            "minimum": 3600.0,
+            "title": "Horizon Seconds",
+            "type": "integer"
           },
           "observed_return_pct": {
             "title": "Observed Return Pct",
@@ -823,7 +835,7 @@
           "claim_id",
           "asset_symbol",
           "direction",
-          "horizon",
+          "horizon_seconds",
           "resolved_at",
           "observed_return_pct"
         ],
@@ -905,9 +917,12 @@
           "extracted_fields": {
             "$ref": "#/components/schemas/ExtractedFieldsDTO"
           },
-          "horizon": {
-            "title": "Horizon",
-            "type": "string"
+          "horizon_seconds": {
+            "description": "Horizon in seconds; integer; 1h..90d range.",
+            "maximum": 7776000.0,
+            "minimum": 3600.0,
+            "title": "Horizon Seconds",
+            "type": "integer"
           },
           "parse_metadata": {
             "$ref": "#/components/schemas/ParseMetadataDTO"
@@ -926,7 +941,7 @@
         "required": [
           "coingecko_id",
           "direction",
-          "horizon",
+          "horizon_seconds",
           "conviction",
           "thesis_text",
           "tg_user_id",

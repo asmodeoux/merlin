@@ -59,7 +59,7 @@ async def test_create_inserts_a_claim_row_with_passed_fields() -> None:
         asset_symbol="ETH",
         asset_name="Ethereum",
         direction="long",
-        horizon="14d",
+        horizon_seconds=1_209_600,
         conviction="strong",
         thesis_text="Vitalik staking news",
         asset_query="ETH",
@@ -78,7 +78,7 @@ async def test_create_inserts_a_claim_row_with_passed_fields() -> None:
     assert added.asset_coingecko_id == "ethereum"
     assert added.asset_symbol == "ETH"
     assert added.direction == "long"
-    assert added.horizon == "14d"
+    assert added.horizon_seconds == 1_209_600
     assert added.conviction == "strong"
     assert added.thesis_text == "Vitalik staking news"
     assert added.asset_query == "ETH"
@@ -115,7 +115,7 @@ async def test_create_persists_price_usd_at_submit() -> None:
         asset_symbol="ETH",
         asset_name="Ethereum",
         direction="long",
-        horizon="14d",
+        horizon_seconds=1_209_600,
         conviction="strong",
         thesis_text="Vitalik staking news",
         asset_query="ETH",
@@ -154,7 +154,7 @@ async def test_create_defaults_price_usd_at_submit_to_none() -> None:
         asset_symbol="BTC",
         asset_name="Bitcoin",
         direction="short",
-        horizon="7d",
+        horizon_seconds=604_800,
         conviction="medium",
         thesis_text="...",
         asset_query=None,
@@ -183,7 +183,7 @@ async def test_create_does_not_commit() -> None:
         asset_symbol="BTC",
         asset_name="Bitcoin",
         direction="long",
-        horizon="30d",
+        horizon_seconds=2_592_000,
         conviction="medium",
         thesis_text="halving",
         asset_query=None,
@@ -221,7 +221,7 @@ def _fake_claim_row(*, asset_symbol: str, resolves_at: datetime, **overrides: An
     row.asset_symbol = asset_symbol
     row.asset_name = asset_symbol.capitalize()
     row.direction = "long"
-    row.horizon = "14d"
+    row.horizon_seconds = 1_209_600
     row.conviction = "strong"
     row.thesis_text = "..."
     row.asset_query = asset_symbol

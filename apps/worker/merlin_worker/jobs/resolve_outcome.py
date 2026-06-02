@@ -117,7 +117,7 @@ async def _resolve_outcome_async(claim_id: str) -> None:
     text = render_outcome(
         asset_symbol=claim_ctx.asset_symbol,
         direction=claim_ctx.direction,  # type: ignore[arg-type]
-        horizon=claim_ctx.horizon,  # type: ignore[arg-type]
+        horizon_seconds=claim_ctx.horizon_seconds,
         pct=observed_pct,
     )
     await notifier.notify_user(claim_ctx.tg_user_id, text)
@@ -140,7 +140,7 @@ class _ClaimContext:
         coingecko_id: str,
         asset_symbol: str,
         direction: str,
-        horizon: str,
+        horizon_seconds: int,
         t0: _dt.datetime,
         t_resolve: _dt.datetime,
         event_id: str,
@@ -151,7 +151,7 @@ class _ClaimContext:
         self.coingecko_id = coingecko_id
         self.asset_symbol = asset_symbol
         self.direction = direction
-        self.horizon = horizon
+        self.horizon_seconds = horizon_seconds
         self.t0 = t0
         self.t_resolve = t_resolve
         self.event_id = event_id

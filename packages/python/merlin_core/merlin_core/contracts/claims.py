@@ -25,12 +25,17 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from merlin_core.contracts.assets import AssetCandidateDTO
+from merlin_core.contracts.horizons import HORIZON_MAX_SECONDS, HORIZON_MIN_SECONDS
 
-# Mirror the domain Literal aliases as plain strings here so the
-# generated OpenAPI surface stays decoupled from the domain layer.
-# import-linter forbids contracts/ from importing domain/ aliases.
+# Mirror the domain aliases as plain primitives here so the generated
+# OpenAPI surface stays decoupled from the domain layer. import-linter
+# forbids contracts/ from importing domain/ aliases.
 Direction = str  # "long" | "short"
-Horizon = str  # "1h" | "4h" | "24h" | "3d" | "7d" | "14d" | "30d" | "90d"
+# Horizon is integer seconds in ``[HORIZON_MIN_SECONDS, HORIZON_MAX_SECONDS]``
+# (1 hour to 90 days). Validation lives on the request DTOs below via
+# ``Field(ge=..., le=...)`` so an out-of-range submit fails fast at the
+# FastAPI boundary. Bounds are sourced from ``contracts.horizons`` so the
+# wire-format DTOs and the parser/humaniser helpers share one constant.
 Conviction = str  # "weak" | "medium" | "strong" | "very_strong"
 ParsedVia = str  # "freeform_llm" | "form"
 
@@ -78,10 +83,24 @@ class ParseMetadataDTO(BaseModel):
 
 
 class ClaimDraftResponse(BaseModel):
-    """Response of ``POST /claims/draft`` — prefilled fields + asset candidates."""
+    """Response of ``POST /claims/draft`` — prefilled fields + asset candidates.
+
+    ``horizon_seconds`` is the LLM's best parse of the user's horizon
+    phrase ("3 hours" → 10800, "two weeks" → 1209600). ``None`` when
+    the LLM's confidence was below the per-field floor or the
+    extracted value fell outside the API's allowed range — the bot
+    surfaces the horizon picker in that case. The bot renders the
+    seconds value via ``humanise_horizon`` (e.g. ``"3 hours"``)
+    before showing it to the user; this DTO carries the raw number.
+    """
 
     direction: Direction | None = None
-    horizon: Horizon | None = None
+    horizon_seconds: int | None = Field(
+        default=None,
+        ge=HORIZON_MIN_SECONDS,
+        le=HORIZON_MAX_SECONDS,
+        description="Horizon in seconds; integer; 1h..90d range.",
+    )
     conviction: Conviction | None = None
     thesis_text: str | None = None
     asset_query: str | None = None
@@ -106,7 +125,12 @@ class SubmitClaimRequest(BaseModel):
 
     coingecko_id: str = Field(..., min_length=1)
     direction: Direction
-    horizon: Horizon
+    horizon_seconds: int = Field(
+        ...,
+        ge=HORIZON_MIN_SECONDS,
+        le=HORIZON_MAX_SECONDS,
+        description="Horizon in seconds; integer; 1h..90d range.",
+    )
     conviction: Conviction
     thesis_text: str = Field(..., min_length=1, max_length=4_000)
     tg_user_id: int
@@ -130,7 +154,12 @@ class ClaimResponse(BaseModel):
     claim_id: UUID
     asset_symbol: str
     direction: Direction
-    horizon: Horizon
+    horizon_seconds: int = Field(
+        ...,
+        ge=HORIZON_MIN_SECONDS,
+        le=HORIZON_MAX_SECONDS,
+        description="Horizon in seconds; integer; 1h..90d range.",
+    )
     conviction: Conviction
     thesis_text: str
     submitted_at: datetime

@@ -12,6 +12,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from merlin_core.contracts.horizons import HORIZON_MAX_SECONDS, HORIZON_MIN_SECONDS
+
 
 class BoardEntry(BaseModel):
     """One leaderboard row.
@@ -50,7 +52,12 @@ class OpenCallEntry(BaseModel):
     claim_id: UUID
     asset_symbol: str
     direction: str
-    horizon: str
+    horizon_seconds: int = Field(
+        ...,
+        ge=HORIZON_MIN_SECONDS,
+        le=HORIZON_MAX_SECONDS,
+        description="Horizon in seconds; integer; 1h..90d range.",
+    )
     resolves_at: datetime
     entry_price_usd: float | None = None
 
@@ -61,7 +68,12 @@ class ResolvedCallEntry(BaseModel):
     claim_id: UUID
     asset_symbol: str
     direction: str
-    horizon: str
+    horizon_seconds: int = Field(
+        ...,
+        ge=HORIZON_MIN_SECONDS,
+        le=HORIZON_MAX_SECONDS,
+        description="Horizon in seconds; integer; 1h..90d range.",
+    )
     resolved_at: datetime
     observed_return_pct: float
 

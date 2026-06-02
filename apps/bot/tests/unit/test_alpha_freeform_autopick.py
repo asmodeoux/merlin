@@ -137,7 +137,7 @@ def _draft_response(*, asset_query: str | None, candidates: list[dict]) -> dict:
         "asset_query": asset_query,
         "asset_candidates": candidates,
         "direction": "long",
-        "horizon": "14d",
+        "horizon_seconds": 1_209_600,
         "conviction": "strong",
         "thesis_text": "Vitalik staking",
         "extracted_fields": {"schema_version": 1},

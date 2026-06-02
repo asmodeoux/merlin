@@ -160,7 +160,7 @@ def _render_preview(draft: dict[str, Any], asset: dict[str, Any]) -> str:
     """
     asset_symbol = asset.get("symbol") or _missing_placeholder("Asset")
     direction = _direction_human(draft.get("direction"))
-    horizon = _horizon_human(draft.get("horizon"))
+    horizon = _horizon_human(draft.get("horizon_seconds"))
     conviction = _conviction_human(draft.get("conviction"))
     thesis = (draft.get("thesis_text") or "").strip() or _missing_placeholder("Thesis")
 
@@ -212,7 +212,7 @@ def _render_receipt(
     # exhaustively populated by ``ClaimResponse``).
     asset_symbol = result.get("asset_symbol") or asset.get("symbol") or "your call"
     direction = _direction_human(result.get("direction") or draft.get("direction"))
-    horizon = _horizon_human(result.get("horizon") or draft.get("horizon"))
+    horizon = _horizon_human(result.get("horizon_seconds") or draft.get("horizon_seconds"))
     conviction = _conviction_human(result.get("conviction") or draft.get("conviction"))
     thesis = (result.get("thesis_text") or draft.get("thesis_text") or "").strip()
 
@@ -283,7 +283,7 @@ def _build_preview_keyboard(
         ],
         [
             InlineKeyboardButton(
-                _field_button_label("Horizon", draft.get("horizon")),
+                _field_button_label("Horizon", draft.get("horizon_seconds")),
                 callback_data=CB_EDIT_HORIZON,
             ),
             InlineKeyboardButton(
@@ -316,7 +316,7 @@ def _is_draft_complete(draft: dict[str, Any], asset: dict[str, Any]) -> bool:
         return False
     if not draft.get("direction"):
         return False
-    if not draft.get("horizon"):
+    if not draft.get("horizon_seconds"):
         return False
     if not draft.get("conviction"):
         return False
@@ -343,15 +343,15 @@ def _build_submit_payload(
     if tg_user_id is None:
         return None
     direction = draft.get("direction")
-    horizon = draft.get("horizon")
+    horizon_seconds = draft.get("horizon_seconds")
     conviction = draft.get("conviction")
     thesis_text = (draft.get("thesis_text") or "").strip()
-    if not (direction and horizon and conviction and thesis_text):
+    if not (direction and horizon_seconds and conviction and thesis_text):
         return None
     return {
         "coingecko_id": asset["coingecko_id"],
         "direction": direction,
-        "horizon": horizon,
+        "horizon_seconds": horizon_seconds,
         "conviction": conviction,
         "thesis_text": thesis_text,
         "tg_user_id": tg_user_id,
@@ -407,19 +407,28 @@ def _direction_human(value: str | None) -> str:
     return _missing_placeholder("Direction")
 
 
-def _horizon_human(value: str | None) -> str:
-    """Render horizon in calendar / natural language."""
-    mapping = {
-        "1h": "1 hour",
-        "4h": "4 hours",
-        "24h": "24 hours",
-        "3d": "3 days",
-        "7d": "1 week",
-        "14d": "2 weeks",
-        "30d": "1 month",
-        "90d": "3 months",
-    }
-    return mapping.get(value or "", _missing_placeholder("Horizon"))
+def _horizon_human(value: object) -> str:
+    """Render horizon (integer seconds) in natural language.
+
+    The wire format is integer seconds in
+    ``[HORIZON_MIN_SECONDS, HORIZON_MAX_SECONDS]``; the contracts
+    ``humanise_horizon`` helper picks the cleanest unit (1 hour /
+    3 hours / 24 hours / 1 week / 30 days / 2 months / 3 months).
+    Falls back to the missing-field placeholder when the value is
+    blank, ``None``, or any non-numeric junk (defensive — should
+    only happen on a stale draft).
+    """
+    from merlin_core.contracts.horizons import humanise_horizon
+
+    if value is None or value in {"", 0}:
+        return _missing_placeholder("Horizon")
+    try:
+        seconds = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return _missing_placeholder("Horizon")
+    if seconds <= 0:
+        return _missing_placeholder("Horizon")
+    return humanise_horizon(seconds)
 
 
 def _conviction_human(value: str | None) -> str:

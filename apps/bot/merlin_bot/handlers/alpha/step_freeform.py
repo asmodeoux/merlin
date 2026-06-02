@@ -152,7 +152,7 @@ async def _enter_form_flow(
         # Empty draft skeleton so the preview step renders the form path.
         context.user_data[USER_KEY_DRAFT] = {
             "direction": None,
-            "horizon": None,
+            "horizon_seconds": None,
             "conviction": None,
             "thesis_text": raw_text,
             "asset_query": None,

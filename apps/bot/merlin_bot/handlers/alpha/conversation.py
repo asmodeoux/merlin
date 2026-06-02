@@ -100,6 +100,14 @@ def build_handler() -> ConversationHandler:
             ],
             AlphaState.EDIT_HORIZON: [
                 CallbackQueryHandler(step_horizon.on_pick, pattern=r"^alpha:hor:"),
+                # Free-form text reply ("3 hours", "1.5 days", "2 weeks")
+                # so the user is never trapped at one of the preset
+                # quick-picks. Parser + range validation live in the
+                # step; failures re-render the picker with a hint.
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    step_horizon.receive_horizon_text,
+                ),
             ],
             AlphaState.EDIT_CONVICTION: [
                 CallbackQueryHandler(step_conviction.on_pick, pattern=r"^alpha:conv:"),

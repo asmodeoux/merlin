@@ -25,6 +25,17 @@ from merlin_core.contracts.claims import (
     ParseMetadataDTO,
     SubmitClaimRequest,
 )
+from merlin_core.contracts.horizons import (
+    HORIZON_MAX_SECONDS,
+    HORIZON_MIN_SECONDS,
+    HORIZON_QUICK_PICKS,
+    HorizonParseError,
+    HorizonRangeError,
+    horizon_to_timedelta,
+    humanise_horizon,
+    is_in_range,
+    parse_horizon_text,
+)
 from merlin_core.contracts.invites import (
     CreateInviteRequest,
     CreateInviteResponse,
@@ -40,6 +51,9 @@ from merlin_core.contracts.sources import (
 )
 
 __all__ = [
+    "HORIZON_MAX_SECONDS",
+    "HORIZON_MIN_SECONDS",
+    "HORIZON_QUICK_PICKS",
     "AdminBootstrapRequest",
     "AdminBootstrapResponse",
     "AssetCandidateDTO",
@@ -53,6 +67,8 @@ __all__ = [
     "CreateInviteRequest",
     "CreateInviteResponse",
     "ExtractedFieldsDTO",
+    "HorizonParseError",
+    "HorizonRangeError",
     "MeResponse",
     "ParseMetadataDTO",
     "RedeemInviteRequest",
@@ -62,4 +78,8 @@ __all__ = [
     "RevokeInviteResponse",
     "SubmitClaimRequest",
     "UpdateMeRequest",
+    "horizon_to_timedelta",
+    "humanise_horizon",
+    "is_in_range",
+    "parse_horizon_text",
 ]

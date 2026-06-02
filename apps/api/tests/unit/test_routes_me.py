@@ -173,7 +173,7 @@ def _claim(*, claim_id: UUID, source_id: str, **overrides: Any) -> ClaimRecord:
         "asset_symbol": "ETH",
         "asset_name": "Ethereum",
         "direction": "long",
-        "horizon": "14d",
+        "horizon_seconds": 1_209_600,
         "conviction": "strong",
         "thesis_text": "Vitalik staking news",
         "asset_query": "ETH",
@@ -262,7 +262,7 @@ async def test_get_me_returns_open_calls_and_display_name(
     open_call = body["calls_open"][0]
     assert open_call["asset_symbol"] == "ETH"
     assert open_call["direction"] == "long"
-    assert open_call["horizon"] == "14d"
+    assert open_call["horizon_seconds"] == 1_209_600
     assert UUID(open_call["claim_id"]) == claim_id
     assert body["calls_resolved_total"] == 0
     # Honest empty-state — never 0.0% accuracy when nothing has resolved.

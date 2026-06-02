@@ -268,7 +268,13 @@ class Claim(Base):
     asset_symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     asset_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
-    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    # Horizon is stored as integer seconds (continuous, not a Literal).
+    # Validated at the API boundary to ``[HORIZON_MIN_SECONDS,
+    # HORIZON_MAX_SECONDS]`` (1h..90d). BIGINT not INT because the
+    # column shape is a duration count and BIGINT is the conventional
+    # type for that — future range increases never collide with the
+    # type ceiling.
+    horizon_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False)
     conviction: Mapped[str] = mapped_column(String(16), nullable=False)
     thesis_text: Mapped[str] = mapped_column(Text, nullable=False)
     asset_query: Mapped[str | None] = mapped_column(String(128), nullable=True)

@@ -101,7 +101,12 @@ class ClaimRecord:
     asset_symbol: str
     asset_name: str | None
     direction: str
-    horizon: str
+    # Horizon as integer seconds. The continuous model replaces the
+    # eight-bucket Literal so users can say "3 hours" without the
+    # nearest-bucket UX trap. Validated at the API boundary to
+    # ``[merlin_core.contracts.horizons.HORIZON_MIN_SECONDS,
+    # HORIZON_MAX_SECONDS]`` (1h..90d).
+    horizon_seconds: int
     conviction: str
     thesis_text: str
     asset_query: str | None
@@ -320,7 +325,7 @@ class ClaimRepositoryPort(Protocol):
         asset_symbol: str,
         asset_name: str | None,
         direction: str,
-        horizon: str,
+        horizon_seconds: int,
         conviction: str,
         thesis_text: str,
         asset_query: str | None,

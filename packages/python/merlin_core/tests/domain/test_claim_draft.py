@@ -54,16 +54,17 @@ def test_claim_draft_full_round_trip() -> None:
     draft = ClaimDraft(
         asset_candidates=(AssetCandidate(coingecko_id="ethereum", symbol="ETH", name="Ethereum"),),
         direction="long",
-        horizon="14d",
+        horizon=1_209_600,  # 2 weeks
         conviction="strong",
         thesis_text="Vitalik rumour",
         extracted_fields=ExtractedFields(rumour_referenced=True),
         parse_metadata=ParseMetadata(
             parsed_via="freeform_llm",
-            raw_user_turns=("ETH long 14d strong, Vitalik rumour",),
+            raw_user_turns=("ETH long 2 weeks strong, Vitalik rumour",),
         ),
     )
     assert draft.direction == "long"
+    assert draft.horizon == 1_209_600
     assert draft.extracted_fields.rumour_referenced is True
     assert draft.parse_metadata is not None
     assert draft.parse_metadata.raw_user_turns[0].startswith("ETH long")

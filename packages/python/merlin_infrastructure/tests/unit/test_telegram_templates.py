@@ -47,7 +47,7 @@ def _assert_bot_voice(text: str) -> None:
 
 
 def test_outcome_won_uses_human_horizon_and_plain_percent() -> None:
-    text = outcome_won(asset_symbol="ETH", direction="long", horizon="14d", pct=6.2)
+    text = outcome_won(asset_symbol="ETH", direction="long", horizon_seconds=1_209_600, pct=6.2)
     assert "ETH" in text
     assert "2 weeks" in text
     assert "+6.2%" in text
@@ -56,11 +56,25 @@ def test_outcome_won_uses_human_horizon_and_plain_percent() -> None:
 
 
 def test_outcome_lost_includes_direction_word() -> None:
-    text = outcome_lost(asset_symbol="BTC", direction="short", horizon="30d", pct=8.0)
+    text = outcome_lost(asset_symbol="BTC", direction="short", horizon_seconds=2_592_000, pct=8.0)
     assert "BTC" in text
-    assert "1 month" in text
+    # 30 days is rendered as "30 days" (ambiguous "this month" vs "30
+    # days exactly"; humanise_horizon keeps it explicit). The MVP
+    # template promise — "no raw codes, plain calendar phrase" — is
+    # what we assert here, not a specific synonym.
+    assert "30 days" in text
     assert "+8.0%" in text
     assert "the other way" in text or "against you" in text
+    _assert_bot_voice(text)
+
+
+def test_outcome_won_renders_sub_day_horizon_in_hours() -> None:
+    """Pin the bot-voice rendering for hour-scale calls (3h / 4h /
+    12h) — the gap the continuous-horizon migration was meant to
+    fix. A "3 hours" call should resolve into a message that says
+    "3 hours", not "0 days" or "0.125 days" or "10800 seconds"."""
+    text = outcome_won(asset_symbol="BTC", direction="long", horizon_seconds=10_800, pct=2.1)
+    assert "3 hours" in text
     _assert_bot_voice(text)
 
 
@@ -100,7 +114,7 @@ def test_render_outcome_dispatches_on_sign(
     text = render_outcome(
         asset_symbol="ETH",
         direction=direction,  # type: ignore[arg-type]
-        horizon="14d",
+        horizon_seconds=1_209_600,
         pct=pct,
     )
     assert expected_phrase in text or "other way" in text or "called it right" in text
@@ -109,6 +123,11 @@ def test_render_outcome_dispatches_on_sign(
 
 def test_render_outcome_wash_for_small_moves() -> None:
     pct = FLAT_THRESHOLD_PCT / 2
-    text = render_outcome(asset_symbol="ETH", direction="long", horizon="14d", pct=pct)
+    text = render_outcome(
+        asset_symbol="ETH",
+        direction="long",
+        horizon_seconds=1_209_600,
+        pct=pct,
+    )
     assert "wash" in text.lower()
     _assert_bot_voice(text)
