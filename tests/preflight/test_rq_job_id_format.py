@@ -50,6 +50,22 @@ def test_reputation_job_id_format_is_accepted_by_rq() -> None:
     _validate(job_id)
 
 
+def test_reputation_job_id_helper_accepts_realistic_source_id() -> None:
+    """The reputation enqueue uses ``source_id`` (``'tg:<32 hex>'``) in
+    the job id, not a UUID. A previous version of this preflight only
+    exercised the UUID shape and missed that the literal colon in
+    ``tg:<hex>`` violates RQ's character set. Pin both the helper's
+    contract and the real production format here so the next regression
+    surfaces at CI, not on the Worker's retry-exhausted job log."""
+    from merlin_core.domain.source_id import make_source_id
+    from merlin_worker.jobs.resolve_outcome import _reputation_job_id
+
+    source_id = make_source_id(42)
+    job_id = _reputation_job_id(source_id)
+    assert ":" not in job_id, f"reputation job_id still contains ':' — {job_id!r}"
+    _validate(job_id)
+
+
 def test_colon_separated_job_id_is_rejected_by_rq() -> None:
     """Sanity-pin the historical broken convention: a colon in the
     job id is exactly what RQ rejects. If RQ ever loosens this we'll

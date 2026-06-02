@@ -138,6 +138,24 @@ async def _resolve_outcome_async(claim_id: str) -> None:
     observed_pct = observed_return * 100.0
     is_correct = is_correct_call(claim_ctx.direction, observed_pct)
 
+    # Order matters. The DB write is the only step allowed to crash —
+    # RQ retries on raise, and the idempotency guard above
+    # short-circuits the retry. Notification + reputation enqueue come
+    # after the write and are best-effort:
+    #
+    # * If we put reputation enqueue *before* notification (the prior
+    #   order), an enqueue failure (e.g. an invalid job_id character —
+    #   the Sprint-1 follow-up bug) crashed the job *after* the row was
+    #   written but *before* the user message was sent. The RQ retry
+    #   then hit the idempotency guard and silently skipped, so the
+    #   user never heard back.
+    # * If notification fails (Telegram outage, user blocked the bot,
+    #   etc.) a retry won't recover it because the DB row already
+    #   exists. Log and move on; the row is enough for the user to
+    #   verify via ``/me`` and for the operator to bridge from logs.
+    # * Reputation recompute is a derived view; a missed enqueue means
+    #   the leaderboard is stale by one bet until the next resolution
+    #   for that source. Tolerable; log loudly.
     await _persist_resolved(
         session_factory=session_factory,
         claim_ctx=claim_ctx,
@@ -148,7 +166,6 @@ async def _resolve_outcome_async(claim_id: str) -> None:
         price_t0_ref=price_t0.returned_at.isoformat(),
         price_resolve_ref=price_resolve.returned_at.isoformat(),
     )
-    _enqueue_reputation_recompute(source_id=claim_ctx.source_id)
 
     text = render_outcome(
         asset_symbol=claim_ctx.asset_symbol,
@@ -156,7 +173,23 @@ async def _resolve_outcome_async(claim_id: str) -> None:
         horizon_seconds=claim_ctx.horizon_seconds,
         pct=observed_pct,
     )
-    await notifier.notify_user(claim_ctx.tg_user_id, text)
+    try:
+        await notifier.notify_user(claim_ctx.tg_user_id, text)
+    except Exception:
+        _log.exception(
+            "resolve_outcome: notify_user failed for claim %s — "
+            "outcome row is persisted, user must check /me manually",
+            claim_id,
+        )
+
+    try:
+        _enqueue_reputation_recompute(source_id=claim_ctx.source_id)
+    except Exception:
+        _log.exception(
+            "resolve_outcome: reputation enqueue failed for claim %s — "
+            "leaderboard will lag by one bet until the next outcome on this source",
+            claim_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -277,6 +310,25 @@ async def _persist_rejected_asset_mutation(
         await session.commit()
 
 
+def _reputation_job_id(source_id: str) -> str:
+    """Sanitize ``source_id`` into a job-id RQ will accept.
+
+    ``source_id`` is ``'tg:<32 hex>'`` (``merlin_core.domain.source_id``)
+    — the ``:`` makes the literal value illegal as an RQ job_id, which
+    only allows ``[A-Za-z0-9_-]``. Replacing ``:`` with ``-`` keeps the
+    job_id deterministic (same source → same id, so a re-enqueue
+    naturally deduplicates) without leaking any extra surface area.
+
+    Pinning the transformation here (and exercising it in
+    ``tests/preflight/test_rq_job_id_format.py``) keeps the "validate
+    against a *realistic* source_id, not just a UUID" property under
+    CI guard. The Sprint-1 follow-up bug was exactly the preflight
+    testing the wrong shape: ``reputation-{uuid4()}`` passed, but
+    production produces ``reputation-tg:<hex>`` which RQ rejects.
+    """
+    return f"reputation-{source_id.replace(':', '-')}"
+
+
 def _enqueue_reputation_recompute(*, source_id: str) -> None:
     """Enqueue ``recompute_source_reputation`` reactively (Q-029).
 
@@ -294,10 +346,8 @@ def _enqueue_reputation_recompute(*, source_id: str) -> None:
         redis=Redis.from_url(redis_url),
         queue_name=REPUTATION_QUEUE_NAME,
     )
-    # RQ's ``validate_job_id`` rejects ``:`` — use a dash separator
-    # to match the ``resolve-{claim_id}`` convention.
     queue.enqueue(
         "merlin_worker.jobs.recompute_source_reputation",
         source_id,
-        job_id=f"reputation-{source_id}",
+        job_id=_reputation_job_id(source_id),
     )

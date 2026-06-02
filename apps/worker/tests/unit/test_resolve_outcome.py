@@ -115,7 +115,15 @@ class _FakeMarket:
     raise_asset_not_found: bool = False
     call_count: int = 0
 
+    # Every call's ``when`` is recorded so tests can assert the resolver
+    # asked for the historical price at ``t_resolve`` — not at "now". A
+    # worker that wakes up six hours late MUST still score the bet using
+    # the price at the expiry instant, otherwise late processing changes
+    # outcomes. Pin this in test_uses_historical_price_at_t_resolve_not_now.
+    requested_at: list[_dt.datetime] = field(default_factory=list)
+
     async def get_price_at(self, coingecko_id: str, when: _dt.datetime) -> _FakePrice:
+        self.requested_at.append(when)
         if self.raise_asset_not_found:
             from merlin_core.application.ports import AssetNotFoundError
 
@@ -410,9 +418,190 @@ def test_enqueue_reputation_recompute_targets_reputation_queue(
     )
     monkeypatch.setattr("redis.Redis", _StubRedis)
 
-    _enqueue_reputation_recompute(source_id="tg:abc123")
+    # Use a realistic source_id (``tg:<32 hex>``) — the previous test
+    # value happened to omit characters that exercise the sanitiser.
+    source_id = "tg:" + "a1b2c3d4" * 4
+    _enqueue_reputation_recompute(source_id=source_id)
 
     assert captured["queue_name"] == REPUTATION_QUEUE_NAME
     assert captured["fn_path"] == "merlin_worker.jobs.recompute_source_reputation"
-    assert captured["args"] == ("tg:abc123",)
-    assert captured["job_id"] == "reputation-tg:abc123"
+    # The job receives the unsanitised source_id as its argument — the
+    # downstream repository keys off the canonical ``tg:`` form.
+    assert captured["args"] == (source_id,)
+    # The ``:`` is replaced with ``-`` so RQ's validate_job_id accepts
+    # the result. The substitution is deterministic, so re-enqueues
+    # naturally dedupe by job_id.
+    assert captured["job_id"] == f"reputation-tg-{'a1b2c3d4' * 4}"
+    assert ":" not in captured["job_id"]
+
+
+async def test_notification_is_sent_before_reputation_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+    resolver_fixture: _ResolverFixture,
+) -> None:
+    """User-visible work (DB write + notification) must complete before
+    the best-effort reputation enqueue.
+
+    Pins the Sprint-1 follow-up regression: the previous order placed
+    the reputation enqueue between the DB write and the notification.
+    When the enqueue raised on a bad job_id, the notification was
+    skipped, the row stayed in the DB, and the RQ retry hit the
+    idempotency guard — leaving the user with no message.
+    """
+    import sys
+
+    import merlin_worker.jobs.resolve_outcome  # noqa: F401
+
+    resolve_mod = sys.modules["merlin_worker.jobs.resolve_outcome"]
+    from merlin_worker.jobs.resolve_outcome import _resolve_outcome_async
+
+    claim_id = uuid4()
+    _seed_claim_context(monkeypatch, claim_id=claim_id)
+
+    t0 = _dt.datetime(2026, 6, 2, 10, 0, tzinfo=_dt.UTC)
+    resolver_fixture.market.prices["bitcoin"] = [
+        _FakePrice(price_usd=100.0, returned_at=t0),
+        _FakePrice(price_usd=105.0, returned_at=t0 + _dt.timedelta(hours=2)),
+    ]
+
+    timeline: list[str] = []
+    original_notify = resolver_fixture.notifier.notify_user
+
+    async def _tracking_notify(tg_user_id: int, text: str) -> None:
+        timeline.append("notify")
+        await original_notify(tg_user_id, text)
+
+    resolver_fixture.notifier.notify_user = _tracking_notify  # type: ignore[method-assign]
+
+    def _tracking_enqueue(*, source_id: str) -> None:
+        timeline.append("enqueue")
+        resolver_fixture.enqueued.append(("recompute_source_reputation", {"source_id": source_id}))
+
+    monkeypatch.setattr(resolve_mod, "_enqueue_reputation_recompute", _tracking_enqueue)
+
+    await _resolve_outcome_async(str(claim_id))
+
+    assert timeline == ["notify", "enqueue"]
+
+
+async def test_notification_failure_does_not_crash_job(
+    monkeypatch: pytest.MonkeyPatch,
+    resolver_fixture: _ResolverFixture,
+) -> None:
+    """A Telegram failure (user blocked the bot, transient 5xx, ...)
+    after the DB row is written MUST NOT raise — the row is already
+    persisted, so an RQ retry would just hit the idempotency guard."""
+    from merlin_worker.jobs.resolve_outcome import _resolve_outcome_async
+
+    claim_id = uuid4()
+    _seed_claim_context(monkeypatch, claim_id=claim_id)
+    t0 = _dt.datetime(2026, 6, 2, 10, 0, tzinfo=_dt.UTC)
+    resolver_fixture.market.prices["bitcoin"] = [
+        _FakePrice(price_usd=100.0, returned_at=t0),
+        _FakePrice(price_usd=105.0, returned_at=t0 + _dt.timedelta(hours=2)),
+    ]
+
+    async def _boom(*_a: Any, **_kw: Any) -> None:
+        raise RuntimeError("telegram is having a moment")
+
+    resolver_fixture.notifier.notify_user = _boom  # type: ignore[method-assign]
+
+    # Must not raise.
+    await _resolve_outcome_async(str(claim_id))
+
+    # DB row still persisted, reputation enqueue still happened.
+    assert len(resolver_fixture.outcome_repo.rows) == 1
+    assert len(resolver_fixture.enqueued) == 1
+
+
+async def test_reputation_enqueue_failure_does_not_crash_job(
+    monkeypatch: pytest.MonkeyPatch,
+    resolver_fixture: _ResolverFixture,
+) -> None:
+    """A reputation enqueue failure must be swallowed + logged. Otherwise
+    the resolver job retries, the retry skips on idempotency, and we
+    permanently lose the leaderboard update for this bet (and may also
+    have dropped the user notification depending on order).
+    """
+    import sys
+
+    import merlin_worker.jobs.resolve_outcome  # noqa: F401
+
+    resolve_mod = sys.modules["merlin_worker.jobs.resolve_outcome"]
+    from merlin_worker.jobs.resolve_outcome import _resolve_outcome_async
+
+    claim_id = uuid4()
+    _seed_claim_context(monkeypatch, claim_id=claim_id)
+    t0 = _dt.datetime(2026, 6, 2, 10, 0, tzinfo=_dt.UTC)
+    resolver_fixture.market.prices["bitcoin"] = [
+        _FakePrice(price_usd=100.0, returned_at=t0),
+        _FakePrice(price_usd=105.0, returned_at=t0 + _dt.timedelta(hours=2)),
+    ]
+
+    def _boom(*, source_id: str) -> None:
+        del source_id
+        raise ValueError("job_id has a colon in it (Sprint-1 follow-up bug)")
+
+    monkeypatch.setattr(resolve_mod, "_enqueue_reputation_recompute", _boom)
+
+    # Must not raise.
+    await _resolve_outcome_async(str(claim_id))
+
+    # DB row + user notification still landed.
+    assert len(resolver_fixture.outcome_repo.rows) == 1
+    assert len(resolver_fixture.notifier.sent) == 1
+
+
+def test_reputation_job_id_helper_is_idempotent_and_colon_free() -> None:
+    """The helper that builds reputation job_ids must produce an RQ-valid id
+    against the real ``tg:<hex>`` source_id format. Pinning here so the
+    unit-level guarantee matches the preflight grep guard.
+    """
+    from merlin_worker.jobs.resolve_outcome import _reputation_job_id
+
+    out = _reputation_job_id("tg:" + "f" * 32)
+    assert ":" not in out
+    assert out == "reputation-tg-" + "f" * 32
+    # Determinism — same input twice yields the same id.
+    assert _reputation_job_id("tg:abc") == _reputation_job_id("tg:abc")
+
+
+async def test_uses_historical_price_at_t_resolve_not_now(
+    monkeypatch: pytest.MonkeyPatch,
+    resolver_fixture: _ResolverFixture,
+) -> None:
+    """Worker fairness invariant: the resolver MUST ask CoinGecko for
+    the price **at ``claim.resolves_at``**, never at ``datetime.utcnow()``.
+
+    Why this is load-bearing: if the worker is down at the moment a
+    bet expires (Redis backlog, restart, deploy, crash loop), it
+    catches up later by draining the scheduled queue. Without this
+    invariant a 2-hour bet that expires while the worker is down would
+    be scored against whatever the price happens to be when the worker
+    comes back — minutes, hours, or days later — instead of the price
+    at the actual expiry instant the user committed to.
+
+    CoinGecko's ``/market_chart/range`` is a historical endpoint with a
+    ±5-minute bucket window, so the fix is naturally available; the
+    pure test here pins that the resolver passes the right timestamp.
+    """
+    from merlin_worker.jobs.resolve_outcome import _resolve_outcome_async
+
+    claim_id = uuid4()
+    _seed_claim_context(monkeypatch, claim_id=claim_id)
+
+    # Seed t0 + t_resolve from the seeded context (kept in sync with
+    # ``_seed_claim_context``'s constants).
+    t0 = _dt.datetime(2026, 6, 2, 10, 0, tzinfo=_dt.UTC)
+    t_resolve = t0 + _dt.timedelta(hours=2)
+    resolver_fixture.market.prices["bitcoin"] = [
+        _FakePrice(price_usd=100.0, returned_at=t0),
+        _FakePrice(price_usd=101.0, returned_at=t_resolve),
+    ]
+
+    await _resolve_outcome_async(str(claim_id))
+
+    # Two calls — first for t0, second for t_resolve. Order matters
+    # for the (price_t0, price_resolve) tuple that feeds the scoring
+    # delta. Neither call may be against ``datetime.now()``.
+    assert resolver_fixture.market.requested_at == [t0, t_resolve]
