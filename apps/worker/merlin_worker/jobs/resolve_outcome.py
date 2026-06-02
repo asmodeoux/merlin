@@ -12,21 +12,33 @@ Fires at ``t_resolve`` (RQ Scheduler held the job). Steps:
    "you called it right" notification and the leaderboard tally
    agree by construction).
 5. INSERT an ``outcomes`` row.
-6. Enqueue ``recompute_source_reputation`` on the dedicated
-   ``reputation`` queue (Q-029 reactive reputation — no daily cron).
-7. Send the user notification via the Telegram Bot API directly
-   (one less hop than relaying through the bot service).
+6. Recompute the source's reputation INLINE (Q-029 reactive —
+   no daily cron, no queue hop) so the resulting ``weighted_pnl_pct``
+   can be threaded into the user notification. The recompute itself
+   reads outcomes, writes one ``source_reputation_history`` row, and
+   returns the new PnL.
+7. Send the user notification via the Telegram Bot API directly,
+   including the freshly-recomputed PnL and a "/me · /board" CTA.
 
 On ``AssetNotFoundError`` (CoinGecko 404 between t0 and t_resolve —
 Q-023 asset mutation): INSERT an outcome row with
 ``status='rejected_asset_mutation'`` (auditability + idempotency),
-skip the reputation enqueue, send the rejection notification.
+skip the reputation recompute, send the rejection notification.
 
 On any other ``MarketDataError``: raise. RQ's ``Retry(max=3,
 interval=[60, 300, 900])`` policy retries 1m / 5m / 15m. After the
 final failure, the user is told via the "resolution_failed_final"
 template and the job moves to the failed-jobs registry for the
 operator's ``make admin-rerun`` path.
+
+Inline-recompute failure recovery: if step 6 raises (DB hiccup,
+transient lock contention, anything), the resolver logs and falls
+back to the legacy async enqueue path so the snapshot row still
+gets written eventually. The user notification then goes out
+WITHOUT the PnL chunk (the body still tells them the outcome; the
+"/me · /board" CTA still surfaces). This preserves the Sprint-1
+post-mortem property: a recompute failure must NEVER drop the
+user's outcome notification.
 
 Imports happen lazily inside the function so ``rq``'s pickle path
 doesn't choke on the worker's module-level state.
@@ -140,22 +152,24 @@ async def _resolve_outcome_async(claim_id: str) -> None:
 
     # Order matters. The DB write is the only step allowed to crash —
     # RQ retries on raise, and the idempotency guard above
-    # short-circuits the retry. Notification + reputation enqueue come
-    # after the write and are best-effort:
+    # short-circuits the retry. Reputation recompute + notification
+    # come after the write and each have explicit recovery paths:
     #
-    # * If we put reputation enqueue *before* notification (the prior
-    #   order), an enqueue failure (e.g. an invalid job_id character —
-    #   the Sprint-1 follow-up bug) crashed the job *after* the row was
-    #   written but *before* the user message was sent. The RQ retry
-    #   then hit the idempotency guard and silently skipped, so the
-    #   user never heard back.
-    # * If notification fails (Telegram outage, user blocked the bot,
-    #   etc.) a retry won't recover it because the DB row already
-    #   exists. Log and move on; the row is enough for the user to
-    #   verify via ``/me`` and for the operator to bridge from logs.
-    # * Reputation recompute is a derived view; a missed enqueue means
-    #   the leaderboard is stale by one bet until the next resolution
-    #   for that source. Tolerable; log loudly.
+    # * Reputation recompute runs INLINE (await ``_recompute_async``)
+    #   so we have the fresh PnL to thread into the notification body.
+    #   The recompute writes its own append-only snapshot row in a
+    #   separate session. If it raises, we log + fall back to the
+    #   async enqueue so the snapshot still gets written eventually,
+    #   and the notification goes out WITHOUT the PnL chunk.
+    # * Notification last. If notification fails (Telegram outage,
+    #   user blocked the bot, etc.) a retry won't recover it because
+    #   the DB row already exists. Log and move on; the row is enough
+    #   for the user to verify via ``/me`` and for the operator to
+    #   bridge from logs.
+    # * Sprint-1 post-mortem property still holds: a reputation
+    #   recompute failure MUST NOT drop the user notification — we
+    #   isolate the inline call inside its own try/except, never let
+    #   it raise into the surrounding flow.
     await _persist_resolved(
         session_factory=session_factory,
         claim_ctx=claim_ctx,
@@ -167,11 +181,17 @@ async def _resolve_outcome_async(claim_id: str) -> None:
         price_resolve_ref=price_resolve.returned_at.isoformat(),
     )
 
+    new_pnl_pct = await _inline_recompute_with_async_fallback(
+        source_id=claim_ctx.source_id,
+        claim_id=claim_id,
+    )
+
     text = render_outcome(
         asset_symbol=claim_ctx.asset_symbol,
         direction=claim_ctx.direction,  # type: ignore[arg-type]
         horizon_seconds=claim_ctx.horizon_seconds,
         pct=observed_pct,
+        weighted_pnl_pct=new_pnl_pct,
     )
     try:
         await notifier.notify_user(claim_ctx.tg_user_id, text)
@@ -179,15 +199,6 @@ async def _resolve_outcome_async(claim_id: str) -> None:
         _log.exception(
             "resolve_outcome: notify_user failed for claim %s — "
             "outcome row is persisted, user must check /me manually",
-            claim_id,
-        )
-
-    try:
-        _enqueue_reputation_recompute(source_id=claim_ctx.source_id)
-    except Exception:
-        _log.exception(
-            "resolve_outcome: reputation enqueue failed for claim %s — "
-            "leaderboard will lag by one bet until the next outcome on this source",
             claim_id,
         )
 
@@ -308,6 +319,58 @@ async def _persist_rejected_asset_mutation(
             resolved_at=_dt.datetime.now(tz=_dt.UTC),
         )
         await session.commit()
+
+
+async def _inline_recompute_with_async_fallback(
+    *,
+    source_id: str,
+    claim_id: str,
+) -> float | None:
+    """Recompute the source's reputation inline; fall back on failure.
+
+    Happy path: ``await _recompute_async(source_id)`` writes the
+    snapshot row in its own session and returns the new
+    ``weighted_pnl_pct`` (``None`` only on cold-start, which is
+    impossible here because we JUST persisted an outcome row for
+    this source). The PnL flows into the user notification body.
+
+    Failure path: any exception (DB hiccup, transient lock, the
+    recompute module suddenly mis-importing on a hot reload) is
+    caught, logged, and triggers the async enqueue fallback so the
+    snapshot row eventually lands and the leaderboard catches up by
+    the next worker tick. The fallback is itself best-effort —
+    losing both paths means the snapshot lags by one outcome until
+    the next resolution on this source, which is the same tolerated
+    state we had before this code path existed.
+
+    Returns the new PnL, or ``None`` when the inline call failed.
+    ``None`` is the signal that downstream callers should render
+    the notification WITHOUT the PnL chunk (still includes the CTA).
+    """
+    # Lazy import keeps RQ's pickle dispatch happy and matches the
+    # rest of this module's import strategy.
+    from merlin_worker.jobs.recompute_source_reputation import _recompute_async
+
+    try:
+        return await _recompute_async(source_id)
+    except Exception:
+        _log.exception(
+            "resolve_outcome: inline reputation recompute failed for claim %s "
+            "(source=%s) — notification will omit PnL; falling back to async enqueue",
+            claim_id,
+            source_id,
+        )
+        try:
+            _enqueue_reputation_recompute(source_id=source_id)
+        except Exception:
+            _log.exception(
+                "resolve_outcome: async reputation enqueue fallback ALSO failed "
+                "for claim %s (source=%s) — leaderboard will lag by one bet "
+                "until the next outcome on this source",
+                claim_id,
+                source_id,
+            )
+        return None
 
 
 def _reputation_job_id(source_id: str) -> str:

@@ -55,11 +55,17 @@ _log = logging.getLogger("merlin.worker.jobs.recompute_source_reputation")
 
 
 def recompute_source_reputation(source_id: str) -> None:
-    """Sync entry point called by RQ; bridges to the async coroutine."""
+    """Sync entry point called by RQ; bridges to the async coroutine.
+
+    The async return value is discarded here — RQ-driven recomputes
+    are fire-and-forget. The resolver's inline call path
+    (``_resolve_outcome_async``) awaits the coroutine directly to get
+    the new PnL for the user notification.
+    """
     asyncio.run(_recompute_async(source_id))
 
 
-async def _recompute_async(source_id: str) -> None:
+async def _recompute_async(source_id: str) -> float | None:
     """Run the recompute for ``source_id`` and INSERT one history row.
 
     One query fetches every resolved outcome (joined to its claim for
@@ -67,6 +73,13 @@ async def _recompute_async(source_id: str) -> None:
     is intentionally chatty in INFO logs so a live debugging session
     can confirm "the right number of bets contributed the right
     contributions" without reaching for psql.
+
+    Returns the freshly-computed ``weighted_pnl_pct`` — ``None`` on
+    cold-start (no resolved outcomes), the signed % otherwise. The
+    resolver's inline call uses this return value to include the
+    user's updated PnL in their outcome notification. Callers that
+    don't care about the value (e.g. the RQ-driven sync entry point
+    above) can discard it.
 
     Cold-start handling: zero resolved outcomes still INSERTs a row
     (``outcomes_resolved=0``, ``accuracy_pct=NULL``,
@@ -143,3 +156,5 @@ async def _recompute_async(source_id: str) -> None:
             effective_at=_dt.datetime.now(tz=_dt.UTC),
         )
         await session.commit()
+
+        return pnl_pct
