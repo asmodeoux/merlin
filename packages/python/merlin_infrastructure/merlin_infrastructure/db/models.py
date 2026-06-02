@@ -445,22 +445,41 @@ class SourceReputationHistory(Base):
 
     Q-029 keeps reputation reactive: the resolver enqueues a
     ``recompute_source_reputation`` job after each outcome lands, the
-    job counts the source's resolved + correct outcomes, and INSERTs
-    one row capturing the snapshot. Readers ask for
+    job counts the source's resolved + correct outcomes, computes the
+    conviction-weighted PnL + the Bayesian-shrunk sort score, and
+    INSERTs one row capturing the snapshot. Readers ask for
     ``ORDER BY effective_at DESC LIMIT 1`` per source.
 
-    v0 reputation is plain hit rate (no Bayesian shrinkage, no
-    Admiralty axes — those land in Sprint 3+). User-locked design
-    choices that shape the columns:
+    v0 columns capture three layered views of the same history:
 
-    * ``flat_handling = wash_zero``: ``outcomes_resolved`` counts
-      every non-mutation outcome (won + lost + flat). Only
+    * Hit rate (``outcomes_correct / outcomes_resolved``,
+      stored as ``accuracy_pct``) — the boolean "did the call land?"
+      view.
+    * Conviction-weighted PnL (``weighted_pnl_pct``) — magnitude +
+      direction, signed, with each bet's contribution scaled by its
+      stated conviction (low=1x, med=3x, high=5x). Honest about
+      signed magnitude; flat threshold NOT applied.
+    * Sort score (``sort_score``) — Bayesian-shrunk PnL,
+      ``weighted_pnl_pct x n / (n + 5)``, used as the leaderboard ORDER
+      BY key. Demotes lucky one-shots; lets a consistent grinder
+      compete; sinks spammers + active losers naturally. NOT rendered
+      to users.
+
+    User-locked design choices that shape the columns:
+
+    * ``flat_handling = wash_zero`` for hit rate: ``outcomes_resolved``
+      counts every non-mutation outcome (won + lost + flat). Only
       ``outcomes_correct`` excludes flats.
-    * ``min_calls_for_rank = show_all``: there's no minimum-N gate
-      here — surfacing decisions live with the readers.
-    * ``store_redundant = yes_denorm``: ``accuracy_pct`` is stored
-      alongside the counts so ``/board`` doesn't need a CASE
-      expression per row.
+    * ``flat_handling = honest_signed`` for PnL: ``weighted_pnl_pct``
+      counts the actual signed value of every resolved bet — a +0.3%
+      win still contributes +0.3% x weight.
+    * ``min_calls_for_rank = show_all``: no minimum-N gate at the
+      data layer — the Bayesian shrinkage handles small-sample
+      discipline; surfacing decisions live with the readers.
+    * ``store_redundant = yes_denorm``: ``accuracy_pct``,
+      ``weighted_pnl_pct``, and ``sort_score`` are stored so the
+      ``/board`` read path is a single ``SELECT`` (no per-row CASE
+      maths, no joins to ``outcomes``).
     """
 
     __tablename__ = "source_reputation_history"
@@ -482,6 +501,22 @@ class SourceReputationHistory(Base):
     # that ``/me`` / ``/board`` need to distinguish "no data yet" from
     # an honest 0%.
     accuracy_pct: Mapped[float | None] = mapped_column(Double(), nullable=True)
+    # Conviction-weighted PnL %: true weighted mean
+    # ``Σ(directional_return x weight) / Σ(weight)``. Sits in the range
+    # of underlying % moves so "PnL" reads literally on /board and /me.
+    # ``NULL`` cold-start, same rule as ``accuracy_pct``. Signed: + means
+    # the source's calls paid off on aggregate.
+    weighted_pnl_pct: Mapped[float | None] = mapped_column(Double(), nullable=True)
+    # Bayesian-shrunk sort key used by /board: ``weighted_pnl_pct x n /
+    # (n + 5)``. Stored so ``ORDER BY sort_score DESC`` is a plain
+    # index hit rather than per-row arithmetic. ``0.0`` on cold-start
+    # (not NULL) because we sort cold-start sources to the middle of
+    # the pack, not to the top / bottom.
+    sort_score: Mapped[float] = mapped_column(
+        Double(),
+        nullable=False,
+        server_default=text("0"),
+    )
     triggering_outcome_id: Mapped[UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("outcomes.id", ondelete="RESTRICT"),
@@ -506,10 +541,24 @@ class SourceReputationHistory(Base):
             "(outcomes_resolved = 0) = (accuracy_pct IS NULL)",
             name="ck_srh_accuracy_null_iff_cold_start",
         ),
+        # Same null-iff-cold-start rule as accuracy_pct — pinning at
+        # the DB level so a buggy recompute can't store a PnL number
+        # for a source with no resolved bets.
+        CheckConstraint(
+            "(outcomes_resolved = 0) = (weighted_pnl_pct IS NULL)",
+            name="ck_srh_pnl_null_iff_cold_start",
+        ),
         Index(
             "ix_srh_source_effective",
             "source_id",
             "effective_at",
+        ),
+        # ORDER BY sort_score DESC is the /board hot path. Compound
+        # index with effective_at lets the read path pick the latest
+        # snapshot per source and then sort, both via the index.
+        Index(
+            "ix_srh_sort_score",
+            "sort_score",
         ),
     )
 

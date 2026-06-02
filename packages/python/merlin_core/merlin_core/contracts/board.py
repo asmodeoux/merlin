@@ -19,8 +19,18 @@ class BoardEntry(BaseModel):
     """One leaderboard row.
 
     No "regret" / "simulated_size" / "belief_score" surface — the bot
-    voice rules forbid them. Reputation is rendered as plain calibration
-    + accuracy percentages.
+    voice rules forbid them. The three reputation numbers we DO
+    surface are layered views of the same history:
+
+    * ``accuracy_pct`` — plain hit rate (the boolean view).
+    * ``weighted_pnl_pct`` — conviction-weighted signed PnL %
+      (the magnitude view). The bot renders this as the primary
+      headline; hit rate is the secondary number per the locked
+      ``primary_metric = pnl_primary`` choice.
+
+    The Bayesian-shrunk sort score that drives the row order is
+    NOT carried on the wire — it's an internal ranking key, not a
+    user-facing concept. ``rank`` is the rendered 1-indexed position.
     """
 
     rank: int
@@ -28,6 +38,7 @@ class BoardEntry(BaseModel):
     calls_resolved: int
     calls_correct: int
     accuracy_pct: float
+    weighted_pnl_pct: float
     last_call_at: datetime | None = None
 
 
@@ -84,17 +95,23 @@ class MeResponse(BaseModel):
     Headline stats are plain English / plain percent. No "regret",
     no "simulated PnL", no version markers.
 
-    ``accuracy_pct`` and ``rank`` are ``Optional`` because a user with
-    zero resolved calls has no honest value to report — defaulting to
-    ``0.0`` / ``0`` would tell users "you're at zero" when the truthful
-    answer is "we haven't checked anything yet". The bot renders these
-    as "tracking your first resolutions" rather than a misleading
-    percent.
+    ``accuracy_pct``, ``weighted_pnl_pct``, and ``rank`` are all
+    ``Optional`` because a user with zero resolved calls has no honest
+    value to report — defaulting to ``0.0`` / ``0`` would tell users
+    "you're at zero" when the truthful answer is "we haven't checked
+    anything yet". The bot renders these as "tracking your first
+    resolutions" rather than a misleading percent.
+
+    ``weighted_pnl_pct`` is conviction-weighted signed PnL: positive
+    means the user's calls paid off on aggregate, negative means they
+    lost. The bot renders it as the primary headline (PnL first, hit
+    rate as a secondary number) matching the /board layout.
     """
 
     display_name: str | None = None
     calls_open: list[OpenCallEntry] = Field(default_factory=list)
     calls_resolved_recent: list[ResolvedCallEntry] = Field(default_factory=list)
     accuracy_pct: float | None = None
+    weighted_pnl_pct: float | None = None
     calls_resolved_total: int = 0
     rank: int | None = None

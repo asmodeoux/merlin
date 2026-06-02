@@ -131,9 +131,20 @@ class ClaimRecord:
 class LeaderboardEntry:
     """One row of the ranking query that backs ``GET /board``.
 
-    Sprint-1 slice returns an empty list — no outcomes layer yet, so
-    nothing has resolved and there's nothing to rank. The shape is
-    pinned here so the swap-in is local when the worker lands.
+    Three numbers per source: hit rate, conviction-weighted PnL,
+    bet count. The bot renders all three on each row; the API
+    SORTS by an internal ``sort_score`` (Bayesian-shrunk PnL) so a
+    lucky one-bet wonder can't top a multi-bet track record.
+
+    The sort score itself is NOT carried on this DTO — it's an
+    internal ranking key, not user-facing. ``rank`` is the rendered
+    position (1-indexed) after the ORDER BY.
+
+    ``accuracy_pct`` and ``weighted_pnl_pct`` are both floats here
+    (not Optional) because the leaderboard query already filters
+    cold-start sources OUT — every entry has at least one resolved
+    outcome, so the cold-start NULLs from the underlying snapshot
+    row are never observed at this layer.
     """
 
     rank: int
@@ -141,6 +152,7 @@ class LeaderboardEntry:
     calls_resolved: int
     calls_correct: int
     accuracy_pct: float
+    weighted_pnl_pct: float
     last_call_at: datetime | None = None
 
 
@@ -394,6 +406,30 @@ class OutcomeRecord:
     resolved_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedOutcomeForReputation:
+    """One resolved outcome's view used by the reputation recompute.
+
+    The recompute needs three things per row to build a snapshot:
+
+    * ``is_correct`` — drives the hit-rate counts.
+    * ``observed_return_pct`` + ``direction`` — combined into a
+      signed directional return (positive when the call was right).
+    * ``conviction`` — selects the per-bet stake multiplier
+      (low=1x, med=3x, high=5x).
+
+    Carrying ``direction`` and ``conviction`` on this record means
+    the JOIN to ``claims`` lives in one repository method (clean SQL
+    boundary) and every downstream computation stays in
+    ``merlin_core.domain.scoring`` (pure functions, easy to test).
+    """
+
+    direction: str
+    conviction: str
+    observed_return_pct: float
+    is_correct: bool
+
+
 class OutcomeRepositoryPort(Protocol):
     """Persist + read ``outcomes`` rows.
 
@@ -452,8 +488,33 @@ class OutcomeRepositoryPort(Protocol):
         the user's reputation. The "wash_zero" v0 choice means flat
         outcomes are in ``resolved`` but NOT in ``correct``.
 
-        Used by ``recompute_source_reputation``; one query per recompute
-        beats two round-trips for the same two counts.
+        Lightweight alternative to
+        ``fetch_resolved_for_reputation`` when the caller only needs
+        the counts (no PnL math). The recompute itself prefers the
+        richer fetch; this method stays on the port for callers that
+        don't need direction / conviction.
+        """
+        ...
+
+    async def fetch_resolved_for_reputation(
+        self,
+        source_id: str,
+    ) -> list[ResolvedOutcomeForReputation]:
+        """Return one row per resolved outcome with direction + conviction.
+
+        Used by ``recompute_source_reputation`` to compute the
+        conviction-weighted PnL and the Bayesian-shrunk sort score.
+        Single SELECT with a JOIN ``outcomes → claims`` for the per-bet
+        direction + conviction (which live on the claim, not the
+        outcome). Filters ``outcomes.status='resolved'`` so Q-023
+        rejection rows and ``resolution_failed_final`` rows stay out
+        of the PnL — same filter as ``count_resolved_and_correct_for_source``.
+
+        ``direction``, ``conviction``, and ``observed_return_pct`` are
+        non-NULL on resolved outcomes by CHECK constraint, so the
+        record fields are non-Optional. Rows that fail those CHECKs
+        could never have been INSERTed in the first place; the
+        resolver enforces them at write time.
         """
         ...
 
@@ -465,13 +526,29 @@ class OutcomeRepositoryPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SourceReputationRecord:
-    """Read-side projection of a row in ``source_reputation_history``."""
+    """Read-side projection of a row in ``source_reputation_history``.
+
+    Three layered views of the same history:
+
+    * ``accuracy_pct`` — plain hit rate, the boolean view.
+    * ``weighted_pnl_pct`` — conviction-weighted signed PnL %,
+      the magnitude view.
+    * ``sort_score`` — Bayesian-shrunk PnL, the ranking view (NOT
+      rendered to users).
+
+    All three follow the same NULL contract for cold-start sources:
+    ``accuracy_pct`` / ``weighted_pnl_pct`` are ``None`` when
+    ``outcomes_resolved == 0``, but ``sort_score`` is ``0.0`` (sorts
+    to the middle of the pack, not to ``-inf``).
+    """
 
     id: UUID
     source_id: str
     outcomes_resolved: int
     outcomes_correct: int
     accuracy_pct: float | None
+    weighted_pnl_pct: float | None
+    sort_score: float
     triggering_outcome_id: UUID | None
     effective_at: datetime
 
@@ -493,10 +570,19 @@ class SourceReputationRepositoryPort(Protocol):
         outcomes_resolved: int,
         outcomes_correct: int,
         accuracy_pct: float | None,
+        weighted_pnl_pct: float | None,
+        sort_score: float,
         triggering_outcome_id: UUID | None,
         effective_at: datetime,
     ) -> SourceReputationRecord:
-        """INSERT one history row. Flushes; does not commit."""
+        """INSERT one history row. Flushes; does not commit.
+
+        ``weighted_pnl_pct`` and ``accuracy_pct`` must BOTH be ``None``
+        or BOTH be set — the DB CHECK ``ck_srh_pnl_null_iff_cold_start``
+        plus ``ck_srh_accuracy_null_iff_cold_start`` together enforce
+        "cold-start sources have neither, resolved sources have both".
+        ``sort_score`` is always a float (``0.0`` cold-start).
+        """
         ...
 
     async def latest_for_source(
@@ -512,11 +598,13 @@ class SourceReputationRepositoryPort(Protocol):
         ...
 
     async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
-        """Top sources by latest snapshot's ``accuracy_pct``.
+        """Top sources by latest snapshot's ``sort_score``.
 
         ``window`` is accepted for forward compatibility; v0 ignores it
         and returns the all-time ranking — there's no time-windowed
         slicing of reputation snapshots yet. Cold-start sources are
-        omitted (their ``accuracy_pct`` is NULL).
+        omitted (their ``accuracy_pct`` and ``weighted_pnl_pct`` are
+        NULL). Ranking key is ``sort_score`` (Bayesian-shrunk PnL),
+        NOT the raw hit rate — locked by the design conversation.
         """
         ...

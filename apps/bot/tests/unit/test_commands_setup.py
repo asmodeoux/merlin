@@ -25,7 +25,10 @@ from telegram.error import BadRequest
 
 
 def _settings(**kwargs: object) -> Settings:
-    return Settings(_env_file=None, **kwargs)  # type: ignore[call-arg]
+    # ``arg-type`` covers BaseSettings rejecting ``**dict[str, object]``
+    # against each declared field's narrow type. Runtime contract is
+    # checked by the assertions below; static side stays quiet.
+    return Settings(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
 
 @dataclass
@@ -125,7 +128,11 @@ class _ChatNotFoundBot:
     """
 
     public_calls: int = 0
-    chat_scope_attempts: list[int] = field(default_factory=list)
+    # ``BotCommandScopeChat.chat_id`` is typed ``str | int`` upstream
+    # (Telegram allows ``@channelname`` aliases). Our admin ids are
+    # always plain ints, but the fixture's list type has to accept
+    # the wider PTB shape or the static check breaks.
+    chat_scope_attempts: list[int | str] = field(default_factory=list)
 
     async def set_my_commands(
         self,
@@ -177,7 +184,9 @@ async def test_register_commands_continues_to_other_admins_after_badrequest() ->
 
     Otherwise a single mis-typed admin id would silently lock out
     every other admin's menu."""
-    attempts: list[int] = []
+    # ``str | int`` because ``BotCommandScopeChat.chat_id`` accepts
+    # alias strings upstream (see fixture above).
+    attempts: list[int | str] = []
 
     @dataclass
     class _PartialFailBot:

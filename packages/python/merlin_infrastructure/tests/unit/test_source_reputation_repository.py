@@ -32,7 +32,8 @@ def _fake_session() -> MagicMock:
 
 
 async def test_insert_snapshot_writes_every_field() -> None:
-    """The history row must include the denormalised ``accuracy_pct``."""
+    """The history row must include the denormalised ``accuracy_pct``,
+    ``weighted_pnl_pct``, and ``sort_score``."""
     sess = _fake_session()
     repo = SourceReputationRepository(sess)
     effective_at = datetime.now(tz=UTC)
@@ -42,6 +43,8 @@ async def test_insert_snapshot_writes_every_field() -> None:
         outcomes_resolved=4,
         outcomes_correct=3,
         accuracy_pct=75.0,
+        weighted_pnl_pct=2.5,
+        sort_score=1.111,
         triggering_outcome_id=None,
         effective_at=effective_at,
     )
@@ -52,18 +55,23 @@ async def test_insert_snapshot_writes_every_field() -> None:
     assert added.outcomes_resolved == 4
     assert added.outcomes_correct == 3
     assert added.accuracy_pct == pytest.approx(75.0)
+    assert added.weighted_pnl_pct == pytest.approx(2.5)
+    assert added.sort_score == pytest.approx(1.111)
     assert record.accuracy_pct == pytest.approx(75.0)
+    assert record.weighted_pnl_pct == pytest.approx(2.5)
+    assert record.sort_score == pytest.approx(1.111)
 
 
 async def test_insert_snapshot_writes_null_accuracy_on_cold_start() -> None:
-    """``outcomes_resolved=0`` MUST persist ``accuracy_pct=None``.
+    """``outcomes_resolved=0`` MUST persist ``accuracy_pct=None`` AND
+    ``weighted_pnl_pct=None``. ``sort_score`` stays ``0.0`` (NOT NULL).
 
-    The CHECK constraint ``ck_srh_accuracy_null_iff_cold_start``
-    would reject anything else at the DB layer, but the application
-    layer should also leave NULL by construction so a future
-    migration that loosens the constraint doesn't quietly start
-    persisting ``0.0`` (which the readers would misinterpret as a
-    real hit rate).
+    The CHECK constraints ``ck_srh_accuracy_null_iff_cold_start`` +
+    ``ck_srh_pnl_null_iff_cold_start`` would reject anything else at
+    the DB layer, but the application layer should also leave NULL by
+    construction so a future migration that loosens the constraints
+    doesn't quietly start persisting ``0.0`` (which the readers would
+    misinterpret as a real hit rate / real PnL).
     """
     sess = _fake_session()
     repo = SourceReputationRepository(sess)
@@ -73,6 +81,8 @@ async def test_insert_snapshot_writes_null_accuracy_on_cold_start() -> None:
         outcomes_resolved=0,
         outcomes_correct=0,
         accuracy_pct=None,
+        weighted_pnl_pct=None,
+        sort_score=0.0,
         triggering_outcome_id=None,
         effective_at=datetime.now(tz=UTC),
     )
@@ -80,7 +90,11 @@ async def test_insert_snapshot_writes_null_accuracy_on_cold_start() -> None:
     added = sess.add.call_args[0][0]
     assert added.outcomes_resolved == 0
     assert added.accuracy_pct is None
+    assert added.weighted_pnl_pct is None
+    assert added.sort_score == 0.0
     assert record.accuracy_pct is None
+    assert record.weighted_pnl_pct is None
+    assert record.sort_score == 0.0
 
 
 async def _scalar_returning(value: Any) -> MagicMock:
@@ -108,6 +122,8 @@ async def test_latest_for_source_projects_row_to_record() -> None:
     row.outcomes_resolved = 10
     row.outcomes_correct = 7
     row.accuracy_pct = 70.0
+    row.weighted_pnl_pct = 3.5
+    row.sort_score = 2.333
     row.triggering_outcome_id = None
     row.effective_at = datetime.now(tz=UTC)
     sess.execute.return_value = await _scalar_returning(row)
@@ -119,15 +135,19 @@ async def test_latest_for_source_projects_row_to_record() -> None:
     assert record.outcomes_resolved == 10
     assert record.outcomes_correct == 7
     assert record.accuracy_pct == pytest.approx(70.0)
+    assert record.weighted_pnl_pct == pytest.approx(3.5)
+    assert record.sort_score == pytest.approx(2.333)
 
 
-async def test_leaderboard_query_compiles() -> None:
-    """The leaderboard statement must compile (no typos in column refs).
+async def test_leaderboard_query_compiles_with_sort_score_order_by() -> None:
+    """The leaderboard statement must compile (no typos in column refs)
+    AND must ``ORDER BY sort_score DESC`` — the locked ranking key.
 
     We pin compile-time correctness; the actual ranking output is
     exercised in the integration test against a real DB. A regression
     here is the kind of "I renamed a column and broke the join" bug
-    that doesn't show up until the first /board request.
+    that doesn't show up until the first /board request — including
+    the silent failure mode of falling back to accuracy_pct ordering.
     """
     sess = _fake_session()
 
@@ -141,6 +161,19 @@ async def test_leaderboard_query_compiles() -> None:
     assert entries == []
     stmt = sess.execute.call_args[0][0]
     compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
-    assert "source_reputation_history" in compiled.lower()
-    assert "accuracy_pct" in compiled.lower()
-    assert "order by" in compiled.lower()
+    lowered = compiled.lower()
+    assert "source_reputation_history" in lowered
+    assert "accuracy_pct" in lowered  # still SELECTed for the row payload
+    assert "weighted_pnl_pct" in lowered  # NEW: projected onto LeaderboardEntry
+    assert "sort_score" in lowered  # NEW: the ORDER BY key
+    assert "order by" in lowered
+    # Pin that ``sort_score`` precedes ``outcomes_resolved`` in the
+    # ORDER BY — if the order swaps we silently change the tiebreaker
+    # semantics from "shrunk PnL, then volume" to "volume, then PnL".
+    sort_score_pos = lowered.find("sort_score desc")
+    outcomes_resolved_pos = lowered.find("outcomes_resolved desc")
+    assert sort_score_pos >= 0, "sort_score is not ORDER BYed DESC"
+    assert outcomes_resolved_pos >= 0, "outcomes_resolved tiebreaker missing"
+    assert (
+        sort_score_pos < outcomes_resolved_pos
+    ), "sort_score must precede outcomes_resolved in the ORDER BY chain"

@@ -421,6 +421,8 @@ async def test_get_me_uses_reputation_snapshot_when_available(
         outcomes_resolved=4,
         outcomes_correct=3,
         accuracy_pct=75.0,
+        weighted_pnl_pct=2.5,
+        sort_score=1.111,
         triggering_outcome_id=None,
         effective_at=datetime.now(tz=UTC),
     )
@@ -430,6 +432,29 @@ async def test_get_me_uses_reputation_snapshot_when_available(
     body = response.json()
     assert body["calls_resolved_total"] == 4
     assert body["accuracy_pct"] == pytest.approx(75.0)
+    # ``weighted_pnl_pct`` is the bot's primary headline — must project
+    # through to the wire from the latest snapshot.
+    assert body["weighted_pnl_pct"] == pytest.approx(2.5)
+
+
+async def test_get_me_cold_start_omits_pnl_too(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """No reputation snapshot → both ``accuracy_pct`` AND
+    ``weighted_pnl_pct`` are ``None`` (not 0.0). The bot renders the
+    "tracking your first resolutions" empty-state instead of a
+    misleading +0.0% PnL."""
+    src_id = "tg:" + "e" * 32
+    _seed_onboarded(fake_session, tg_user_id=101, source_id=src_id)
+    # No reputation snapshot seeded.
+
+    response = await client.get("/me", params={"tg_user_id": 101}, headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accuracy_pct"] is None
+    assert body["weighted_pnl_pct"] is None
 
 
 async def test_get_me_cold_start_falls_back_to_horizon_count(

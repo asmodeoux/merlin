@@ -117,7 +117,13 @@ async def test_prompt_horizon_keyboard_uses_quick_picks_with_seconds_in_callback
     for row in reply_markup.inline_keyboard:
         for btn in row:
             labels.append(btn.text)
-            callbacks.append(btn.callback_data or "")
+            # ``callback_data`` is ``object | None`` upstream (PTB
+            # supports typed callback data via ``Defaults``); our
+            # buttons here use plain strings — assert that statically
+            # so the test list stays ``list[str]``.
+            cb = btn.callback_data
+            assert isinstance(cb, str) or cb is None
+            callbacks.append(cb or "")
     # Bot voice: human labels, never raw codes.
     assert "24 hours" in labels
     assert "3 days" in labels

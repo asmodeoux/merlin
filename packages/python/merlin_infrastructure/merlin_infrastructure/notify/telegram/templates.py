@@ -47,9 +47,9 @@ def outcome_won(
 ) -> str:
     """Notification for a correct call (sign matches direction, |pct| ≥ flat threshold)."""
     return (
-        f"Your {asset_symbol} call resolved. "
+        f"🎉 Your {asset_symbol} call resolved. "
         f"{_direction_phrase(direction)} over {humanise_horizon(horizon_seconds)} "
-        f"ended {pct:+.1f}% — you called it right."
+        f"ended {pct:+.1f}% — you called it right!"
     )
 
 
@@ -58,7 +58,7 @@ def outcome_lost(
 ) -> str:
     """Notification for an incorrect call (sign mismatch, |pct| ≥ flat threshold)."""
     return (
-        f"Your {asset_symbol} call resolved. "
+        f"🙂‍↔️ Your {asset_symbol} call resolved. "
         f"{_direction_phrase(direction)} over {humanise_horizon(horizon_seconds)} "
         f"ended {pct:+.1f}% — the market went the other way."
     )
@@ -66,7 +66,7 @@ def outcome_lost(
 
 def outcome_flat(*, asset_symbol: str, pct: float) -> str:
     """Notification for a wash outcome (|pct| < flat threshold)."""
-    return f"Your {asset_symbol} call resolved flat at {pct:+.2f}%. Counts as a wash."
+    return f"📝 Your {asset_symbol} call resolved flat at {pct:+.2f}%. Counts as a wash."
 
 
 def rejected_asset_mutation(*, asset_symbol: str) -> str:

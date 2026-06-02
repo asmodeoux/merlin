@@ -163,6 +163,7 @@ async def test_get_board_renders_populated_entries(
             calls_resolved=10,
             calls_correct=8,
             accuracy_pct=80.0,
+            weighted_pnl_pct=4.2,
             last_call_at=datetime.now(tz=UTC),
         ),
         LeaderboardEntry(
@@ -171,6 +172,7 @@ async def test_get_board_renders_populated_entries(
             calls_resolved=7,
             calls_correct=4,
             accuracy_pct=57.1,
+            weighted_pnl_pct=-1.5,
             last_call_at=None,
         ),
     ]
@@ -180,4 +182,6 @@ async def test_get_board_renders_populated_entries(
     assert len(body["entries"]) == 2
     assert body["entries"][0]["display_name"] == "Alice"
     assert body["entries"][0]["accuracy_pct"] == 80.0
+    assert body["entries"][0]["weighted_pnl_pct"] == 4.2
+    assert body["entries"][1]["weighted_pnl_pct"] == -1.5
     assert body["entries"][1]["last_call_at"] is None

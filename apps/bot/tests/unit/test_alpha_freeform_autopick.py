@@ -17,6 +17,7 @@ tests pin the contract:
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -132,7 +133,11 @@ def test_auto_pick_returns_none_with_no_asset_query() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _draft_response(*, asset_query: str | None, candidates: list[dict]) -> dict:
+def _draft_response(
+    *,
+    asset_query: str | None,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "asset_query": asset_query,
         "asset_candidates": candidates,

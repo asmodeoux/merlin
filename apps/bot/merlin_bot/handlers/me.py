@@ -76,18 +76,24 @@ def _render_me(payload: dict[str, Any]) -> str:
 
         <display_name> — your calls
 
-        Open: 3   Resolved: 0
-        Accuracy: tracking your first resolutions
+        Open: 3   Resolved: 1
+        PnL -1.30%  ·  0% hit  ·  1 call
 
         Open calls:
           ETH long — 2 weeks, entry $2,438.12, resolves 2026-06-12 16:35 UTC
           BTC long — 1 month, resolves 2026-06-29 09:10 UTC
 
-    The entry-price chunk ("entry $X.YY") is shown only when the
-    server has a captured snapshot (``entry_price_usd != None``). On
-    legacy rows or rows submitted while CoinGecko was down we just
-    omit the chunk — the bot never invents a placeholder, never
-    shows "$0.00".
+    The second headline line carries PnL primary (matching the locked
+    ``primary_metric = pnl_primary`` choice — same metric prominence
+    as /board) and hit rate as a secondary chunk. Cold-start collapses
+    to "Accuracy: tracking your first resolutions" — never a
+    misleading "+0.00% PnL" before anything has resolved.
+
+    The entry-price chunk ("entry $X.YY") on each open-call line is
+    shown only when the server has a captured snapshot
+    (``entry_price_usd != None``). On legacy rows or rows submitted
+    while CoinGecko was down we just omit the chunk — the bot never
+    invents a placeholder, never shows "$0.00".
 
     Zero-open empty-state collapses the list section to a single
     "No open calls yet" line so the message stays short.
@@ -95,10 +101,14 @@ def _render_me(payload: dict[str, Any]) -> str:
     display_name = payload.get("display_name") or "you"
     open_calls = payload.get("calls_open") or []
     resolved_total = int(payload.get("calls_resolved_total") or 0)
-    accuracy_line = _accuracy_line(payload.get("accuracy_pct"), resolved_total)
+    headline_stats = _headline_stats_line(
+        weighted_pnl_pct=payload.get("weighted_pnl_pct"),
+        accuracy_pct=payload.get("accuracy_pct"),
+        resolved_total=resolved_total,
+    )
 
     header = f"{display_name} — your calls"
-    headline = f"Open: {len(open_calls)}   Resolved: {resolved_total}"
+    counts = f"Open: {len(open_calls)}   Resolved: {resolved_total}"
 
     if open_calls:
         rendered_calls = "\n".join(_render_open_call(c) for c in open_calls)
@@ -108,14 +118,23 @@ def _render_me(payload: dict[str, Any]) -> str:
 
     footer = "/alpha to add another, /board for the leaderboard."
 
-    return "\n\n".join([header, f"{headline}\n{accuracy_line}", body, footer])
+    return "\n\n".join([header, f"{counts}\n{headline_stats}", body, footer])
+
+
+#: Prefix for each open-call line. ``•`` (U+2022 BULLET) instead of
+#: two spaces — the spaces left the list visually flat against the
+#: "Open calls:" header, especially in the Telegram font, so users
+#: couldn't tell where one row ended and the next began. A real bullet
+#: glyph reads as a list at a glance and stays terminal-friendly
+#: (no parse_mode escaping needed; not a Markdown special char).
+_OPEN_CALL_BULLET = "•"
 
 
 def _render_open_call(call: dict[str, Any]) -> str:
     """One open-call bullet line.
 
     Inline shape:
-        ``ASSET direction — horizon, [entry $X.YY,] resolves <chunk>``
+        ``• ASSET direction — horizon, [entry $X.YY,] resolves <chunk>``
 
     ``<chunk>`` is the resolves-at fragment from ``_resolves_at_chunk``:
     relative ("in 2 hours 11 minutes") when the deadline is < 24h
@@ -129,7 +148,7 @@ def _render_open_call(call: dict[str, Any]) -> str:
     resolves_chunk = _resolves_at_chunk(str(call.get("resolves_at") or ""))
     entry_chunk = _format_entry_price(call.get("entry_price_usd"))
     middle = f"{horizon}, {entry_chunk}{resolves_chunk}"
-    return f"  {asset} {direction} — {middle}"
+    return f"{_OPEN_CALL_BULLET} {asset} {direction} — {middle}"
 
 
 def _format_entry_price(price: object) -> str:
@@ -160,16 +179,42 @@ def _format_entry_price(price: object) -> str:
     return f"entry {rendered}, "
 
 
-def _accuracy_line(accuracy_pct: float | None, resolved_total: int) -> str:
-    """Render the accuracy line.
+def _headline_stats_line(
+    *,
+    weighted_pnl_pct: object,
+    accuracy_pct: object,
+    resolved_total: int,
+) -> str:
+    """Render the headline-stats line under the Open/Resolved counts.
 
-    Honest empty-state: ``None`` → "tracking your first resolutions"
-    (the contract makes this field Optional precisely to avoid the
-    "0.0%" lie when no call has resolved yet).
+    Two shapes:
+
+    * Cold-start (no resolutions yet, or no PnL snapshot): a single
+      "Accuracy: tracking your first resolutions" line — the contract
+      makes both ``accuracy_pct`` and ``weighted_pnl_pct`` Optional
+      precisely so we can render this honestly rather than faking a
+      ``+0.00% PnL`` / ``0.0% hit``.
+
+    * Resolved-state: PnL primary + hit rate secondary + call count,
+      separated by middle-dots. ``PnL -1.30%  ·  0% hit  ·  1 call``
+      — same chunk order as the /board row so users see consistent
+      numbers in both views. ``calls`` pluralises ("1 call" /
+      "8 calls").
+
+    Defensive: if PnL is missing but accuracy is present (impossible
+    via the current DB CHECKs but pinning for forward-compat) we fall
+    back to the cold-start line. PnL is the headline; without it the
+    row would feel half-finished.
     """
-    if accuracy_pct is None or resolved_total == 0:
+    if weighted_pnl_pct is None or accuracy_pct is None or resolved_total == 0:
         return "Accuracy: tracking your first resolutions"
-    return f"Accuracy: {accuracy_pct:.0f}% ({resolved_total} resolved)"
+    try:
+        pnl = float(weighted_pnl_pct)  # type: ignore[arg-type]
+        acc = float(accuracy_pct)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "Accuracy: tracking your first resolutions"
+    calls_suffix = "" if resolved_total == 1 else "s"
+    return f"PnL {pnl:+.2f}%  ·  {acc:.0f}% hit  ·  {resolved_total} call{calls_suffix}"
 
 
 def _direction_human(value: str) -> str:

@@ -83,6 +83,7 @@ async def get_me(
         reputation.outcomes_resolved if reputation is not None else resolved_total_proxy
     )
     accuracy_pct = reputation.accuracy_pct if reputation is not None else None
+    weighted_pnl_pct = reputation.weighted_pnl_pct if reputation is not None else None
 
     return MeResponse(
         display_name=source.display_name if source is not None else None,
@@ -103,6 +104,7 @@ async def get_me(
         calls_resolved_recent=[],
         calls_resolved_total=calls_resolved_total,
         accuracy_pct=accuracy_pct,
+        weighted_pnl_pct=weighted_pnl_pct,
         # ``rank`` would require a cross-source query (the user's
         # row's position in the ordered ``source_reputation_history``
         # leaderboard). Deferred — the bot doesn't render the value

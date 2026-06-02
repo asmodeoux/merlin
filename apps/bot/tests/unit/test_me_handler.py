@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 import pytest
 from merlin_bot.api_dependency import BOT_DATA_KEY
 from merlin_bot.handlers.me import (
-    _accuracy_line,
+    _headline_stats_line,
     _render_me,
     _utc_datetime,
     build_handler,
@@ -119,6 +119,58 @@ def test_render_me_with_open_calls_lists_one_per_line() -> None:
     assert "/board" in text
 
 
+def test_format_entry_price_omits_chunk_on_none() -> None:
+    """``None`` (legacy / CoinGecko-down row) → empty chunk, NOT
+    "entry $0.00". The renderer must skip the segment entirely."""
+    from merlin_bot.handlers.me import _format_entry_price
+
+    assert _format_entry_price(None) == ""
+
+
+def test_format_entry_price_falls_back_on_non_numeric() -> None:
+    """Defensive: a wire-shape drift where ``entry_price_usd`` lands
+    as a non-numeric string (e.g. ``"unavailable"``) hits the
+    ``except (TypeError, ValueError)`` branch and returns empty,
+    same as ``None``. The /me line just omits the entry chunk."""
+    from merlin_bot.handlers.me import _format_entry_price
+
+    assert _format_entry_price("not-a-number") == ""
+    assert _format_entry_price(object()) == ""
+
+
+def test_horizon_human_handles_missing_and_garbage_values() -> None:
+    """Defensive horizon-rendering paths. The bullet line is the
+    primary /me content; a malformed horizon mustn't crash it."""
+    from merlin_bot.handlers.me import _horizon_human
+
+    # None → "soon" (missing key on a wire row).
+    assert _horizon_human(None) == "soon"
+    # Empty string → "soon" (legacy DB rows from before the column).
+    assert _horizon_human("") == "soon"
+    # Negative / zero (impossible via the CHECK constraint but
+    # defensive) → "soon".
+    assert _horizon_human(0) == "soon"
+    assert _horizon_human(-1) == "soon"
+    # Non-int garbage → "soon" via except (TypeError, ValueError).
+    assert _horizon_human("garbage") == "soon"
+    assert _horizon_human(object()) == "soon"
+
+
+def test_direction_human_falls_back_on_unknown_value() -> None:
+    """``long`` / ``short`` pass through; anything else (e.g. a
+    future enum extension or a malformed wire row) falls back to
+    ``"?"`` so the bullet line still reads as a sentence."""
+    from merlin_bot.handlers.me import _direction_human
+
+    assert _direction_human("long") == "long"
+    assert _direction_human("short") == "short"
+    # Truthy unknown value → echoed back (forward-compat for a
+    # future "neutral" direction without a code change).
+    assert _direction_human("neutral") == "neutral"
+    # Empty / falsy → explicit "?" placeholder, never an empty span.
+    assert _direction_human("") == "?"
+
+
 def test_render_open_call_entry_price_matches_receipt_format_per_bucket() -> None:
     """The /me handler and the /alpha receipt both render an entry
     price; they MUST produce the same number for the same input so
@@ -182,6 +234,67 @@ def test_render_me_omits_entry_price_when_field_absent() -> None:
     assert "entry" not in text.lower()
 
 
+def test_open_call_bullet_glyph_is_real_unicode_bullet() -> None:
+    """The bullet glyph MUST be U+2022 (Unicode BULLET), not the
+    ASCII bullet substitute "*" or a dot.
+
+    * U+2022 renders as a visible round bullet in Telegram's font,
+      lines up across all clients, and doesn't need parse_mode
+      escaping (it's not a Markdown special char).
+    * If a future refactor copy-pastes the line from a doc tool that
+      auto-replaces "*" / "•" / "·", we'd silently regress to an
+      ASCII glyph that reads as inline emphasis or a multiplication
+      dot. This pin keeps that loud.
+    """
+    from merlin_bot.handlers.me import _OPEN_CALL_BULLET
+
+    assert _OPEN_CALL_BULLET == "\u2022"
+    assert len(_OPEN_CALL_BULLET) == 1
+
+
+def test_render_me_open_call_lines_use_bullet_prefix() -> None:
+    """Each open call MUST start with a "• " bullet — two-space
+    indentation reads as flat against the "Open calls:" header in the
+    Telegram font, which is what the user reported. Pin the visible
+    glyph (U+2022) so a future "let's drop the bullets" refactor flips
+    the suite red.
+    """
+    payload = {
+        "display_name": "Yuri",
+        "calls_open": [
+            {
+                "claim_id": "a",
+                "asset_symbol": "ETH",
+                "direction": "long",
+                "horizon_seconds": 1_209_600,
+                "resolves_at": "2030-06-12T16:35:00Z",
+            },
+            {
+                "claim_id": "b",
+                "asset_symbol": "BTC",
+                "direction": "short",
+                "horizon_seconds": 604_800,
+                "resolves_at": "2030-06-05T12:00:00Z",
+            },
+        ],
+        "calls_resolved_total": 0,
+        "accuracy_pct": None,
+    }
+    text = _render_me(payload)
+    # Every open-call line starts with "• " — verified by counting how
+    # many lines satisfy the rule against the known count.
+    bulleted = [line for line in text.splitlines() if line.startswith("• ")]
+    assert (
+        len(bulleted) == 2
+    ), f"expected one bullet per open call (got {len(bulleted)}); raw text was:\n{text}"
+    assert "• ETH long" in text
+    assert "• BTC short" in text
+    # The OLD two-space-indent form must NOT appear — that's exactly
+    # the regression we're fixing.
+    assert "\n  ETH long" not in text
+    assert "\n  BTC short" not in text
+
+
 def test_render_me_empty_state_collapses_the_list_section() -> None:
     """Zero open calls — the list section collapses to a single line."""
     payload = {
@@ -207,17 +320,24 @@ def test_render_me_with_resolved_calls_shows_accuracy_percent() -> None:
         "calls_open": [],
         "calls_resolved_total": 5,
         "accuracy_pct": 60.0,
+        "weighted_pnl_pct": 1.85,
         "rank": 3,
     }
     text = _render_me(payload)
     assert "Open: 0   Resolved: 5" in text
-    assert "Accuracy: 60% (5 resolved)" in text
+    # PnL primary + hit secondary + calls count, same chunk order as
+    # /board. Plural ``calls`` because resolved_total > 1.
+    assert "PnL +1.85%  ·  60% hit  ·  5 calls" in text
 
 
 def test_render_me_no_display_name_uses_you_fallback() -> None:
     """User who hasn't set a display name yet — header reads 'you'
     rather than 'None'."""
-    payload = {"display_name": None, "calls_open": [], "calls_resolved_total": 0}
+    payload: dict[str, Any] = {
+        "display_name": None,
+        "calls_open": [],
+        "calls_resolved_total": 0,
+    }
     text = _render_me(payload)
     assert text.startswith("you — your calls")
 
@@ -266,18 +386,109 @@ def test_render_me_avoids_internal_jargon() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_accuracy_line_none_or_zero_resolves_to_tracking_copy() -> None:
-    """Null accuracy OR zero resolved → "tracking your first
-    resolutions". Never "0.0%" — that's the lie the contract change
-    is meant to prevent."""
-    assert _accuracy_line(None, 0) == "Accuracy: tracking your first resolutions"
-    # Edge case: accuracy somehow non-null but zero resolved (should
-    # never happen, but we don't want a "0% (0 resolved)" rendering).
-    assert _accuracy_line(0.0, 0) == "Accuracy: tracking your first resolutions"
+def test_headline_stats_line_cold_start_shows_tracking_copy() -> None:
+    """Null PnL OR null accuracy OR zero resolved → "tracking your
+    first resolutions". Three independent gates because the bot must
+    never invent a misleading +0.00% / 0% hit on cold-start."""
+    assert (
+        _headline_stats_line(
+            weighted_pnl_pct=None,
+            accuracy_pct=None,
+            resolved_total=0,
+        )
+        == "Accuracy: tracking your first resolutions"
+    )
+    # Zero resolved with non-null numbers (impossible via CHECK
+    # constraint, but defensive against a future schema relaxation).
+    assert (
+        _headline_stats_line(
+            weighted_pnl_pct=0.0,
+            accuracy_pct=0.0,
+            resolved_total=0,
+        )
+        == "Accuracy: tracking your first resolutions"
+    )
+    # PnL missing but accuracy present (impossible via CHECK; pinning
+    # for forward-compat).
+    assert (
+        _headline_stats_line(
+            weighted_pnl_pct=None,
+            accuracy_pct=80.0,
+            resolved_total=5,
+        )
+        == "Accuracy: tracking your first resolutions"
+    )
 
 
-def test_accuracy_line_with_data_shows_percent_and_count() -> None:
-    assert _accuracy_line(75.0, 8) == "Accuracy: 75% (8 resolved)"
+def test_headline_stats_line_with_data_renders_pnl_primary() -> None:
+    """PnL primary, hit rate secondary, calls count. Same chunk order
+    as /board so users see consistent numbers in both views."""
+    text = _headline_stats_line(
+        weighted_pnl_pct=4.20,
+        accuracy_pct=75.0,
+        resolved_total=8,
+    )
+    assert text == "PnL +4.20%  ·  75% hit  ·  8 calls"
+
+
+def test_headline_stats_line_pluralises_call_count() -> None:
+    """``1 call`` (singular) / ``2 calls`` (plural)."""
+    assert "1 call" in _headline_stats_line(
+        weighted_pnl_pct=-1.3,
+        accuracy_pct=0.0,
+        resolved_total=1,
+    )
+    assert " 1 calls" not in _headline_stats_line(
+        weighted_pnl_pct=-1.3,
+        accuracy_pct=0.0,
+        resolved_total=1,
+    )
+    assert "2 calls" in _headline_stats_line(
+        weighted_pnl_pct=2.0,
+        accuracy_pct=50.0,
+        resolved_total=2,
+    )
+
+
+def test_headline_stats_line_falls_back_on_non_numeric_pnl() -> None:
+    """Defensive: ``_headline_stats_line`` falls into its ``except
+    (TypeError, ValueError)`` branch when PnL or accuracy can't be
+    coerced to ``float``. That shouldn't happen via the contract,
+    but a wire-shape drift (string instead of number) must NOT take
+    out the whole /me reply. We fall back to the cold-start copy.
+    """
+    text = _headline_stats_line(
+        weighted_pnl_pct="not-a-number",
+        accuracy_pct=60.0,
+        resolved_total=5,
+    )
+    assert text == "Accuracy: tracking your first resolutions"
+
+    text = _headline_stats_line(
+        weighted_pnl_pct=4.2,
+        accuracy_pct="abc",
+        resolved_total=5,
+    )
+    assert text == "Accuracy: tracking your first resolutions"
+
+
+def test_headline_stats_line_signs_positive_and_negative_pnl() -> None:
+    """``+1.30%`` / ``-1.30%`` / ``+0.00%`` — sign is always explicit."""
+    assert "PnL +1.30%" in _headline_stats_line(
+        weighted_pnl_pct=1.3,
+        accuracy_pct=100.0,
+        resolved_total=1,
+    )
+    assert "PnL -1.30%" in _headline_stats_line(
+        weighted_pnl_pct=-1.3,
+        accuracy_pct=0.0,
+        resolved_total=1,
+    )
+    assert "PnL +0.00%" in _headline_stats_line(
+        weighted_pnl_pct=0.0,
+        accuracy_pct=50.0,
+        resolved_total=2,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +712,42 @@ async def test_me_command_recoverable_error_reply() -> None:
     # No raw error / status codes leak.
     assert "503" not in body
     assert "down" not in body.lower()
+
+
+async def test_me_command_recovers_from_transport_failure() -> None:
+    """Non-``MerlinHTTPError`` exceptions (DNS, ssl, timeouts, ...)
+    hit the broader ``except Exception`` branch and produce the
+    recoverable temporary-error copy — never a raw stacktrace into
+    the user's chat."""
+    client = AsyncMock()
+    client.get_me.side_effect = RuntimeError("dns resolution failed")
+    update = _FakeUpdate(
+        effective_user=_FakeUser(id=USER_ID),
+        message=_FakeMessage(),
+    )
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+
+    await me_command(update, ctx)  # type: ignore[arg-type]
+
+    assert update.message is not None
+    body, _ = update.message.replies[0]
+    assert "try" in body.lower() or "moment" in body.lower()
+    assert "RuntimeError" not in body
+    assert "dns" not in body.lower()
+
+
+async def test_me_command_handles_missing_message_silently() -> None:
+    """``Update.message is None`` (edited channel posts, inline mode)
+    must short-circuit — replying via ``None.reply_text`` would raise
+    and surface as a Sentry error.
+    """
+    client = AsyncMock()
+    update = _FakeUpdate(effective_user=_FakeUser(id=USER_ID), message=None)
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+
+    await me_command(update, ctx)  # type: ignore[arg-type]
+
+    client.get_me.assert_not_called()
 
 
 async def test_me_command_handles_missing_effective_user_silently() -> None:

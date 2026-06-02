@@ -12,10 +12,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from merlin_core.application.ports import OutcomeRecord, OutcomeRepositoryPort
+from merlin_core.application.ports import (
+    OutcomeRecord,
+    OutcomeRepositoryPort,
+    ResolvedOutcomeForReputation,
+)
 from sqlalchemy import case, func, select
 
-from merlin_infrastructure.db.models import Outcome
+from merlin_infrastructure.db.models import Claim, Outcome
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,6 +146,11 @@ class OutcomeRepository(OutcomeRepositoryPort):
         against or for the user's reputation. ``is_correct`` is NULL
         on non-resolved rows by CHECK constraint, so the SUM over
         ``CASE WHEN is_correct THEN 1 ELSE 0 END`` is safe to use.
+
+        Lightweight alternative to ``fetch_resolved_for_reputation``
+        for callers that only want counts (no PnL math). Kept on the
+        port surface for future consumers; the recompute job itself
+        uses the richer fetch.
         """
         result = await self._session.execute(
             select(
@@ -157,3 +166,50 @@ class OutcomeRepository(OutcomeRepositoryPort):
         )
         row = result.one()
         return int(row.resolved), int(row.correct)
+
+    async def fetch_resolved_for_reputation(
+        self,
+        source_id: str,
+    ) -> list[ResolvedOutcomeForReputation]:
+        """Per-bet PnL inputs for one source — the recompute's fetch.
+
+        One row per resolved outcome, joined to its claim for the
+        per-bet direction + conviction.
+
+        Powers ``recompute_source_reputation``'s conviction-weighted
+        PnL math. The query reads ``outcomes`` filtered to
+        ``status='resolved'`` (Q-023 rejection rows + retries-exhausted
+        rows excluded) and joins ``claims`` on ``claim_id`` for the
+        per-bet ``direction`` and ``conviction``.
+
+        Returns an empty list for a cold-start source — the recompute
+        treats that as "all numeric fields NULL" by construction.
+        """
+        result = await self._session.execute(
+            select(
+                Claim.direction,
+                Claim.conviction,
+                Outcome.observed_return_pct,
+                Outcome.is_correct,
+            )
+            .join(Claim, Claim.id == Outcome.claim_id)
+            .where(
+                Outcome.source_id == source_id,
+                Outcome.status == "resolved",
+            ),
+        )
+        rows = result.all()
+        return [
+            ResolvedOutcomeForReputation(
+                direction=str(row.direction),
+                conviction=str(row.conviction),
+                # ``observed_return_pct`` and ``is_correct`` are NOT NULL
+                # on resolved outcome rows by CHECK constraint
+                # (ck_outcomes_resolved_has_return /
+                # ck_outcomes_resolved_has_is_correct). The casts are
+                # defensive against a future schema relaxation.
+                observed_return_pct=float(row.observed_return_pct or 0.0),
+                is_correct=bool(row.is_correct),
+            )
+            for row in rows
+        ]

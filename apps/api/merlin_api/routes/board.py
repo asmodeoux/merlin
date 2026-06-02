@@ -18,12 +18,13 @@ router = APIRouter(tags=["board"])
 @router.get(
     "/board",
     response_model=BoardResponse,
-    summary="Leaderboard — top-N sources by accuracy over a window.",
+    summary="Leaderboard — top-N sources ranked by conviction-weighted PnL.",
     description=(
-        "User-facing only: rank, display name, calls resolved, accuracy "
-        "percent, last call date. No belief score, no simulated PnL, no "
-        "version markers. Returns an empty list until the outcomes "
-        "layer ships — the bot renders an honest empty-state then."
+        "User-facing only: rank, display name, calls resolved, "
+        "accuracy %, conviction-weighted PnL %, last call date. No "
+        "belief score, no simulated dollar PnL, no version markers. "
+        "Sort order is internal (Bayesian-shrunk PnL); the bot renders "
+        "PnL as the primary headline with hit rate as a secondary number."
     ),
 )
 async def get_board(
@@ -32,10 +33,10 @@ async def get_board(
 ) -> BoardResponse:
     """Return the leaderboard for the requested window.
 
-    Today the underlying ``ClaimRepository.leaderboard(window)`` is
-    empty (no outcomes table yet). The route is wired through anyway
-    so the swap-in is a one-line change in the repository when the
-    worker lands — bot, contract, and route stay put.
+    Thin pass-through over ``SourceReputationRepository.leaderboard``,
+    which already filters cold-start sources and orders by the
+    Bayesian-shrunk sort score. The route maps the repository's
+    ``LeaderboardEntry`` records to ``BoardEntry`` wire DTOs 1:1.
     """
     from merlin_infrastructure.db.repositories import SourceReputationRepository
 
@@ -50,6 +51,7 @@ async def get_board(
                 calls_resolved=row.calls_resolved,
                 calls_correct=row.calls_correct,
                 accuracy_pct=row.accuracy_pct,
+                weighted_pnl_pct=row.weighted_pnl_pct,
                 last_call_at=row.last_call_at,
             )
             for row in rows

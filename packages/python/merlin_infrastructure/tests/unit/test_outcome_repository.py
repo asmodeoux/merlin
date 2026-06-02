@@ -192,3 +192,70 @@ async def test_count_resolved_and_correct_for_source_compiles_query() -> None:
     assert "outcomes" in compiled.lower()
     assert "status" in compiled.lower()
     assert "resolved" in compiled.lower()
+
+
+async def test_fetch_resolved_for_reputation_projects_rows_to_records() -> None:
+    """Per-bet fetch must JOIN claims for direction + conviction and
+    project each row into a ``ResolvedOutcomeForReputation``."""
+    sess = _fake_session()
+    rows = [
+        type(
+            "Row",
+            (),
+            {
+                "direction": "long",
+                "conviction": "strong",
+                "observed_return_pct": 5.0,
+                "is_correct": True,
+            },
+        )(),
+        type(
+            "Row",
+            (),
+            {
+                "direction": "short",
+                "conviction": "medium",
+                "observed_return_pct": -2.0,
+                "is_correct": True,
+            },
+        )(),
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+    sess.execute.return_value = result
+
+    repo = OutcomeRepository(sess)
+    records = await repo.fetch_resolved_for_reputation("tg:" + "a" * 32)
+
+    assert len(records) == 2
+    assert records[0].direction == "long"
+    assert records[0].conviction == "strong"
+    assert records[0].observed_return_pct == pytest.approx(5.0)
+    assert records[0].is_correct is True
+    assert records[1].direction == "short"
+    assert records[1].observed_return_pct == pytest.approx(-2.0)
+
+
+async def test_fetch_resolved_for_reputation_query_joins_claims() -> None:
+    """The compiled SQL must JOIN ``claims`` so the conviction column
+    is reachable. A future refactor that drops the join would silently
+    break PnL math."""
+    sess = _fake_session()
+    result = MagicMock()
+    result.all.return_value = []
+    sess.execute.return_value = result
+
+    repo = OutcomeRepository(sess)
+    records = await repo.fetch_resolved_for_reputation("tg:" + "z" * 32)
+
+    assert records == []
+    stmt = sess.execute.call_args[0][0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "outcomes" in compiled
+    assert "claims" in compiled
+    assert "conviction" in compiled
+    assert "direction" in compiled
+    assert "join" in compiled
+    # Filter must still match ``status='resolved'`` exactly — same
+    # rule as the count query so the two views agree.
+    assert "'resolved'" in compiled

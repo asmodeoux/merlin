@@ -140,7 +140,7 @@
         "type": "object"
       },
       "BoardEntry": {
-        "description": "One leaderboard row.\n\nNo \"regret\" / \"simulated_size\" / \"belief_score\" surface \u2014 the bot\nvoice rules forbid them. Reputation is rendered as plain calibration\n+ accuracy percentages.",
+        "description": "One leaderboard row.\n\nNo \"regret\" / \"simulated_size\" / \"belief_score\" surface \u2014 the bot\nvoice rules forbid them. The three reputation numbers we DO\nsurface are layered views of the same history:\n\n* ``accuracy_pct`` \u2014 plain hit rate (the boolean view).\n* ``weighted_pnl_pct`` \u2014 conviction-weighted signed PnL %\n  (the magnitude view). The bot renders this as the primary\n  headline; hit rate is the secondary number per the locked\n  ``primary_metric = pnl_primary`` choice.\n\nThe Bayesian-shrunk sort score that drives the row order is\nNOT carried on the wire \u2014 it's an internal ranking key, not a\nuser-facing concept. ``rank`` is the rendered 1-indexed position.",
         "properties": {
           "accuracy_pct": {
             "title": "Accuracy Pct",
@@ -173,6 +173,10 @@
           "rank": {
             "title": "Rank",
             "type": "integer"
+          },
+          "weighted_pnl_pct": {
+            "title": "Weighted Pnl Pct",
+            "type": "number"
           }
         },
         "required": [
@@ -180,7 +184,8 @@
           "display_name",
           "calls_resolved",
           "calls_correct",
-          "accuracy_pct"
+          "accuracy_pct",
+          "weighted_pnl_pct"
         ],
         "title": "BoardEntry",
         "type": "object"
@@ -518,7 +523,7 @@
         "type": "object"
       },
       "MeResponse": {
-        "description": "``GET /me`` payload \u2014 open calls, resolved calls, headline stats.\n\nHeadline stats are plain English / plain percent. No \"regret\",\nno \"simulated PnL\", no version markers.\n\n``accuracy_pct`` and ``rank`` are ``Optional`` because a user with\nzero resolved calls has no honest value to report \u2014 defaulting to\n``0.0`` / ``0`` would tell users \"you're at zero\" when the truthful\nanswer is \"we haven't checked anything yet\". The bot renders these\nas \"tracking your first resolutions\" rather than a misleading\npercent.",
+        "description": "``GET /me`` payload \u2014 open calls, resolved calls, headline stats.\n\nHeadline stats are plain English / plain percent. No \"regret\",\nno \"simulated PnL\", no version markers.\n\n``accuracy_pct``, ``weighted_pnl_pct``, and ``rank`` are all\n``Optional`` because a user with zero resolved calls has no honest\nvalue to report \u2014 defaulting to ``0.0`` / ``0`` would tell users\n\"you're at zero\" when the truthful answer is \"we haven't checked\nanything yet\". The bot renders these as \"tracking your first\nresolutions\" rather than a misleading percent.\n\n``weighted_pnl_pct`` is conviction-weighted signed PnL: positive\nmeans the user's calls paid off on aggregate, negative means they\nlost. The bot renders it as the primary headline (PnL first, hit\nrate as a secondary number) matching the /board layout.",
         "properties": {
           "accuracy_pct": {
             "anyOf": [
@@ -571,6 +576,17 @@
               }
             ],
             "title": "Rank"
+          },
+          "weighted_pnl_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Pnl Pct"
           }
         },
         "title": "MeResponse",
@@ -1156,7 +1172,7 @@
     },
     "/board": {
       "get": {
-        "description": "User-facing only: rank, display name, calls resolved, accuracy percent, last call date. No belief score, no simulated PnL, no version markers. Returns an empty list until the outcomes layer ships \u2014 the bot renders an honest empty-state then.",
+        "description": "User-facing only: rank, display name, calls resolved, accuracy %, conviction-weighted PnL %, last call date. No belief score, no simulated dollar PnL, no version markers. Sort order is internal (Bayesian-shrunk PnL); the bot renders PnL as the primary headline with hit rate as a secondary number.",
         "operationId": "get_board_board_get",
         "parameters": [
           {
@@ -1209,7 +1225,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Leaderboard \u2014 top-N sources by accuracy over a window.",
+        "summary": "Leaderboard \u2014 top-N sources ranked by conviction-weighted PnL.",
         "tags": [
           "board"
         ]

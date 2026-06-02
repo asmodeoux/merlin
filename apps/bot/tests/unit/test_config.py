@@ -16,8 +16,13 @@ from merlin_bot.config import Settings
 
 
 def _settings(**env: str) -> Settings:
-    """Construct a Settings ignoring the local .env file."""
-    return Settings(_env_file=None, **env)  # type: ignore[call-arg]
+    """Construct a Settings ignoring the local .env file.
+
+    The ``arg-type`` ignore covers BaseSettings rejecting
+    ``**dict[str, str]`` against each declared field's narrow type;
+    the runtime contract is exercised by the assertions below.
+    """
+    return Settings(_env_file=None, **env)  # type: ignore[arg-type]
 
 
 def test_admin_chat_ids_empty_string_yields_empty_list() -> None:

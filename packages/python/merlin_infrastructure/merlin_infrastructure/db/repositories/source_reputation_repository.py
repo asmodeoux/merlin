@@ -36,6 +36,8 @@ def _to_record(row: SourceReputationHistory) -> SourceReputationRecord:
         outcomes_resolved=row.outcomes_resolved,
         outcomes_correct=row.outcomes_correct,
         accuracy_pct=row.accuracy_pct,
+        weighted_pnl_pct=row.weighted_pnl_pct,
+        sort_score=row.sort_score,
         triggering_outcome_id=row.triggering_outcome_id,
         effective_at=row.effective_at,
     )
@@ -55,6 +57,8 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
         outcomes_resolved: int,
         outcomes_correct: int,
         accuracy_pct: float | None,
+        weighted_pnl_pct: float | None,
+        sort_score: float,
         triggering_outcome_id: UUID | None,
         effective_at: datetime,
     ) -> SourceReputationRecord:
@@ -64,6 +68,8 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
             outcomes_resolved=outcomes_resolved,
             outcomes_correct=outcomes_correct,
             accuracy_pct=accuracy_pct,
+            weighted_pnl_pct=weighted_pnl_pct,
+            sort_score=sort_score,
             triggering_outcome_id=triggering_outcome_id,
             effective_at=effective_at,
         )
@@ -89,15 +95,23 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
         return _to_record(row)
 
     async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
-        """Top sources by latest ``accuracy_pct`` snapshot.
+        """Top sources by latest snapshot's ``sort_score``.
 
         ``window`` is accepted today so the route stays a thin
         pass-through; we ignore it for v0 (no time-window slicing yet).
         The query reads the *latest* snapshot per source via a
         correlated subquery + joins ``sources`` for the display name.
-        Cold-start sources (no snapshot rows) are omitted because
-        ``accuracy_pct IS NULL`` for them and we have nothing honest
-        to rank by.
+        Cold-start sources (no resolved outcomes) are filtered by
+        ``accuracy_pct IS NOT NULL`` — equivalently, the matching
+        DB CHECK guarantees ``weighted_pnl_pct IS NOT NULL`` and
+        ``outcomes_resolved > 0`` for the same row.
+
+        ORDER BY ``sort_score`` DESC is the locked ranking key
+        (Bayesian-shrunk PnL). The tiebreaker is
+        ``outcomes_resolved`` DESC so equally-ranked sources with
+        more bets surface first — a track-record bias on the rare
+        exact tie. ``weighted_pnl_pct`` DESC sits below that as a
+        final tiebreaker.
 
         The display-name fallback is ``"anonymous"`` so the bot never
         renders a blank line on the leaderboard — sources that haven't
@@ -132,8 +146,9 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
             )
             .where(SourceReputationHistory.accuracy_pct.isnot(None))
             .order_by(
-                desc(SourceReputationHistory.accuracy_pct),
+                desc(SourceReputationHistory.sort_score),
                 desc(SourceReputationHistory.outcomes_resolved),
+                desc(SourceReputationHistory.weighted_pnl_pct),
             )
         )
 
@@ -148,11 +163,13 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
                     display_name=display_name or "anonymous",
                     calls_resolved=snapshot.outcomes_resolved,
                     calls_correct=snapshot.outcomes_correct,
-                    # ``accuracy_pct`` is NOT NULL here because of the
-                    # WHERE clause; assert at the API boundary so a
-                    # future schema change can't silently drop NaNs
-                    # through the float type.
+                    # ``accuracy_pct`` and ``weighted_pnl_pct`` are
+                    # both NOT NULL here because of the WHERE clause +
+                    # the DB CHECK constraints; the ``or 0.0`` is
+                    # defensive against a future schema change that
+                    # silently drops NaNs through the float type.
                     accuracy_pct=float(snapshot.accuracy_pct or 0.0),
+                    weighted_pnl_pct=float(snapshot.weighted_pnl_pct or 0.0),
                     last_call_at=snapshot.effective_at,
                 ),
             )

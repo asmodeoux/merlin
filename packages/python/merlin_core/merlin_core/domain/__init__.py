@@ -17,14 +17,22 @@ from merlin_core.domain.claim_draft import (
     ParseMetadata,
 )
 from merlin_core.domain.scoring import (
+    CONVICTION_WEIGHTS,
     FLAT_THRESHOLD_PCT,
+    SORT_SCORE_K,
     accuracy_pct,
+    conviction_weight,
+    directional_return_pct,
     is_correct_call,
     is_flat,
+    shrunk_sort_score,
+    weighted_mean_pnl_pct,
 )
 
 __all__ = [
+    "CONVICTION_WEIGHTS",
     "FLAT_THRESHOLD_PCT",
+    "SORT_SCORE_K",
     "AssetCandidate",
     "ClaimDraft",
     "Conviction",
@@ -35,6 +43,10 @@ __all__ = [
     "ParseMetadata",
     "ParsedVia",
     "accuracy_pct",
+    "conviction_weight",
+    "directional_return_pct",
     "is_correct_call",
     "is_flat",
+    "shrunk_sort_score",
+    "weighted_mean_pnl_pct",
 ]
