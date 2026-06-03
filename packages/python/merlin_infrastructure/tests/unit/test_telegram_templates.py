@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from merlin_infrastructure.notify.telegram.templates import (
     FLAT_THRESHOLD_PCT,
+    invitee_joined,
     outcome_flat,
     outcome_lost,
     outcome_won,
@@ -333,3 +334,32 @@ def test_rejected_and_failure_templates_do_not_render_pnl_chunk() -> None:
         assert "Your PnL is now" not in text
         assert "/me" not in text
         assert "/board" not in text
+
+
+# ---------------------------------------------------------------------------
+# invitee_joined — fires on the inviter side when their invitee finishes
+# onboarding (first display-name set via PATCH /me).
+# ---------------------------------------------------------------------------
+
+
+def test_invitee_joined_renders_name_with_friendly_phrasing() -> None:
+    """The string must address the inviter directly ("your invite code")
+    and echo the invitee's display name verbatim. The handshake emoji
+    leads so the inviter sees a positive social signal even in the
+    chat-list preview before they open the message.
+    """
+    text = invitee_joined(name="Bob")
+    assert text == "🤝🏻 Bob has joined using your invite code!"
+    assert "your invite code" in text
+    _assert_bot_voice(text)
+
+
+def test_invitee_joined_passes_through_unicode_names() -> None:
+    """Display names are user-controlled UTF-8 (Telegram allows any
+    BMP + supplementary codepoints). The template MUST NOT mangle
+    non-ASCII names — the inviter wouldn't recognise a mojibake'd
+    handle as the person they invited.
+    """
+    text = invitee_joined(name="Юрий")
+    assert "Юрий" in text
+    _assert_bot_voice(text)

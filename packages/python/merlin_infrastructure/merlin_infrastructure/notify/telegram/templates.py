@@ -28,6 +28,7 @@ from merlin_core.domain.scoring import FLAT_THRESHOLD_PCT, is_correct_call, is_f
 # disagree on what "won" means.
 __all__ = [
     "FLAT_THRESHOLD_PCT",
+    "invitee_joined",
     "outcome_flat",
     "outcome_lost",
     "outcome_won",
@@ -165,6 +166,21 @@ def resolution_failed_final(*, asset_symbol: str) -> str:
         f"We're still trying to settle your {asset_symbol} call — "
         f"market data is taking longer than usual. We'll keep at it."
     )
+
+
+def invitee_joined(*, name: str) -> str:
+    """Notification to the inviter when someone they invited finishes onboarding.
+
+    Fires exactly once per invitee, on the transition from "no display
+    name" to "first display name set" inside ``PATCH /me``. The string
+    addresses the inviter in second person ("your invite code") so the
+    reader knows this is about their own outstanding code.
+
+    ``name`` is the invitee's freshly-chosen display name, already
+    trimmed to the 40-char cap by ``PATCH /me``'s validation. The
+    template does not re-escape — the notifier sends in plain text.
+    """
+    return f"🤝🏻 {name} has joined using your invite code!"
 
 
 def render_outcome(

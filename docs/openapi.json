@@ -1678,7 +1678,7 @@
         ]
       },
       "patch": {
-        "description": "Idempotent \u2014 calling with the same name is a no-op. The display name has a 40-character soft cap; the bot trims user input before sending. 404s if the caller's ``tg_user_id`` has no source row yet.",
+        "description": "Idempotent \u2014 calling with the same name is a no-op. The display name has a 40-character soft cap; the bot trims user input before sending. 404s if the caller's ``tg_user_id`` has no source row yet. On the first-ever display-name set for an invited user, sends the inviter a notification \u2014 fired exactly once per invitee, gated on the previous ``display_name`` being NULL so a later rename does not re-notify.",
         "operationId": "update_me_me_patch",
         "parameters": [
           {

@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from merlin_core.contracts import MeResponse, UpdateMeRequest
 from merlin_core.contracts.board import OpenCallEntry
 
-from merlin_api.deps import get_session
+from merlin_api.deps import Ports, get_ports, get_session
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+_log = logging.getLogger("merlin.api.routes.me")
 
 router = APIRouter(tags=["sources"])
 
@@ -121,21 +124,29 @@ async def get_me(
     description=(
         "Idempotent — calling with the same name is a no-op. The display "
         "name has a 40-character soft cap; the bot trims user input before "
-        "sending. 404s if the caller's ``tg_user_id`` has no source row yet."
+        "sending. 404s if the caller's ``tg_user_id`` has no source row yet. "
+        "On the first-ever display-name set for an invited user, sends the "
+        "inviter a notification — fired exactly once per invitee, gated on "
+        "the previous ``display_name`` being NULL so a later rename does "
+        "not re-notify."
     ),
 )
 async def update_me(
     body: UpdateMeRequest,
     session: AsyncSession = Depends(get_session),
+    ports: Ports = Depends(get_ports),
 ) -> None:
-    """Persist the display name against the calling source's row."""
+    """Persist the display name and notify the inviter on first-time set."""
     from merlin_infrastructure.db.repositories import (
+        InviteRepository,
         SourceIdentityRepository,
         SourceRepository,
     )
+    from merlin_infrastructure.notify.telegram.templates import invitee_joined
 
     identity_repo = SourceIdentityRepository(session)
     source_repo = SourceRepository(session)
+    invite_repo = InviteRepository(session)
 
     source_id = await identity_repo.get_source_id_by_tg_user_id(body.tg_user_id)
     if source_id is None:
@@ -144,5 +155,42 @@ async def update_me(
             detail="source not found — onboard via /invites/redeem first",
         )
 
+    # Snapshot the previous display_name BEFORE the update so we can
+    # tell "first-time set" (None → some name) apart from a later
+    # rename. We only notify on the first-time transition — calling
+    # PATCH /me again to change a name MUST NOT re-fire the
+    # handshake message to the inviter.
+    existing = await source_repo.get_by_source_id(source_id)
+    is_first_time_name_set = existing is not None and existing.display_name is None
+
     await source_repo.update_display_name(source_id, body.display_name)
     await session.commit()
+
+    if is_first_time_name_set:
+        inviter_tg_user_id: int | None = None
+        try:
+            inviter_tg_user_id = await invite_repo.get_inviter_tg_user_id_by_redeemed_source_id(
+                source_id,
+            )
+        except Exception:
+            # Lookup failure must never break the user's onboarding —
+            # the row is already committed, the user already sees
+            # their new name. We just lose this one handshake ping.
+            _log.exception(
+                "update_me: inviter lookup failed for source %s — "
+                "user is onboarded, inviter notification skipped",
+                source_id,
+            )
+
+        if inviter_tg_user_id is not None:
+            try:
+                await ports.notifier.notify_user(
+                    inviter_tg_user_id,
+                    invitee_joined(name=body.display_name),
+                )
+            except Exception:
+                _log.exception(
+                    "update_me: inviter notify_user failed for source %s — "
+                    "user is onboarded, inviter ping was lost",
+                    source_id,
+                )

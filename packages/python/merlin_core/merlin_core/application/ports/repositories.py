@@ -313,6 +313,41 @@ class InviteRepositoryPort(Protocol):
         """
         ...
 
+    async def get_inviter_tg_user_id_by_redeemed_source_id(
+        self,
+        redeemed_by_source_id: str,
+    ) -> int | None:
+        """Reverse-walk the redemption chain to the inviter's raw TG id.
+
+        Used by ``PATCH /me`` to notify the inviter when their invitee
+        finishes onboarding (first display-name set). Returns ``None``
+        for every "no one to notify" shape so the caller can collapse
+        them all into a single no-op branch:
+
+        * Admin-bootstrapped user — no row in ``invites`` keyed on this
+          source as redeemer.
+        * Admin-issued invite where the admin had no ``sources`` row
+          at the time the code was minted (``created_by_source_id`` is
+          NULL on the invite row).
+        * Inviter's ``source_identity`` row is missing (should not
+          happen in production — the redeem path co-commits the
+          identity row — but the column is FK-nullable so we treat the
+          absence as "no notification target").
+
+        When multiple redemptions key on the same invitee (not possible
+        on the production path — the redeem route is idempotent — but
+        the DB has no UNIQUE constraint on ``redeemed_by_source_id``),
+        the adapter returns the inviter behind the oldest redemption.
+        That choice keeps the "who originally invited them" answer
+        deterministic and stable across calls.
+
+        Implemented as a single ``SELECT`` joining
+        ``invites → source_identity`` on the inviter's ``source_id`` so
+        the application layer never sees raw Telegram IDs for anyone
+        but the inviter being notified.
+        """
+        ...
+
 
 class ClaimRepositoryPort(Protocol):
     """Persist + read ``claims`` rows.

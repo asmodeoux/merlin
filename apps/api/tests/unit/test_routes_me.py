@@ -26,8 +26,9 @@ import httpx
 import pytest
 from merlin_api.app import create_app
 from merlin_api.config import Settings
-from merlin_api.deps import get_session, get_settings
+from merlin_api.deps import Ports, get_ports, get_session, get_settings
 from merlin_core.application.ports import ClaimRecord, SourceRecord
+from merlin_infrastructure.notify.fake import FakeNotifier
 
 TEST_TOKEN = "test-internal-token"
 
@@ -65,6 +66,30 @@ class _FakeIdentityRepo:
 
 
 @dataclass
+class _FakeInviteRepo:
+    """In-memory stand-in for ``InviteRepositoryPort``.
+
+    The PATCH /me notification path only ever calls
+    ``get_inviter_tg_user_id_by_redeemed_source_id``, so this fake
+    skips the rest of the port surface. Tests seed
+    ``inviter_tg_id_by_redeemer`` to control the lookup result —
+    leaving the map empty exercises the "admin-bootstrapped user"
+    branch (no invite row → no notification).
+    """
+
+    inviter_tg_id_by_redeemer: dict[str, int] = field(default_factory=dict)
+    raises: Exception | None = None
+
+    async def get_inviter_tg_user_id_by_redeemed_source_id(
+        self,
+        redeemed_by_source_id: str,
+    ) -> int | None:
+        if self.raises is not None:
+            raise self.raises
+        return self.inviter_tg_id_by_redeemer.get(redeemed_by_source_id)
+
+
+@dataclass
 class _FakeClaimRepo:
     open_by_source: dict[str, list[ClaimRecord]] = field(default_factory=dict)
     resolved_count_by_source: dict[str, int] = field(default_factory=dict)
@@ -95,6 +120,7 @@ class _FakeReputationRepo:
 class _FakeSession:
     sources: _FakeSourceRepo = field(default_factory=_FakeSourceRepo)
     identities: _FakeIdentityRepo = field(default_factory=_FakeIdentityRepo)
+    invites: _FakeInviteRepo = field(default_factory=_FakeInviteRepo)
     claims: _FakeClaimRepo = field(default_factory=_FakeClaimRepo)
     reputation: _FakeReputationRepo = field(default_factory=_FakeReputationRepo)
     committed: bool = False
@@ -114,6 +140,12 @@ def fake_session() -> _FakeSession:
 
 
 @pytest.fixture
+def fake_notifier() -> FakeNotifier:
+    """Captures every PATCH /me invitee-handshake notification."""
+    return FakeNotifier()
+
+
+@pytest.fixture
 def settings() -> Settings:
     return Settings(
         environment="test",
@@ -125,6 +157,7 @@ def settings() -> Settings:
 @pytest.fixture
 async def client(
     fake_session: _FakeSession,
+    fake_notifier: FakeNotifier,
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[httpx.AsyncClient]:
@@ -136,6 +169,7 @@ async def client(
         "SourceIdentityRepository",
         lambda _s: fake_session.identities,
     )
+    monkeypatch.setattr(_repos_mod, "InviteRepository", lambda _s: fake_session.invites)
     monkeypatch.setattr(_repos_mod, "ClaimRepository", lambda _s: fake_session.claims)
     monkeypatch.setattr(
         _repos_mod,
@@ -146,9 +180,22 @@ async def client(
     async def _fake_get_session() -> AsyncIterator[_FakeSession]:
         yield fake_session
 
+    def _fake_get_ports() -> Ports:
+        # PATCH /me only reaches for ``ports.notifier``; the rest of
+        # the Ports surface is unused on this route, so we stub the
+        # other fields with ``None`` typed as ``Any`` rather than
+        # construct real adapters in a unit test.
+        return Ports(
+            drafter=None,  # type: ignore[arg-type]
+            market_data=None,  # type: ignore[arg-type]
+            queue=None,  # type: ignore[arg-type]
+            notifier=fake_notifier,
+        )
+
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session] = _fake_get_session
+    app.dependency_overrides[get_ports] = _fake_get_ports
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
@@ -248,6 +295,244 @@ async def test_patch_me_unknown_user_404s(
     )
     assert response.status_code == 404
     assert not fake_session.committed
+
+
+# ---------------------------------------------------------------------------
+# PATCH /me — inviter handshake notification.
+#
+# The first-ever display-name set after an invite redemption fires a
+# one-shot "🤝🏻 X has joined using your invite code!" notification to
+# the inviter. Pin the contract from four angles: it fires on the
+# first-time set, it does NOT fire on a later rename, it does NOT
+# fire for admin-bootstrapped users, and a notifier failure does not
+# break the user's onboarding.
+# ---------------------------------------------------------------------------
+
+
+def _seed_invitee_with_inviter(
+    session: _FakeSession,
+    *,
+    invitee_tg_id: int,
+    invitee_source_id: str,
+    inviter_tg_id: int,
+    display_name: str | None,
+) -> None:
+    """Onboarded invitee + a seeded invite row pointing at the inviter."""
+    session.identities.by_tg_id[invitee_tg_id] = invitee_source_id
+    session.sources.sources[invitee_source_id] = SourceRecord(
+        source_id=invitee_source_id,
+        display_name=display_name,
+        kind="user",
+        reliability="F",
+        credibility=6,
+        consent_version="v0",
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+    session.invites.inviter_tg_id_by_redeemer[invitee_source_id] = inviter_tg_id
+
+
+async def test_patch_me_first_time_name_set_notifies_inviter(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    fake_notifier: FakeNotifier,
+) -> None:
+    """The invite-joined happy path the user requested.
+
+    Invitee has ``display_name=None`` (the bot's redeem step lands the
+    row in that state). PATCH /me with the first display name must
+    commit the row AND deliver the handshake message to the inviter's
+    raw TG id, verbatim from the template.
+    """
+    invitee_src_id = "tg:" + "a" * 32
+    _seed_invitee_with_inviter(
+        fake_session,
+        invitee_tg_id=42,
+        invitee_source_id=invitee_src_id,
+        inviter_tg_id=999_000_111,
+        display_name=None,
+    )
+
+    response = await client.patch(
+        "/me",
+        json={"display_name": "Bob", "tg_user_id": 42},
+        headers=auth_headers,
+    )
+    assert response.status_code == 204, response.text
+    assert fake_session.committed
+    assert fake_session.sources.sources[invitee_src_id].display_name == "Bob"
+
+    assert len(fake_notifier.calls) == 1, (
+        "PATCH /me must deliver exactly one inviter handshake notification "
+        "on the first-time display-name set after invite redemption"
+    )
+    call = fake_notifier.calls[0]
+    assert call.tg_user_id == 999_000_111
+    # Pin the literal user-visible string so a future template tweak
+    # that drifts the wording trips this test before the inviter ever
+    # sees the change.
+    assert call.text == "🤝🏻 Bob has joined using your invite code!"
+
+
+async def test_patch_me_rename_does_not_renotify_inviter(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    fake_notifier: FakeNotifier,
+) -> None:
+    """Second PATCH /me (rename) MUST be silent.
+
+    The inviter should see exactly one handshake message per invitee,
+    on the first-ever name set. If the invitee later renames
+    themselves the inviter doesn't need to know — re-firing the
+    handshake would read as spam.
+    """
+    invitee_src_id = "tg:" + "b" * 32
+    # Seed the invitee with a name already set (i.e. they're past the
+    # first-time transition — this is what a rename PATCH looks like).
+    _seed_invitee_with_inviter(
+        fake_session,
+        invitee_tg_id=43,
+        invitee_source_id=invitee_src_id,
+        inviter_tg_id=999_000_222,
+        display_name="Bob",
+    )
+
+    response = await client.patch(
+        "/me",
+        json={"display_name": "Bob the Builder", "tg_user_id": 43},
+        headers=auth_headers,
+    )
+    assert response.status_code == 204, response.text
+    assert fake_session.sources.sources[invitee_src_id].display_name == "Bob the Builder"
+    assert fake_notifier.calls == [], (
+        "PATCH /me on an already-named source must not re-notify the inviter — "
+        "the handshake is a one-shot keyed on the first-time name set"
+    )
+
+
+async def test_patch_me_first_time_set_without_invite_does_not_notify(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    fake_notifier: FakeNotifier,
+) -> None:
+    """Admin-bootstrapped user (no invite row) → no notification target.
+
+    ``admin_bootstrap`` lands a source row without going through
+    ``POST /invites/redeem``, so the invite-lookup returns ``None`` and
+    PATCH /me must complete silently. The user is still onboarded; the
+    inviter handshake is simply not applicable to this path.
+    """
+    src_id = "tg:" + "c" * 32
+    fake_session.identities.by_tg_id[44] = src_id
+    fake_session.sources.sources[src_id] = SourceRecord(
+        source_id=src_id,
+        display_name=None,
+        kind="admin",
+        reliability="F",
+        credibility=6,
+        consent_version="v0",
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+    # NOTE: no entry in fake_session.invites — the lookup returns None.
+
+    response = await client.patch(
+        "/me",
+        json={"display_name": "Operator", "tg_user_id": 44},
+        headers=auth_headers,
+    )
+    assert response.status_code == 204, response.text
+    assert fake_session.sources.sources[src_id].display_name == "Operator"
+    assert fake_notifier.calls == [], (
+        "An admin-bootstrapped user (no invite row) has no inviter to "
+        "notify — PATCH /me must complete without any notification"
+    )
+
+
+async def test_patch_me_inviter_lookup_failure_does_not_break_onboarding(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    fake_notifier: FakeNotifier,
+) -> None:
+    """A failing inviter-lookup must not roll back the user's name change.
+
+    The row is already COMMITted by the time we try to look up + notify
+    the inviter. A repository error there must surface as a swallowed
+    log line, NOT a 5xx that makes the bot's ``receive_display_name``
+    retry. Without this guard, a transient DB blip on the lookup query
+    would block every new invitee from finishing onboarding.
+    """
+    invitee_src_id = "tg:" + "d" * 32
+    _seed_invitee_with_inviter(
+        fake_session,
+        invitee_tg_id=45,
+        invitee_source_id=invitee_src_id,
+        inviter_tg_id=999_000_333,
+        display_name=None,
+    )
+    fake_session.invites.raises = RuntimeError("simulated DB blip")
+
+    response = await client.patch(
+        "/me",
+        json={"display_name": "Bob", "tg_user_id": 45},
+        headers=auth_headers,
+    )
+    assert response.status_code == 204, response.text
+    # Row is committed even though the inviter lookup blew up.
+    assert fake_session.committed
+    assert fake_session.sources.sources[invitee_src_id].display_name == "Bob"
+    # And the notifier was never reached.
+    assert fake_notifier.calls == []
+
+
+async def test_patch_me_notifier_failure_does_not_break_onboarding(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    fake_notifier: FakeNotifier,
+) -> None:
+    """A failing notifier must not roll back the user's name change.
+
+    The row is already COMMITted by the time we try to deliver the
+    handshake. A transport error from Telegram (timeout, 5xx, JSON
+    encoding glitch) must surface as a swallowed log line, NOT a 5xx
+    that makes the bot's ``receive_display_name`` retry. Without this
+    guard, a transient Telegram outage would block every new invitee
+    from finishing onboarding.
+
+    Pins the OUTER ``try/except`` around ``notifier.notify_user`` — the
+    inner ``try/except`` around the inviter lookup is covered by
+    ``test_patch_me_inviter_lookup_failure_does_not_break_onboarding``;
+    both branches need explicit coverage because they protect against
+    different upstream failures (DB blip vs. Telegram blip).
+    """
+    invitee_src_id = "tg:" + "f" * 32
+    _seed_invitee_with_inviter(
+        fake_session,
+        invitee_tg_id=46,
+        invitee_source_id=invitee_src_id,
+        inviter_tg_id=999_000_444,
+        display_name=None,
+    )
+    fake_notifier.raise_on_call = RuntimeError("simulated telegram outage")
+
+    response = await client.patch(
+        "/me",
+        json={"display_name": "Bob", "tg_user_id": 46},
+        headers=auth_headers,
+    )
+    assert response.status_code == 204, response.text
+    # Row is committed even though the notifier blew up.
+    assert fake_session.committed
+    assert fake_session.sources.sources[invitee_src_id].display_name == "Bob"
+    # The route did REACH the notifier — the call landed in `calls`
+    # before the fake re-raised — but the exception was caught.
+    assert len(fake_notifier.calls) == 1
+    assert fake_notifier.calls[0].tg_user_id == 999_000_444
 
 
 # ---------------------------------------------------------------------------

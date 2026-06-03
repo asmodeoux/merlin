@@ -20,7 +20,7 @@ from merlin_core.application.ports import (
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-from merlin_infrastructure.db.models import Invite
+from merlin_infrastructure.db.models import Invite, SourceIdentity
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -120,6 +120,41 @@ class InviteRepository(InviteRepositoryPort):
         # UPDATE/DELETE/INSERT) but not on the parent ``Result``; the
         # mypy plugin can't narrow that. The runtime type is fine.
         return result.rowcount == 1  # type: ignore[attr-defined]
+
+    async def get_inviter_tg_user_id_by_redeemed_source_id(
+        self,
+        redeemed_by_source_id: str,
+    ) -> int | None:
+        """Resolve invitee source_id → inviter raw TG id in one SELECT.
+
+        ``SELECT si.tg_user_id FROM source_identity si JOIN invites i
+        ON i.created_by_source_id = si.source_id WHERE
+        i.redeemed_by_source_id = :sid ORDER BY i.redeemed_at ASC
+        LIMIT 1``. Returns the inviter behind the FIRST (oldest)
+        redemption keyed on the invitee.
+
+        The production redeem path is idempotent (re-redeems return the
+        existing source row without consuming a new code) so the WHERE
+        clause matches exactly zero or one row. ``ORDER BY redeemed_at
+        ASC`` is a safety belt: the column is FK-nullable but not
+        unique, so a hypothetical future data-fix that lands multiple
+        rows for the same redeemer would still pick a deterministic,
+        semantically defensible result ("who originally invited them").
+
+        Returns ``None`` for the three "no notification target" shapes
+        the port docstring lists (no invite row, NULL inviter, missing
+        identity). The INNER JOIN collapses all three into a 0-row
+        result so the caller sees a clean ``None``.
+        """
+        stmt = (
+            select(SourceIdentity.tg_user_id)
+            .join(Invite, Invite.created_by_source_id == SourceIdentity.source_id)
+            .where(Invite.redeemed_by_source_id == redeemed_by_source_id)
+            .order_by(Invite.redeemed_at.asc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def revoke_by_code(
         self,
