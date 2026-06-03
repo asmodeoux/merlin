@@ -25,6 +25,7 @@ from merlin_core.contracts.claims import (
     ParseMetadataDTO,
     SubmitClaimRequest,
 )
+from merlin_core.contracts.history import HistoryEntry, HistoryResponse
 from merlin_core.contracts.horizons import (
     HORIZON_MAX_SECONDS,
     HORIZON_MIN_SECONDS,
@@ -49,6 +50,7 @@ from merlin_core.contracts.sources import (
     AdminBootstrapRequest,
     AdminBootstrapResponse,
 )
+from merlin_core.contracts.tickers import TickerEntry, TickersResponse
 
 __all__ = [
     "HORIZON_MAX_SECONDS",
@@ -67,6 +69,8 @@ __all__ = [
     "CreateInviteRequest",
     "CreateInviteResponse",
     "ExtractedFieldsDTO",
+    "HistoryEntry",
+    "HistoryResponse",
     "HorizonParseError",
     "HorizonRangeError",
     "MeResponse",
@@ -77,6 +81,8 @@ __all__ = [
     "RevokeInviteRequest",
     "RevokeInviteResponse",
     "SubmitClaimRequest",
+    "TickerEntry",
+    "TickersResponse",
     "UpdateMeRequest",
     "horizon_to_timedelta",
     "humanise_horizon",

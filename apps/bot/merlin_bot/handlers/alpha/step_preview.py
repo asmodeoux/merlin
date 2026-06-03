@@ -507,10 +507,11 @@ def _calendar_date(iso: str) -> str:
 def _utc_datetime(iso: str) -> str:
     """Format an ISO timestamp as an unambiguous UTC date+time string.
 
-    Output shape: ``2026-06-12 16:32 UTC`` — minute-precision, no
-    seconds (the resolver's window is ±5 minutes anyway, so seconds
-    convey false precision). Always normalised to UTC; if the
-    timestamp comes in with an offset, we convert.
+    Output shape: ``June 12 @ 16:32 UTC`` — human-readable, full
+    month name, day without leading zero, ``@`` separator,
+    minute-precision (the resolver's window is ±5 minutes anyway, so
+    seconds convey false precision). Always normalised to UTC; if
+    the timestamp comes in with an offset, we convert.
 
     Falls back to ``"soon"`` on a missing / unparseable value so the
     receipt never crashes the bot on a malformed server response.
@@ -524,4 +525,4 @@ def _utc_datetime(iso: str) -> str:
     except ValueError:
         return "soon"
     dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+    return f"{dt:%B} {dt.day} @ {dt:%H:%M} UTC"

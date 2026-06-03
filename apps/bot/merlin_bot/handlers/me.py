@@ -80,8 +80,8 @@ def _render_me(payload: dict[str, Any]) -> str:
         PnL -1.30%  ·  0% hit  ·  1 call
 
         Open calls:
-          ETH long — 2 weeks, entry $2,438.12, resolves 2026-06-12 16:35 UTC
-          BTC long — 1 month, resolves 2026-06-29 09:10 UTC
+          ETH long — 2 weeks, entry $2,438.12, resolves June 12 @ 16:35 UTC
+          BTC long — 1 month, resolves June 29 @ 09:10 UTC
 
     The second headline line carries PnL primary (matching the locked
     ``primary_metric = pnl_primary`` choice — same metric prominence
@@ -117,8 +117,9 @@ def _render_me(payload: dict[str, Any]) -> str:
         body = "No open calls yet. /alpha to make your first."
 
     footer = "/alpha to add another, /board for the leaderboard."
+    look_back = "Tap /tickers for your per-ticker breakdown, /history for past calls."
 
-    return "\n\n".join([header, f"{counts}\n{headline_stats}", body, footer])
+    return "\n\n".join([header, f"{counts}\n{headline_stats}", body, footer, look_back])
 
 
 #: Prefix for each open-call line. ``•`` (U+2022 BULLET) instead of
@@ -138,7 +139,7 @@ def _render_open_call(call: dict[str, Any]) -> str:
 
     ``<chunk>`` is the resolves-at fragment from ``_resolves_at_chunk``:
     relative ("in 2 hours 11 minutes") when the deadline is < 24h
-    away, absolute ("2026-06-12 16:35 UTC") otherwise. The entry-price
+    away, absolute ("June 12 @ 16:35 UTC") otherwise. The entry-price
     chunk only appears when the server captured a snapshot at submit
     time — see ``_format_entry_price`` for the adaptive decimal logic.
     """
@@ -249,12 +250,14 @@ def _horizon_human(value: object) -> str:
 
 
 def _utc_datetime(iso: str) -> str:
-    """Format an ISO timestamp as ``YYYY-MM-DD HH:MM UTC``.
+    """Format an ISO timestamp as ``June 12 @ 21:43 UTC``.
 
-    Same format as the /alpha receipt so the user sees identical
-    timestamps in both places. Minute precision (no seconds — the
-    resolver's window is ±5 minutes; seconds would be false
-    precision).
+    Human shape, not computerish — full month name, day without
+    leading zero, ``@`` separator before the wall-clock time, UTC
+    suffix. Same format as the /alpha receipt so the user sees
+    identical timestamps in both places. Minute precision (no
+    seconds — the resolver's window is ±5 minutes; seconds would
+    be false precision).
     """
     if not iso:
         return "soon"
@@ -263,7 +266,7 @@ def _utc_datetime(iso: str) -> str:
     except ValueError:
         return "soon"
     dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+    return f"{dt:%B} {dt.day} @ {dt:%H:%M} UTC"
 
 
 # A bet expiring within this many seconds renders as a relative
@@ -281,8 +284,8 @@ def _resolves_at_chunk(iso: str, *, now: datetime | None = None) -> str:
 
     * ``< 24h, > 0``: ``"resolves in 2 hours 11 minutes"`` — friendlier
       to scan when the deadline is imminent.
-    * ``>= 24h`` (or overdue / unparseable): ``"resolves 2026-06-12
-      16:35 UTC"`` — the same absolute UTC format as the /alpha
+    * ``>= 24h`` (or overdue / unparseable): ``"resolves June 12 @
+      16:35 UTC"`` — the same human UTC format as the /alpha
       receipt. Overdue rows are a transient pre-resolution state; we
       keep showing the absolute time rather than "in -5 minutes".
 
@@ -301,7 +304,7 @@ def _resolves_at_chunk(iso: str, *, now: datetime | None = None) -> str:
     seconds_to_go = int((dt - current).total_seconds())
     if 0 < seconds_to_go < _RELATIVE_RESOLVES_AT_SECONDS:
         return f"resolves in {_humanise_seconds_left(seconds_to_go)}"
-    return f"resolves {dt.strftime('%Y-%m-%d %H:%M UTC')}"
+    return f"resolves {dt:%B} {dt.day} @ {dt:%H:%M} UTC"
 
 
 def _humanise_seconds_left(seconds: int) -> str:

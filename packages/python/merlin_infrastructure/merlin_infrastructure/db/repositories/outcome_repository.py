@@ -13,11 +13,14 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from merlin_core.application.ports import (
+    OutcomeHistoryEntry,
     OutcomeRecord,
     OutcomeRepositoryPort,
     ResolvedOutcomeForReputation,
+    ResolvedOutcomeForTicker,
 )
-from sqlalchemy import case, func, select
+from sqlalchemy import case, exists, func, not_, select
+from sqlalchemy.orm import aliased
 
 from merlin_infrastructure.db.models import Claim, Outcome
 
@@ -166,6 +169,155 @@ class OutcomeRepository(OutcomeRepositoryPort):
         )
         row = result.one()
         return int(row.resolved), int(row.correct)
+
+    async def fetch_resolved_for_tickers(
+        self,
+        source_id: str,
+    ) -> list[ResolvedOutcomeForTicker]:
+        """Per-ticker PnL inputs — same fetch as reputation + ``asset_symbol``.
+
+        Powers ``GET /me/tickers``. The shape matches
+        ``fetch_resolved_for_reputation`` (status='resolved' filter,
+        outcomes ⋈ claims join) plus the claim's ``asset_symbol``
+        column for the application-layer ``groupby`` ahead of the
+        scoring pipeline.
+
+        Cold-start sources get an empty list — same contract as the
+        reputation fetch.
+        """
+        result = await self._session.execute(
+            select(
+                Claim.direction,
+                Claim.conviction,
+                Claim.asset_symbol,
+                Outcome.observed_return_pct,
+                Outcome.is_correct,
+            )
+            .join(Claim, Claim.id == Outcome.claim_id)
+            .where(
+                Outcome.source_id == source_id,
+                Outcome.status == "resolved",
+            ),
+        )
+        rows = result.all()
+        return [
+            ResolvedOutcomeForTicker(
+                direction=str(row.direction),
+                conviction=str(row.conviction),
+                # Defensive casts mirror ``fetch_resolved_for_reputation``
+                # — the CHECK constraints make these non-NULL on the
+                # ``status='resolved'`` rows we select, but a future
+                # schema relaxation must not silently feed a None into
+                # the scoring pipeline.
+                observed_return_pct=float(row.observed_return_pct or 0.0),
+                is_correct=bool(row.is_correct),
+                asset_symbol=str(row.asset_symbol),
+            )
+            for row in rows
+        ]
+
+    async def fetch_history_page(
+        self,
+        source_id: str,
+        *,
+        as_of: datetime,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[OutcomeHistoryEntry], int]:
+        """Newest-first page + total in one window-function SELECT.
+
+        ``total`` is ``COUNT(*) OVER ()`` — computed within the same
+        SELECT as the page rows, so we pay for one round-trip and the
+        count is guaranteed consistent with the page (same MVCC
+        snapshot, same WHERE).
+
+        Three WHERE filters (port-doc §1-3):
+
+        1. ``status='resolved'`` — Q-023 rejection rows and
+           ``resolution_failed_final`` rows are not user-facing.
+        2. ``resolved_at <= :as_of`` — caller-frozen window ceiling.
+           Pinned by the API route on the first page and
+           round-tripped on follow-ups so an outcome resolving
+           mid-session can't shift already-paged rows downward
+           (which would dup the boundary row on the next click).
+        3. ``NOT EXISTS o2 WHERE o2.supersedes_outcome_id = o.id`` —
+           MVP §15 invariant 6: only the chain head appears in the
+           history list. v0 never INSERTs a corrective row, but the
+           filter is here so the user-facing list stays honest the
+           day we do.
+
+        Empty page (``offset >= total``) → ``([], total)``. The window
+        function returns no rows when the SELECT has no rows, so we
+        run a follow-up COUNT-only query on the empty-page branch to
+        return an honest total. (The "page has at least one row" path
+        is one SELECT; the rare empty-tail path is two — total adds
+        one round-trip only when the user paginated past the end.)
+        """
+        outcome_alias = aliased(Outcome)
+        head_predicate = not_(
+            exists().where(outcome_alias.supersedes_outcome_id == Outcome.id),
+        )
+
+        stmt = (
+            select(
+                Outcome.claim_id,
+                Claim.asset_symbol,
+                Claim.direction,
+                Claim.horizon_seconds,
+                Outcome.observed_return_pct,
+                Outcome.is_correct,
+                Outcome.resolved_at,
+                func.count().over().label("total"),
+            )
+            .join(Claim, Claim.id == Outcome.claim_id)
+            .where(
+                Outcome.source_id == source_id,
+                Outcome.status == "resolved",
+                Outcome.resolved_at <= as_of,
+                head_predicate,
+            )
+            .order_by(Outcome.resolved_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self._session.execute(stmt)
+        rows = result.all()
+        if not rows:
+            # Empty page: window function returned no rows, so we have
+            # no ``total`` to read. Run the COUNT-only query (same
+            # WHERE shape) so ``has_more`` is honest. The route uses
+            # this branch only when the user paginated past the end.
+            total_stmt = select(func.count()).select_from(
+                select(Outcome.id)
+                .where(
+                    Outcome.source_id == source_id,
+                    Outcome.status == "resolved",
+                    Outcome.resolved_at <= as_of,
+                    head_predicate,
+                )
+                .subquery(),
+            )
+            total_result = await self._session.execute(total_stmt)
+            total = int(total_result.scalar() or 0)
+            return [], total
+
+        total = int(rows[0].total)
+        entries = [
+            OutcomeHistoryEntry(
+                claim_id=row.claim_id,
+                asset_symbol=str(row.asset_symbol),
+                direction=str(row.direction),
+                horizon_seconds=int(row.horizon_seconds),
+                # ``observed_return_pct`` is NOT NULL on resolved rows
+                # by CHECK constraint — the ``or 0.0`` is defensive
+                # against a future schema relaxation.
+                observed_return_pct=float(row.observed_return_pct or 0.0),
+                is_correct=bool(row.is_correct),
+                resolved_at=row.resolved_at,
+            )
+            for row in rows
+        ]
+        return entries, total
 
     async def fetch_resolved_for_reputation(
         self,

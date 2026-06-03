@@ -109,14 +109,19 @@ def test_render_me_with_open_calls_lists_one_per_line() -> None:
     assert "Accuracy: tracking your first resolutions" in text
     # Bullets one per line, with the asset symbol up-cased and the
     # horizon translated to human words.
-    assert "ETH long — 2 weeks, entry $2,438.12, resolves 2030-06-12 16:35 UTC" in text, text
+    assert "ETH long — 2 weeks, entry $2,438.12, resolves June 12 @ 16:35 UTC" in text, text
     # BTC row has no entry-price chunk — server's None means we omit
     # the "entry $X" segment entirely (never invent a placeholder).
-    assert "BTC short — 1 week, resolves 2030-06-05 12:00 UTC" in text
+    assert "BTC short — 1 week, resolves June 5 @ 12:00 UTC" in text
     assert "BTC short — 1 week, entry" not in text
     # Call to action at the bottom.
     assert "/alpha" in text
     assert "/board" in text
+    # Look-back CTA paragraph routes the user to the per-ticker
+    # breakdown + resolved-call history. Pinning the literal so a
+    # future rewording stays loud rather than silently dropping
+    # the discoverability hook.
+    assert "Tap /tickers for your per-ticker breakdown, /history for past calls." in text, text
 
 
 def test_format_entry_price_omits_chunk_on_none() -> None:
@@ -230,7 +235,7 @@ def test_render_me_omits_entry_price_when_field_absent() -> None:
         "accuracy_pct": None,
     }
     text = _render_me(payload)
-    assert "ETH long — 2 weeks, resolves 2030-06-12 16:35 UTC" in text
+    assert "ETH long — 2 weeks, resolves June 12 @ 16:35 UTC" in text
     assert "entry" not in text.lower()
 
 
@@ -498,14 +503,23 @@ def test_headline_stats_line_signs_positive_and_negative_pnl() -> None:
 
 def test_utc_datetime_normalizes_z_and_offset() -> None:
     """``Z`` and ``+00:00`` produce identical output."""
-    assert _utc_datetime("2026-06-12T16:35:00Z") == "2026-06-12 16:35 UTC"
-    assert _utc_datetime("2026-06-12T16:35:00+00:00") == "2026-06-12 16:35 UTC"
+    assert _utc_datetime("2026-06-12T16:35:00Z") == "June 12 @ 16:35 UTC"
+    assert _utc_datetime("2026-06-12T16:35:00+00:00") == "June 12 @ 16:35 UTC"
 
 
 def test_utc_datetime_converts_non_utc_offset() -> None:
     """A non-UTC offset must convert to UTC before rendering."""
     # 16:35 PDT = 23:35 UTC
-    assert _utc_datetime("2026-06-12T16:35:00-07:00") == "2026-06-12 23:35 UTC"
+    assert _utc_datetime("2026-06-12T16:35:00-07:00") == "June 12 @ 23:35 UTC"
+
+
+def test_utc_datetime_renders_human_month_name() -> None:
+    """Full month name + day-without-leading-zero on early dates.
+
+    Pins the format precisely so a regression toward ``YYYY-MM-DD HH:MM
+    UTC`` (the old computerish shape) is loud."""
+    assert _utc_datetime("2026-01-05T09:07:00Z") == "January 5 @ 09:07 UTC"
+    assert _utc_datetime("2026-12-31T23:59:00Z") == "December 31 @ 23:59 UTC"
 
 
 def test_utc_datetime_falls_back_to_soon_on_garbage() -> None:
@@ -574,7 +588,7 @@ def test_resolves_at_chunk_renders_absolute_when_more_than_24h() -> None:
     now = datetime(2026, 6, 2, 20, 0, tzinfo=UTC)
     # +48h
     out = _resolves_at_chunk("2026-06-04T20:00:00Z", now=now)
-    assert out == "resolves 2026-06-04 20:00 UTC"
+    assert out == "resolves June 4 @ 20:00 UTC"
 
 
 def test_resolves_at_chunk_at_exactly_24h_boundary_renders_absolute() -> None:
@@ -585,7 +599,7 @@ def test_resolves_at_chunk_at_exactly_24h_boundary_renders_absolute() -> None:
 
     now = datetime(2026, 6, 2, 20, 0, tzinfo=UTC)
     out = _resolves_at_chunk("2026-06-03T20:00:00Z", now=now)
-    assert out == "resolves 2026-06-03 20:00 UTC"
+    assert out == "resolves June 3 @ 20:00 UTC"
 
 
 def test_resolves_at_chunk_overdue_renders_absolute() -> None:
@@ -597,7 +611,7 @@ def test_resolves_at_chunk_overdue_renders_absolute() -> None:
 
     now = datetime(2026, 6, 2, 20, 0, tzinfo=UTC)
     out = _resolves_at_chunk("2026-06-02T19:00:00Z", now=now)
-    assert out == "resolves 2026-06-02 19:00 UTC"
+    assert out == "resolves June 2 @ 19:00 UTC"
 
 
 def test_resolves_at_chunk_falls_back_on_malformed_iso() -> None:

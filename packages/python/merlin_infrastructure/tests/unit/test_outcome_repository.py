@@ -259,3 +259,281 @@ async def test_fetch_resolved_for_reputation_query_joins_claims() -> None:
     # Filter must still match ``status='resolved'`` exactly — same
     # rule as the count query so the two views agree.
     assert "'resolved'" in compiled
+
+
+# ---------------------------------------------------------------------------
+# ``fetch_resolved_for_tickers`` — per-ticker breakdown fetch.
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_resolved_for_tickers_projects_rows_with_asset_symbol() -> None:
+    """Per-ticker fetch must carry ``asset_symbol`` in addition to the
+    reputation-fetch fields. The application layer groups by ticker
+    before running the scoring pipeline."""
+    sess = _fake_session()
+    rows = [
+        type(
+            "Row",
+            (),
+            {
+                "direction": "long",
+                "conviction": "strong",
+                "asset_symbol": "TON",
+                "observed_return_pct": 7.6,
+                "is_correct": True,
+            },
+        )(),
+        type(
+            "Row",
+            (),
+            {
+                "direction": "short",
+                "conviction": "medium",
+                "asset_symbol": "BTC",
+                "observed_return_pct": -2.0,
+                "is_correct": True,
+            },
+        )(),
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+    sess.execute.return_value = result
+
+    repo = OutcomeRepository(sess)
+    records = await repo.fetch_resolved_for_tickers("tg:" + "a" * 32)
+
+    assert len(records) == 2
+    assert records[0].asset_symbol == "TON"
+    assert records[0].direction == "long"
+    assert records[0].conviction == "strong"
+    assert records[0].observed_return_pct == pytest.approx(7.6)
+    assert records[1].asset_symbol == "BTC"
+    assert records[1].observed_return_pct == pytest.approx(-2.0)
+
+
+async def test_fetch_resolved_for_tickers_query_joins_claims_for_asset_symbol() -> None:
+    """The compiled SQL must JOIN ``claims`` for ``asset_symbol`` AND
+    filter on ``status='resolved'`` — same shape as the reputation
+    fetch, just with the extra projected column."""
+    sess = _fake_session()
+    result = MagicMock()
+    result.all.return_value = []
+    sess.execute.return_value = result
+
+    repo = OutcomeRepository(sess)
+    await repo.fetch_resolved_for_tickers("tg:" + "z" * 32)
+
+    stmt = sess.execute.call_args[0][0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "outcomes" in compiled
+    assert "claims" in compiled
+    assert "asset_symbol" in compiled
+    assert "join" in compiled
+    assert "'resolved'" in compiled
+
+
+# ---------------------------------------------------------------------------
+# ``fetch_history_page`` — paginated newest-first list + total in one query.
+# ---------------------------------------------------------------------------
+
+
+def _history_row(
+    *,
+    claim_id: Any,
+    asset_symbol: str,
+    direction: str,
+    horizon_seconds: int,
+    observed_return_pct: float,
+    is_correct: bool,
+    resolved_at: datetime,
+    total: int,
+) -> Any:
+    """Build a Row-shaped fake (window-function ``total`` included)."""
+    return type(
+        "Row",
+        (),
+        {
+            "claim_id": claim_id,
+            "asset_symbol": asset_symbol,
+            "direction": direction,
+            "horizon_seconds": horizon_seconds,
+            "observed_return_pct": observed_return_pct,
+            "is_correct": is_correct,
+            "resolved_at": resolved_at,
+            "total": total,
+        },
+    )()
+
+
+async def test_fetch_history_page_projects_rows_and_carries_total_from_window() -> None:
+    """Each row lands as an ``OutcomeHistoryEntry``; the window
+    function ``total`` is read off the first row and returned
+    alongside the page. Single SELECT — one round-trip."""
+    claim_id = uuid4()
+    resolved_at = datetime.now(tz=UTC)
+    sess = _fake_session()
+    rows = [
+        _history_row(
+            claim_id=claim_id,
+            asset_symbol="TON",
+            direction="short",
+            horizon_seconds=86_400,
+            observed_return_pct=-7.6,
+            is_correct=True,
+            resolved_at=resolved_at,
+            total=42,
+        ),
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+    sess.execute.return_value = result
+
+    repo = OutcomeRepository(sess)
+    records, total = await repo.fetch_history_page(
+        "tg:" + "a" * 32,
+        as_of=datetime.now(tz=UTC),
+        limit=30,
+        offset=0,
+    )
+
+    assert len(records) == 1
+    assert records[0].claim_id == claim_id
+    assert records[0].asset_symbol == "TON"
+    assert records[0].direction == "short"
+    assert records[0].horizon_seconds == 86_400
+    assert records[0].observed_return_pct == pytest.approx(-7.6)
+    assert records[0].is_correct is True
+    assert records[0].resolved_at == resolved_at
+    assert total == 42
+    # One round-trip: a single ``execute`` for the populated-page path.
+    assert sess.execute.await_count == 1
+
+
+async def test_fetch_history_page_empty_page_runs_followup_count() -> None:
+    """When the page is empty (offset past the last row), the window
+    function returns no rows and we have no ``total`` to read. The
+    repository then runs a COUNT-only query so ``has_more`` is honest.
+    Pinned because a regression here would let the route silently say
+    ``has_more=False`` when there's actually more data, or vice versa.
+    """
+    sess = _fake_session()
+
+    page_result = MagicMock()
+    page_result.all.return_value = []
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 12
+
+    sess.execute = AsyncMock(side_effect=[page_result, count_result])
+
+    repo = OutcomeRepository(sess)
+    records, total = await repo.fetch_history_page(
+        "tg:" + "z" * 32,
+        as_of=datetime.now(tz=UTC),
+        limit=30,
+        offset=999,
+    )
+
+    assert records == []
+    assert total == 12
+    # Two round-trips on the empty-tail branch.
+    assert sess.execute.await_count == 2
+
+
+async def test_fetch_history_page_query_filters_as_of_and_supersedes_chain() -> None:
+    """The compiled SQL must:
+
+    1. Filter ``status='resolved'`` (existing contract).
+    2. Filter ``resolved_at <= :as_of`` (frozen window — stops a new
+       outcome from shifting paged rows during the user's session).
+    3. Exclude superseded rows via ``NOT EXISTS`` — MVP §15 invariant
+       6 says corrections INSERT a new outcome with
+       ``supersedes_outcome_id`` pointing at the prior head; the
+       user-facing list shows only the chain head.
+
+    Also pins the ``ORDER BY resolved_at DESC``, the ``LIMIT`` +
+    ``OFFSET``, and the window-function ``COUNT(*) OVER ()`` so a
+    refactor that drops any of them breaks loudly.
+    """
+    sess = _fake_session()
+    result = MagicMock()
+    result.all.return_value = []
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    sess.execute = AsyncMock(side_effect=[result, count_result])
+
+    repo = OutcomeRepository(sess)
+    await repo.fetch_history_page(
+        "tg:" + "z" * 32,
+        as_of=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+        limit=30,
+        offset=60,
+    )
+
+    stmt = sess.execute.await_args_list[0].args[0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "outcomes" in compiled
+    assert "claims" in compiled
+    assert "join" in compiled
+    assert "'resolved'" in compiled
+    # Frozen window.
+    assert "resolved_at <=" in compiled
+    # Supersedes-chain head filter (MVP §15 invariant 6).
+    assert "not " in compiled
+    assert "exists" in compiled
+    assert "supersedes_outcome_id" in compiled
+    # Newest-first is the contract.
+    assert "order by" in compiled
+    assert "resolved_at desc" in compiled
+    # Window function for the total.
+    assert "count(*) over" in compiled
+    # Pagination knobs reached the SQL.
+    assert "limit 30" in compiled
+    assert "offset 60" in compiled
+
+
+async def test_fetch_history_page_empty_count_query_also_filters_supersedes_and_as_of() -> None:
+    """The follow-up COUNT-only query on the empty-tail branch must
+    apply the SAME filter set as the page query — otherwise total
+    and page would disagree, and ``has_more`` would lie."""
+    sess = _fake_session()
+    page_result = MagicMock()
+    page_result.all.return_value = []
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    sess.execute = AsyncMock(side_effect=[page_result, count_result])
+
+    repo = OutcomeRepository(sess)
+    await repo.fetch_history_page(
+        "tg:" + "z" * 32,
+        as_of=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+        limit=30,
+        offset=999,
+    )
+
+    count_stmt = sess.execute.await_args_list[1].args[0]
+    compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "count" in compiled
+    assert "'resolved'" in compiled
+    assert "resolved_at <=" in compiled
+    assert "supersedes_outcome_id" in compiled
+
+
+async def test_fetch_history_page_treats_null_scalar_as_zero_total() -> None:
+    """The empty-tail COUNT must default to 0 on a NULL scalar so an
+    edge case doesn't crash the route."""
+    sess = _fake_session()
+    page_result = MagicMock()
+    page_result.all.return_value = []
+    count_result = MagicMock()
+    count_result.scalar.return_value = None
+    sess.execute = AsyncMock(side_effect=[page_result, count_result])
+
+    repo = OutcomeRepository(sess)
+    _records, total = await repo.fetch_history_page(
+        "tg:" + "z" * 32,
+        as_of=datetime.now(tz=UTC),
+        limit=30,
+        offset=0,
+    )
+    assert total == 0

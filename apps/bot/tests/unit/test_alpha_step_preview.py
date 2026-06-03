@@ -100,9 +100,9 @@ def test_render_receipt_includes_all_fields_and_utc_timestamps() -> None:
     # Entry-price line — the user must see the price they were
     # betting against; thousands separator + 2dp for >= $1 tickers.
     assert "Entry price: $2,438.12 per ETH" in text
-    # Full UTC date+time (not just "Jun 12", not just "in 2 weeks").
-    assert "2026-05-29 16:32 UTC" in text
-    assert "2026-06-12 16:32 UTC" in text
+    # Full UTC date+time, human form (not "May 29", not "in 2 weeks").
+    assert "May 29 @ 16:32 UTC" in text
+    assert "June 12 @ 16:32 UTC" in text
     # Pointer to where the user can see open calls.
     assert "/me" in text
 
@@ -178,17 +178,24 @@ def test_utc_datetime_normalises_offset_timestamps() -> None:
     converted to UTC, not displayed verbatim — otherwise different
     servers in different TZs would print different times."""
     text = sp._utc_datetime("2026-06-12T18:32:00+02:00")
-    assert text == "2026-06-12 16:32 UTC"
+    assert text == "June 12 @ 16:32 UTC"
 
 
 def test_utc_datetime_assumes_utc_on_naive_input() -> None:
     text = sp._utc_datetime("2026-06-12T16:32:00")
-    assert text == "2026-06-12 16:32 UTC"
+    assert text == "June 12 @ 16:32 UTC"
 
 
 def test_utc_datetime_handles_z_suffix() -> None:
     text = sp._utc_datetime("2026-06-12T16:32:00Z")
-    assert text == "2026-06-12 16:32 UTC"
+    assert text == "June 12 @ 16:32 UTC"
+
+
+def test_utc_datetime_renders_human_month_name_with_single_digit_day() -> None:
+    """``June 5`` not ``June 05`` — pinned explicitly so a regression
+    to ``%Y-%m-%d`` is loud."""
+    text = sp._utc_datetime("2026-06-05T09:07:00Z")
+    assert text == "June 5 @ 09:07 UTC"
 
 
 def test_utc_datetime_returns_soon_for_garbage_input() -> None:

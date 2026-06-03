@@ -24,6 +24,10 @@ from merlin_core.application.use_cases.submit_claim import (
     SubmitClaimResult,
     UnknownAssetError,
 )
+from merlin_core.application.use_cases.tickers import (
+    TickerStats,
+    compute_ticker_breakdown,
+)
 
 __all__ = [
     "ClaimWriterPort",
@@ -32,5 +36,7 @@ __all__ = [
     "SubmitClaimError",
     "SubmitClaimInput",
     "SubmitClaimResult",
+    "TickerStats",
     "UnknownAssetError",
+    "compute_ticker_breakdown",
 ]

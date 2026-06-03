@@ -73,3 +73,133 @@ async def test_timeout_raises_timeout_error() -> None:
     ) as client:
         with pytest.raises(MerlinTimeoutError):
             await client.health()
+
+
+@pytest.mark.fast
+async def test_get_my_tickers_passes_tg_user_id_in_query_string() -> None:
+    """``get_my_tickers`` rides ``tg_user_id`` on the URL — same
+    convention as ``get_me`` / the rest of the /me family. The HMAC
+    bearer authenticates the service; the API needs the per-user id
+    on every call."""
+
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["query"] = str(request.url.query.decode())
+        return httpx.Response(200, json={"entries": []})
+
+    async with MerlinClient(
+        base_url="http://localhost:8000",
+        token="secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get_my_tickers(tg_user_id=42)
+
+    assert captured["path"] == "/me/tickers"
+    assert "tg_user_id=42" in captured["query"]
+
+
+@pytest.mark.fast
+async def test_get_my_history_passes_limit_offset_query_string() -> None:
+    """``get_my_history`` must thread ``tg_user_id`` + ``limit`` +
+    ``offset`` onto the query string. The bot relies on offset
+    advancing across pages; a drift in the query shape would break
+    the "Show 30 more" button silently."""
+
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["query"] = str(request.url.query.decode())
+        return httpx.Response(
+            200,
+            json={
+                "entries": [],
+                "has_more": False,
+                "next_offset": None,
+                "as_of": "2026-04-28T12:00:00Z",
+            },
+        )
+
+    async with MerlinClient(
+        base_url="http://localhost:8000",
+        token="secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get_my_history(tg_user_id=42, limit=30, offset=60)
+
+    assert captured["path"] == "/me/history"
+    assert "tg_user_id=42" in captured["query"]
+    assert "limit=30" in captured["query"]
+    assert "offset=60" in captured["query"]
+    # First-page call (no ``as_of`` passed) → the server stamps it.
+    assert "as_of" not in captured["query"]
+
+
+@pytest.mark.fast
+async def test_get_my_history_defaults_to_first_page_size_30() -> None:
+    """The default ``limit=30`` / ``offset=0`` lets the bot call
+    ``client.get_my_history(tg_user_id=...)`` for the first page
+    without restating the page size — keeps the bot's command
+    handler readable and pins the default at the SDK boundary."""
+
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["query"] = str(request.url.query.decode())
+        return httpx.Response(
+            200,
+            json={
+                "entries": [],
+                "has_more": False,
+                "next_offset": None,
+                "as_of": "2026-04-28T12:00:00Z",
+            },
+        )
+
+    async with MerlinClient(
+        base_url="http://localhost:8000",
+        token="secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get_my_history(tg_user_id=42)
+
+    assert "limit=30" in captured["query"]
+    assert "offset=0" in captured["query"]
+
+
+@pytest.mark.fast
+async def test_get_my_history_threads_as_of_when_provided() -> None:
+    """Subsequent pages must round-trip the ``as_of`` the server
+    returned on page 1. Pins that the client sends the value verbatim
+    so the frozen-window filter holds across the session."""
+
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["query"] = str(request.url.query.decode())
+        return httpx.Response(
+            200,
+            json={
+                "entries": [],
+                "has_more": False,
+                "next_offset": None,
+                "as_of": "2026-04-28T12:00:00Z",
+            },
+        )
+
+    async with MerlinClient(
+        base_url="http://localhost:8000",
+        token="secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get_my_history(
+            tg_user_id=42,
+            limit=30,
+            offset=30,
+            as_of="2026-04-28T12:00:00Z",
+        )
+
+    # httpx URL-encodes the ``:`` as ``%3A`` in the query string.
+    assert "as_of=2026-04-28T12%3A00%3A00Z" in captured["query"]

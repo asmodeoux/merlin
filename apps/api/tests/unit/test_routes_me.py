@@ -27,7 +27,12 @@ import pytest
 from merlin_api.app import create_app
 from merlin_api.config import Settings
 from merlin_api.deps import Ports, get_ports, get_session, get_settings
-from merlin_core.application.ports import ClaimRecord, SourceRecord
+from merlin_core.application.ports import (
+    ClaimRecord,
+    OutcomeHistoryEntry,
+    ResolvedOutcomeForTicker,
+    SourceRecord,
+)
 from merlin_infrastructure.notify.fake import FakeNotifier
 
 TEST_TOKEN = "test-internal-token"
@@ -117,12 +122,67 @@ class _FakeReputationRepo:
 
 
 @dataclass
+class _FakeOutcomeRepo:
+    """In-memory stand-in for the ``OutcomeRepositoryPort`` reads.
+
+    Backs the ``/me/tickers`` + ``/me/history`` routes. Tests seed:
+
+    * ``ticker_rows_by_source`` — rows returned by
+      ``fetch_resolved_for_tickers`` (drives the ticker breakdown).
+    * ``history_rows_by_source`` — newest-first rows returned by
+      ``fetch_history_page``. The fake honours the route's
+      ``limit`` / ``offset`` / ``as_of`` so pagination boundary
+      tests don't need a separate slicer. ``as_of`` filters rows by
+      ``resolved_at <= as_of`` to mirror the SQL WHERE clause.
+    * ``last_fetch_history_kwargs`` — captures the kwargs the route
+      passed on the most recent ``fetch_history_page`` call, so
+      tests can pin the contract (as_of round-trip, etc).
+
+    The mutation methods (``insert_resolved`` etc.) are unused on
+    these routes and stay absent — the route only invokes the read
+    methods.
+    """
+
+    ticker_rows_by_source: dict[str, list[ResolvedOutcomeForTicker]] = field(default_factory=dict)
+    history_rows_by_source: dict[str, list[OutcomeHistoryEntry]] = field(default_factory=dict)
+    last_fetch_history_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    async def fetch_resolved_for_tickers(
+        self,
+        source_id: str,
+    ) -> list[ResolvedOutcomeForTicker]:
+        return list(self.ticker_rows_by_source.get(source_id, []))
+
+    async def fetch_history_page(
+        self,
+        source_id: str,
+        *,
+        as_of: datetime,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[OutcomeHistoryEntry], int]:
+        self.last_fetch_history_kwargs = {
+            "source_id": source_id,
+            "as_of": as_of,
+            "limit": limit,
+            "offset": offset,
+        }
+        rows = self.history_rows_by_source.get(source_id, [])
+        # Mirror the SQL ``WHERE resolved_at <= :as_of`` filter so
+        # tests can pin the frozen-window behaviour against the fake.
+        windowed = [r for r in rows if r.resolved_at <= as_of]
+        page = list(windowed[offset : offset + limit])
+        return page, len(windowed)
+
+
+@dataclass
 class _FakeSession:
     sources: _FakeSourceRepo = field(default_factory=_FakeSourceRepo)
     identities: _FakeIdentityRepo = field(default_factory=_FakeIdentityRepo)
     invites: _FakeInviteRepo = field(default_factory=_FakeInviteRepo)
     claims: _FakeClaimRepo = field(default_factory=_FakeClaimRepo)
     reputation: _FakeReputationRepo = field(default_factory=_FakeReputationRepo)
+    outcomes: _FakeOutcomeRepo = field(default_factory=_FakeOutcomeRepo)
     committed: bool = False
 
     async def commit(self) -> None:
@@ -176,6 +236,7 @@ async def client(
         "SourceReputationRepository",
         lambda _s: fake_session.reputation,
     )
+    monkeypatch.setattr(_repos_mod, "OutcomeRepository", lambda _s: fake_session.outcomes)
 
     async def _fake_get_session() -> AsyncIterator[_FakeSession]:
         yield fake_session
@@ -765,3 +826,514 @@ async def test_get_me_cold_start_falls_back_to_horizon_count(
     body = response.json()
     assert body["calls_resolved_total"] == 2
     assert body["accuracy_pct"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /me/tickers
+# ---------------------------------------------------------------------------
+
+
+def _ticker_row(
+    *,
+    asset_symbol: str,
+    direction: str = "long",
+    conviction: str = "medium",
+    observed_return_pct: float = 1.0,
+    is_correct: bool = True,
+) -> ResolvedOutcomeForTicker:
+    """Builder for ``/me/tickers`` test inputs (per-bet resolved row)."""
+    return ResolvedOutcomeForTicker(
+        direction=direction,
+        conviction=conviction,
+        observed_return_pct=observed_return_pct,
+        is_correct=is_correct,
+        asset_symbol=asset_symbol,
+    )
+
+
+async def test_get_my_tickers_returns_breakdown_for_seeded_outcomes(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Two tickers seeded → two entries returned with the correct
+    per-ticker numbers. Pins the wire shape + the projection from the
+    use case's ``TickerStats`` to the Pydantic ``TickerEntry``."""
+    src_id = "tg:" + "a" * 32
+    _seed_onboarded(fake_session, tg_user_id=42, source_id=src_id)
+    fake_session.outcomes.ticker_rows_by_source[src_id] = [
+        _ticker_row(
+            asset_symbol="TON",
+            direction="short",
+            conviction="strong",
+            observed_return_pct=-7.61,
+            is_correct=True,
+        ),
+        _ticker_row(
+            asset_symbol="BTC",
+            direction="long",
+            conviction="weak",
+            observed_return_pct=-1.32,
+            is_correct=False,
+        ),
+    ]
+
+    response = await client.get(
+        "/me/tickers",
+        params={"tg_user_id": 42},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    entries = body["entries"]
+    assert len(entries) == 2
+    by_symbol = {e["asset_symbol"]: e for e in entries}
+    assert set(by_symbol) == {"TON", "BTC"}
+    assert by_symbol["TON"]["calls_resolved"] == 1
+    assert by_symbol["TON"]["calls_correct"] == 1
+    assert by_symbol["TON"]["accuracy_pct"] == pytest.approx(100.0)
+    assert by_symbol["TON"]["weighted_pnl_pct"] == pytest.approx(7.61, abs=1e-3)
+    assert by_symbol["BTC"]["calls_resolved"] == 1
+    assert by_symbol["BTC"]["calls_correct"] == 0
+
+
+async def test_get_my_tickers_empty_for_cold_start_source(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """A source with no resolved outcomes returns ``entries: []`` —
+    the bot renders that as the cold-start empty-state copy."""
+    src_id = "tg:" + "b" * 32
+    _seed_onboarded(fake_session, tg_user_id=43, source_id=src_id)
+    # No outcome rows seeded.
+
+    response = await client.get(
+        "/me/tickers",
+        params={"tg_user_id": 43},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"entries": []}
+
+
+async def test_get_my_tickers_unknown_user_404s(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    """An un-onboarded user gets a 404 — the bot reads this and
+    points them at /start."""
+    response = await client.get(
+        "/me/tickers",
+        params={"tg_user_id": 99_999},
+        headers=auth_headers,
+    )
+    assert response.status_code == 404
+
+
+async def test_get_my_tickers_requires_tg_user_id(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    """Without ``tg_user_id`` the API can't identify the caller — 422."""
+    response = await client.get("/me/tickers", headers=auth_headers)
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /me/history
+# ---------------------------------------------------------------------------
+
+
+def _history_row(
+    *,
+    asset_symbol: str = "ETH",
+    direction: str = "long",
+    horizon_seconds: int = 86_400,
+    observed_return_pct: float = 2.0,
+    is_correct: bool = True,
+    days_ago: int = 0,
+) -> OutcomeHistoryEntry:
+    """Builder for ``/me/history`` test inputs.
+
+    Note: ``resolved_at`` is shifted a few seconds into the past on
+    top of ``days_ago``. The server truncates the ``as_of`` ceiling
+    to whole-second precision (so the bot's epoch-encoded callback
+    round-trips exactly); fixtures with ``days_ago=0`` would land in
+    the same second as the request and get filtered out by
+    ``resolved_at <= as_of``. The extra padding keeps the fixture
+    stable without faking the wall clock.
+    """
+    return OutcomeHistoryEntry(
+        claim_id=uuid4(),
+        asset_symbol=asset_symbol,
+        direction=direction,
+        horizon_seconds=horizon_seconds,
+        observed_return_pct=observed_return_pct,
+        is_correct=is_correct,
+        resolved_at=(
+            datetime.now(tz=UTC).replace(microsecond=0) - timedelta(days=days_ago, seconds=5)
+        ),
+    )
+
+
+async def test_get_my_history_returns_first_page_with_has_more_true(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Five resolved outcomes, page size 2 → first page returns two
+    rows, ``has_more=True``, ``next_offset=2``. Pins the pagination
+    breadcrumbs the bot's inline button relies on."""
+    src_id = "tg:" + "c" * 32
+    _seed_onboarded(fake_session, tg_user_id=44, source_id=src_id)
+    rows = [
+        _history_row(asset_symbol="TON", days_ago=0),
+        _history_row(asset_symbol="BTC", days_ago=1),
+        _history_row(asset_symbol="ETH", days_ago=2),
+        _history_row(asset_symbol="SOL", days_ago=3),
+        _history_row(asset_symbol="ARB", days_ago=4),
+    ]
+    fake_session.outcomes.history_rows_by_source[src_id] = rows
+
+    response = await client.get(
+        "/me/history",
+        params={"tg_user_id": 44, "limit": 2, "offset": 0},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["entries"]) == 2
+    assert body["entries"][0]["asset_symbol"] == "TON"
+    assert body["entries"][1]["asset_symbol"] == "BTC"
+    assert body["has_more"] is True
+    assert body["next_offset"] == 2
+    # The server stamped an ``as_of`` we can round-trip.
+    assert isinstance(body["as_of"], str) and body["as_of"]
+
+
+async def test_get_my_history_last_page_flips_has_more_false(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """The page that lands at the end of the list must report
+    ``has_more=False`` and ``next_offset=None``. Without this, the
+    bot would render a "Show 30 more" button that returns an empty
+    page on click."""
+    src_id = "tg:" + "d" * 32
+    _seed_onboarded(fake_session, tg_user_id=45, source_id=src_id)
+    rows = [
+        _history_row(asset_symbol="TON", days_ago=0),
+        _history_row(asset_symbol="BTC", days_ago=1),
+        _history_row(asset_symbol="ETH", days_ago=2),
+    ]
+    fake_session.outcomes.history_rows_by_source[src_id] = rows
+
+    response = await client.get(
+        "/me/history",
+        params={"tg_user_id": 45, "limit": 2, "offset": 2},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["entries"]) == 1
+    assert body["entries"][0]["asset_symbol"] == "ETH"
+    assert body["has_more"] is False
+    assert body["next_offset"] is None
+
+
+async def test_get_my_history_empty_for_cold_start_source(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """No resolved outcomes → empty entries + no pagination breadcrumbs.
+
+    The bot renders this as the cold-start "no resolved calls yet"
+    copy.
+    """
+    src_id = "tg:" + "e" * 32
+    _seed_onboarded(fake_session, tg_user_id=46, source_id=src_id)
+
+    response = await client.get(
+        "/me/history",
+        params={"tg_user_id": 46},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["entries"] == []
+    assert body["has_more"] is False
+    assert body["next_offset"] is None
+    # ``as_of`` is stamped even on the cold-start path so the bot can
+    # round-trip it on a (no-op) refresh without crashing.
+    assert isinstance(body["as_of"], str) and body["as_of"]
+
+
+async def test_get_my_history_computes_is_flat_server_side(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """A +0.3% return is below the 0.5% flat threshold and must come
+    out as ``is_flat=True`` even though ``is_correct=False`` (flats
+    are wash, not correct). The bot reads this bool to pick the 📝
+    emoji — keeping the threshold server-side is what stops the bot
+    from needing to import ``merlin_core.domain.scoring``.
+    """
+    src_id = "tg:" + "f" * 32
+    _seed_onboarded(fake_session, tg_user_id=47, source_id=src_id)
+    flat_row = _history_row(
+        asset_symbol="ETH",
+        direction="long",
+        observed_return_pct=0.3,
+        is_correct=False,
+    )
+    lost_row = _history_row(
+        asset_symbol="BTC",
+        direction="long",
+        observed_return_pct=-3.0,
+        is_correct=False,
+        days_ago=1,
+    )
+    won_row = _history_row(
+        asset_symbol="TON",
+        direction="short",
+        observed_return_pct=-5.0,
+        is_correct=True,
+        days_ago=2,
+    )
+    fake_session.outcomes.history_rows_by_source[src_id] = [flat_row, lost_row, won_row]
+
+    response = await client.get(
+        "/me/history",
+        params={"tg_user_id": 47},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    entries = response.json()["entries"]
+    by_symbol = {e["asset_symbol"]: e for e in entries}
+    # Flat row: |0.3| < 0.5 threshold → is_flat True, is_correct False.
+    assert by_symbol["ETH"]["is_flat"] is True
+    assert by_symbol["ETH"]["is_correct"] is False
+    # Lost row: |-3.0| > 0.5 → not flat; long lost → not correct.
+    assert by_symbol["BTC"]["is_flat"] is False
+    assert by_symbol["BTC"]["is_correct"] is False
+    # Won row: |-5.0| > 0.5 → not flat; short paid → correct.
+    assert by_symbol["TON"]["is_flat"] is False
+    assert by_symbol["TON"]["is_correct"] is True
+
+
+async def test_get_my_history_first_page_stamps_as_of_with_now(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """When the caller omits ``as_of`` (first ``/history`` invocation),
+    the server stamps it with ``datetime.now(UTC)`` and passes the
+    same value to the repository. Pins the contract: the first page's
+    frozen window is the request's wall clock."""
+    src_id = "tg:" + "j" * 32
+    _seed_onboarded(fake_session, tg_user_id=51, source_id=src_id)
+    fake_session.outcomes.history_rows_by_source[src_id] = [
+        _history_row(asset_symbol="TON", days_ago=0),
+    ]
+
+    before = datetime.now(tz=UTC)
+    response = await client.get(
+        "/me/history",
+        params={"tg_user_id": 51},
+        headers=auth_headers,
+    )
+    after = datetime.now(tz=UTC)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    server_as_of = datetime.fromisoformat(body["as_of"].replace("Z", "+00:00"))
+    # Server truncates ``as_of`` to second precision so the bot's
+    # integer-epoch callback_data round-trips exactly (see
+    # ``_normalise_as_of``). Compare on the same precision boundary.
+    assert server_as_of.microsecond == 0
+    assert before.replace(microsecond=0) <= server_as_of
+    assert server_as_of <= after.replace(microsecond=0)
+
+    repo_as_of = fake_session.outcomes.last_fetch_history_kwargs["as_of"]
+    assert repo_as_of == server_as_of
+
+
+async def test_get_my_history_round_trips_as_of_verbatim(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Subsequent pages must round-trip the caller's ``as_of`` value
+    verbatim — the server passes it through to the repository so the
+    frozen-window filter holds across the session."""
+    src_id = "tg:" + "k" * 32
+    _seed_onboarded(fake_session, tg_user_id=52, source_id=src_id)
+    fake_session.outcomes.history_rows_by_source[src_id] = [
+        _history_row(asset_symbol="TON", days_ago=0),
+    ]
+
+    pinned = datetime(2026, 4, 28, 12, 0, tzinfo=UTC)
+    response = await client.get(
+        "/me/history",
+        params={
+            "tg_user_id": 52,
+            "as_of": pinned.isoformat().replace("+00:00", "Z"),
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    server_echo = datetime.fromisoformat(body["as_of"].replace("Z", "+00:00"))
+    assert server_echo == pinned
+
+    repo_as_of = fake_session.outcomes.last_fetch_history_kwargs["as_of"]
+    assert repo_as_of == pinned
+
+
+async def test_get_my_history_truncates_caller_supplied_microseconds(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """A caller-supplied ``as_of`` with sub-second precision must be
+    truncated to whole seconds before it hits the SQL filter — and
+    the response must echo the truncated value. The bot's
+    ``callback_data`` encodes ``as_of`` as an integer epoch, so any
+    sub-second component the server preserves would cause the bot's
+    follow-up request to land on a *different* ``as_of`` than the
+    page-1 stamp, drifting pagination by a sub-second window.
+    """
+    src_id = "tg:" + "n" * 32
+    _seed_onboarded(fake_session, tg_user_id=54, source_id=src_id)
+
+    pinned_with_micros = datetime(2026, 4, 28, 12, 0, 0, 789_012, tzinfo=UTC)
+    pinned_truncated = pinned_with_micros.replace(microsecond=0)
+
+    response = await client.get(
+        "/me/history",
+        params={
+            "tg_user_id": 54,
+            "as_of": pinned_with_micros.isoformat().replace("+00:00", "Z"),
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    server_echo = datetime.fromisoformat(body["as_of"].replace("Z", "+00:00"))
+    assert server_echo.microsecond == 0
+    assert server_echo == pinned_truncated
+
+    repo_as_of = fake_session.outcomes.last_fetch_history_kwargs["as_of"]
+    assert repo_as_of == pinned_truncated
+
+
+async def test_get_my_history_as_of_freezes_window_against_newer_rows(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """A row that resolved AFTER the caller's ``as_of`` ceiling must
+    NOT appear in the page. This is the core pagination-drift fix:
+    if a new outcome lands between page 1 and the "Show 30 more"
+    click, it must not shift already-paged rows down (which would
+    dup the boundary row).
+    """
+    src_id = "tg:" + "m" * 32
+    _seed_onboarded(fake_session, tg_user_id=53, source_id=src_id)
+
+    pinned = datetime(2026, 4, 28, 12, 0, tzinfo=UTC)
+    after_pin = pinned + timedelta(minutes=5)
+    before_pin = pinned - timedelta(minutes=5)
+
+    new_row = OutcomeHistoryEntry(
+        claim_id=uuid4(),
+        asset_symbol="NEW",
+        direction="long",
+        horizon_seconds=86_400,
+        observed_return_pct=10.0,
+        is_correct=True,
+        resolved_at=after_pin,
+    )
+    old_row = OutcomeHistoryEntry(
+        claim_id=uuid4(),
+        asset_symbol="OLD",
+        direction="long",
+        horizon_seconds=86_400,
+        observed_return_pct=2.0,
+        is_correct=True,
+        resolved_at=before_pin,
+    )
+    fake_session.outcomes.history_rows_by_source[src_id] = [new_row, old_row]
+
+    response = await client.get(
+        "/me/history",
+        params={
+            "tg_user_id": 53,
+            "as_of": pinned.isoformat().replace("+00:00", "Z"),
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    entries = response.json()["entries"]
+    symbols = [e["asset_symbol"] for e in entries]
+    assert "NEW" not in symbols, "new outcome past as_of must not appear in the frozen page"
+    assert symbols == ["OLD"]
+
+
+async def test_get_my_history_validates_limit_bounds(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """``limit`` must land in [1, 100]; out-of-range → 422."""
+    src_id = "tg:" + "g" * 32
+    _seed_onboarded(fake_session, tg_user_id=48, source_id=src_id)
+
+    too_small = await client.get(
+        "/me/history",
+        params={"tg_user_id": 48, "limit": 0},
+        headers=auth_headers,
+    )
+    assert too_small.status_code == 422
+
+    too_big = await client.get(
+        "/me/history",
+        params={"tg_user_id": 48, "limit": 101},
+        headers=auth_headers,
+    )
+    assert too_big.status_code == 422
+
+
+async def test_get_my_history_validates_offset_non_negative(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """``offset`` must be >= 0. A negative offset would break the
+    repository's slice, so reject at the route boundary."""
+    src_id = "tg:" + "h" * 32
+    _seed_onboarded(fake_session, tg_user_id=49, source_id=src_id)
+
+    response = await client.get(
+        "/me/history",
+        params={"tg_user_id": 49, "offset": -1},
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+
+
+async def test_get_my_history_unknown_user_404s(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    """An un-onboarded user gets a 404."""
+    response = await client.get(
+        "/me/history",
+        params={"tg_user_id": 99_998},
+        headers=auth_headers,
+    )
+    assert response.status_code == 404

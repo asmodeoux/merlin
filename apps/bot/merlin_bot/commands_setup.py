@@ -36,6 +36,8 @@ PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand("alpha", "Log a new market call"),
     BotCommand("me", "Your open calls and hit rate"),
     BotCommand("board", "The leaderboard"),
+    BotCommand("tickers", "Your stats per ticker"),
+    BotCommand("history", "Your resolved calls newest-first"),
     BotCommand("help", "How Merlin works"),
     BotCommand("cancel", "Drop the current draft"),
 )

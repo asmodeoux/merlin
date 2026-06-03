@@ -451,7 +451,8 @@ class ResolvedOutcomeForReputation:
     * ``observed_return_pct`` + ``direction`` — combined into a
       signed directional return (positive when the call was right).
     * ``conviction`` — selects the per-bet stake multiplier
-      (low=1x, med=3x, high=5x).
+      (``weak=1`` / ``medium=3`` / ``strong=5`` / ``very_strong=7``,
+      defined on ``merlin_core.domain.scoring.CONVICTION_WEIGHTS``).
 
     Carrying ``direction`` and ``conviction`` on this record means
     the JOIN to ``claims`` lives in one repository method (clean SQL
@@ -463,6 +464,50 @@ class ResolvedOutcomeForReputation:
     conviction: str
     observed_return_pct: float
     is_correct: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedOutcomeForTicker:
+    """One resolved outcome's view used by the per-ticker breakdown.
+
+    Sibling of ``ResolvedOutcomeForReputation`` — same per-bet shape
+    plus ``asset_symbol`` so the ``/me/tickers`` use case can group
+    rows by ticker before running the standard scoring pipeline
+    (``conviction_weight`` → ``directional_return_pct`` →
+    ``weighted_mean_pnl_pct`` → ``shrunk_sort_score``).
+
+    Kept as a separate record (not a subclass) so the recompute
+    fetch's footprint stays at four fields — the per-ticker breakdown
+    is the only consumer that needs the extra column.
+    """
+
+    direction: str
+    conviction: str
+    observed_return_pct: float
+    is_correct: bool
+    asset_symbol: str
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeHistoryEntry:
+    """One row in the user's resolved-call history (``/me/history``).
+
+    Newest-first, paginated via offset + limit at the repository
+    boundary. ``observed_return_pct`` is the raw move (signed by
+    market direction, not by the user's call); the bot picks the
+    win / loss / flat emoji via the same ``is_correct_call`` /
+    ``is_flat`` helpers that drive the resolution notifications, so
+    the icon set never drifts between the live ping and the history
+    list.
+    """
+
+    claim_id: UUID
+    asset_symbol: str
+    direction: str
+    horizon_seconds: int
+    observed_return_pct: float
+    is_correct: bool
+    resolved_at: datetime
 
 
 class OutcomeRepositoryPort(Protocol):
@@ -550,6 +595,89 @@ class OutcomeRepositoryPort(Protocol):
         record fields are non-Optional. Rows that fail those CHECKs
         could never have been INSERTed in the first place; the
         resolver enforces them at write time.
+        """
+        ...
+
+    async def fetch_resolved_for_tickers(
+        self,
+        source_id: str,
+    ) -> list[ResolvedOutcomeForTicker]:
+        """Return one row per resolved outcome, with ticker + per-bet shape.
+
+        Backs ``GET /me/tickers``. Same filter / JOIN as
+        ``fetch_resolved_for_reputation`` (``outcomes.status='resolved'``,
+        Claim.id == Outcome.claim_id), with one extra projected
+        column: ``Claim.asset_symbol``. The per-ticker grouping +
+        scoring lives in ``merlin_core.application.use_cases.tickers``
+        — this method just hands the application layer the raw rows.
+
+        Cold-start sources return an empty list — the use case then
+        renders an empty ``entries`` array on the wire.
+        """
+        ...
+
+    async def fetch_history_page(
+        self,
+        source_id: str,
+        *,
+        as_of: datetime,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[OutcomeHistoryEntry], int]:
+        """Newest-first page of the user's resolved-call history + total.
+
+        Backs ``GET /me/history``. Returns ``(rows, total)`` in a
+        single round-trip — the window function ``COUNT(*) OVER ()``
+        computes the total within the same SELECT so we don't pay
+        for two queries and the count is guaranteed consistent with
+        the page (same MVCC snapshot, same WHERE).
+
+        SQL contract:
+
+        .. code-block:: sql
+
+            SELECT
+              o.claim_id, c.asset_symbol, c.direction,
+              c.horizon_seconds, o.observed_return_pct,
+              o.is_correct, o.resolved_at,
+              COUNT(*) OVER () AS total
+            FROM outcomes o
+            JOIN claims c ON c.id = o.claim_id
+            WHERE
+              o.source_id = :source_id
+              AND o.status = 'resolved'
+              AND o.resolved_at <= :as_of
+              AND NOT EXISTS (
+                SELECT 1 FROM outcomes o2
+                WHERE o2.supersedes_outcome_id = o.id
+              )
+            ORDER BY o.resolved_at DESC
+            LIMIT :limit OFFSET :offset
+
+        Three filters worth calling out:
+
+        * ``status='resolved'`` — Q-023 rejection rows and
+          ``resolution_failed_final`` rows aren't user-facing events.
+        * ``resolved_at <= :as_of`` — the bot pins this at first-page
+          time and round-trips it on follow-up requests. A new
+          outcome resolving mid-session can't shift already-paged
+          rows down into the next page (which would duplicate the
+          boundary row). MVP §15 invariant 6 doesn't address
+          pagination directly; this is the application-level fix.
+        * ``NOT EXISTS (...supersedes_outcome_id = o.id)`` — MVP §15
+          invariant 6: corrections INSERT a new outcome with
+          ``supersedes_outcome_id`` pointing at the previous head.
+          The user-facing history shows only the chain head per
+          claim, never the superseded row. v0 never INSERTs a
+          corrective row, but the filter is here so the day we do,
+          the history list stays honest without a follow-up patch.
+
+        ``limit`` / ``offset`` are passed as-is; the route enforces
+        ``ge=1 / le=HISTORY_MAX_PAGE_SIZE`` and ``ge=0`` respectively
+        before reaching this method. On an out-of-range ``offset``
+        (past the last row) the page comes back empty AND total is
+        still correct — the route then sets ``has_more=False`` and
+        ``next_offset=None`` honestly.
         """
         ...
 

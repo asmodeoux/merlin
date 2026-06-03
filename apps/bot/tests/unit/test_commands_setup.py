@@ -50,7 +50,7 @@ class _FakeApplication:
 
 
 def test_public_commands_cover_every_user_facing_action() -> None:
-    expected = {"start", "alpha", "me", "board", "help", "cancel"}
+    expected = {"start", "alpha", "me", "board", "tickers", "history", "help", "cancel"}
     actual = {cmd.command for cmd in PUBLIC_COMMANDS}
     assert actual == expected
 

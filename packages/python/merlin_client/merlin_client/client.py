@@ -197,6 +197,54 @@ class MerlinClient:
         """
         return await self._get("/me", params={"tg_user_id": tg_user_id})
 
+    async def get_my_tickers(self, *, tg_user_id: int) -> dict[str, Any]:
+        """``GET /me/tickers?tg_user_id=...`` — per-ticker breakdown.
+
+        Returns ``{"entries": [...]}``. Each entry carries the user-
+        facing fields (asset_symbol, accuracy_pct, weighted_pnl_pct,
+        calls_resolved, calls_correct); the internal Bayesian-shrunk
+        sort score that drove the row order is NOT on the wire.
+        Sorted server-side; the bot renders the list in receive order.
+        """
+        return await self._get("/me/tickers", params={"tg_user_id": tg_user_id})
+
+    async def get_my_history(
+        self,
+        *,
+        tg_user_id: int,
+        limit: int = 30,
+        offset: int = 0,
+        as_of: str | None = None,
+    ) -> dict[str, Any]:
+        """``GET /me/history`` — newest-first resolved-call history.
+
+        Returns ``{"entries": [...], "has_more": bool, "next_offset":
+        int | None, "as_of": str}``. Newest-first order is contract;
+        the bot renders rows in receive order. ``has_more`` +
+        ``next_offset`` let the bot decide whether to render the
+        "Show 30 more" inline button without keeping its own count.
+
+        ``as_of`` freezes the pagination window:
+
+        * First page: omit (``None``). Server stamps the response
+          with its UTC wall-clock value and echoes it back.
+        * Follow-up pages: pass the value the server returned on
+          page 1. Server filters ``WHERE resolved_at <= as_of`` so a
+          new outcome resolving mid-session can't shift already-
+          paged rows down into the next page (which would dup the
+          boundary row on the next "Show 30 more" click).
+
+        Pass ``as_of`` as an ISO 8601 string (``2026-04-28T12:00:00Z``).
+        """
+        params: dict[str, Any] = {
+            "tg_user_id": tg_user_id,
+            "limit": limit,
+            "offset": offset,
+        }
+        if as_of is not None:
+            params["as_of"] = as_of
+        return await self._get("/me/history", params=params)
+
     async def update_me(self, *, display_name: str, tg_user_id: int) -> None:
         """``PATCH /me`` — set leaderboard display name. Returns 204.
 

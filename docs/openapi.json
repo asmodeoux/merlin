@@ -522,6 +522,99 @@
         "title": "HealthResponse",
         "type": "object"
       },
+      "HistoryEntry": {
+        "description": "One row in the user's resolved-call history list.\n\n``observed_return_pct`` is the raw signed move (positive when\nthe market went up, regardless of the user's direction).\n\n``is_correct`` and ``is_flat`` are both server-side\nclassifications, derived via ``merlin_core.domain.scoring`` so\nthe icon set rendered here always matches the live resolution\nnotification the user already saw. Encoding them on the wire\n(rather than recomputing on the bot side) keeps the bot inside\nits layer rule \u2014 bot is allowed ``merlin_client`` +\n``merlin_core.contracts`` only, NOT ``merlin_core.domain``.\n\nThree combinations the bot dispatches on:\n\n* ``is_correct=True`` \u2192 won (\ud83c\udf89). ``is_flat`` is always False\n  here by construction (``is_correct_call`` returns False on\n  flats).\n* ``is_correct=False, is_flat=True`` \u2192 flat / wash (\ud83d\udcdd).\n* ``is_correct=False, is_flat=False`` \u2192 lost (\ud83d\ude42\u200d\u2194\ufe0f).",
+        "properties": {
+          "asset_symbol": {
+            "title": "Asset Symbol",
+            "type": "string"
+          },
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "horizon_seconds": {
+            "description": "Horizon in seconds; integer; 1h..90d range.",
+            "maximum": 7776000.0,
+            "minimum": 3600.0,
+            "title": "Horizon Seconds",
+            "type": "integer"
+          },
+          "is_correct": {
+            "title": "Is Correct",
+            "type": "boolean"
+          },
+          "is_flat": {
+            "title": "Is Flat",
+            "type": "boolean"
+          },
+          "observed_return_pct": {
+            "title": "Observed Return Pct",
+            "type": "number"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "title": "Resolved At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id",
+          "asset_symbol",
+          "direction",
+          "horizon_seconds",
+          "observed_return_pct",
+          "is_correct",
+          "is_flat",
+          "resolved_at"
+        ],
+        "title": "HistoryEntry",
+        "type": "object"
+      },
+      "HistoryResponse": {
+        "description": "``GET /me/history`` response payload.\n\nPagination breadcrumbs:\n\n* ``has_more`` \u2014 true iff there are more resolved outcomes past\n  the current page (within the frozen ``as_of`` window). The bot\n  renders the \"Show 30 more\" button only on this branch.\n* ``next_offset`` \u2014 offset the next request should pass.\n  ``None`` when no more rows are available \u2014 pairs with\n  ``has_more=False``.\n* ``as_of`` \u2014 frozen window ceiling. The server stamps this at\n  first-page time (caller omits the query param) and echoes the\n  caller-supplied value on subsequent pages. The bot **must**\n  pass it back on follow-up requests; otherwise an outcome that\n  resolves between pages would shift every row downward and the\n  \"Show 30 more\" click would dup the previous page's last row.\n\nComputed server-side as\n``has_more = (offset + len(entries) < total_resolved_at_or_before_as_of)``,\n``next_offset = offset + limit if has_more else None``.",
+        "properties": {
+          "as_of": {
+            "description": "Frozen window ceiling. Outcomes resolving after this timestamp are excluded from the paginated view so the bot's 'Show 30 more' click never duplicates a boundary row. The bot round-trips this value on follow-up requests.",
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "required": [
+          "as_of"
+        ],
+        "title": "HistoryResponse",
+        "type": "object"
+      },
       "MeResponse": {
         "description": "``GET /me`` payload \u2014 open calls, resolved calls, headline stats.\n\nHeadline stats are plain English / plain percent. No \"regret\",\nno \"simulated PnL\", no version markers.\n\n``accuracy_pct``, ``weighted_pnl_pct``, and ``rank`` are all\n``Optional`` because a user with zero resolved calls has no honest\nvalue to report \u2014 defaulting to ``0.0`` / ``0`` would tell users\n\"you're at zero\" when the truthful answer is \"we haven't checked\nanything yet\". The bot renders these as \"tracking your first\nresolutions\" rather than a misleading percent.\n\n``weighted_pnl_pct`` is conviction-weighted signed PnL: positive\nmeans the user's calls paid off on aggregate, negative means they\nlost. The bot renders it as the primary headline (PnL first, hit\nrate as a secondary number) matching the /board layout.",
         "properties": {
@@ -964,6 +1057,54 @@
           "parse_metadata"
         ],
         "title": "SubmitClaimRequest",
+        "type": "object"
+      },
+      "TickerEntry": {
+        "description": "One ticker's slice of the user's resolved-call portfolio.\n\nDrops the source-level ``MeResponse`` Optional dance \u2014 by\nconstruction, every row here represents at least one resolved\ncall, so the PnL and accuracy are always honest numbers.\n\n``calls_resolved`` is the count that drove the row's shrinkage,\nrendered as the trailing chunk (\"2 calls\") in the bot.",
+        "properties": {
+          "accuracy_pct": {
+            "title": "Accuracy Pct",
+            "type": "number"
+          },
+          "asset_symbol": {
+            "title": "Asset Symbol",
+            "type": "string"
+          },
+          "calls_correct": {
+            "title": "Calls Correct",
+            "type": "integer"
+          },
+          "calls_resolved": {
+            "title": "Calls Resolved",
+            "type": "integer"
+          },
+          "weighted_pnl_pct": {
+            "title": "Weighted Pnl Pct",
+            "type": "number"
+          }
+        },
+        "required": [
+          "asset_symbol",
+          "calls_resolved",
+          "calls_correct",
+          "accuracy_pct",
+          "weighted_pnl_pct"
+        ],
+        "title": "TickerEntry",
+        "type": "object"
+      },
+      "TickersResponse": {
+        "description": "``GET /me/tickers`` response payload.\n\n``entries`` is sorted server-side by Bayesian-shrunk PnL (the\nsame ranking key as ``/board``) with ``calls_resolved`` /\n``weighted_pnl_pct`` / ``asset_symbol`` tie-breakers. The bot\nrenders the list in receive order \u2014 no client-side sort.\n\nAn empty ``entries`` list signals \"cold-start source\" (no\nresolved calls yet); the bot renders an honest empty-state copy\ninstead of a misleading zero row.",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/TickerEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "title": "TickersResponse",
         "type": "object"
       },
       "UpdateMeRequest": {
@@ -1724,6 +1865,174 @@
           }
         },
         "summary": "Set the display name shown on the leaderboard.",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/me/history": {
+      "get": {
+        "description": "Paginated via ``limit`` / ``offset`` with a frozen ``as_of`` window ceiling. Default page size is 30, matching the bot's \"Show 30 more\" inline button. The first page omits ``as_of`` and the server stamps it with the request's wall-clock UTC time; the response echoes the value back, and the bot must round-trip it on subsequent pages so a new outcome landing mid-session can't shift already-paged rows down into the next page (which would dup the boundary row on the next click). The response also carries ``has_more`` + ``next_offset`` so the bot can render the button without keeping its own count. 404s if the caller has no source row yet.",
+        "operationId": "get_my_history_me_history_get",
+        "parameters": [
+          {
+            "description": "Caller's raw Telegram user id. Same identity-lookup convention as ``GET /me``.",
+            "in": "query",
+            "name": "tg_user_id",
+            "required": true,
+            "schema": {
+              "description": "Caller's raw Telegram user id. Same identity-lookup convention as ``GET /me``.",
+              "title": "Tg User Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum rows to return in this page. Defaults to 30 \u2014 one bot page. Capped at 100 so a misbehaving client can't drain the database in one request.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Maximum rows to return in this page. Defaults to 30 \u2014 one bot page. Capped at 100 so a misbehaving client can't drain the database in one request.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Zero-based index of the first row to return inside the ``as_of``-frozen window. The bot encodes (as_of, offset) in the inline-button callback_data and round-trips both.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Zero-based index of the first row to return inside the ``as_of``-frozen window. The bot encodes (as_of, offset) in the inline-button callback_data and round-trips both.",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Frozen window ceiling \u2014 only outcomes that resolved at or before this timestamp are returned. The first page omits this; the server stamps it with the current UTC time and echoes it back. Subsequent pages must round-trip the same value to avoid pagination drift when a new outcome resolves mid-session.",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Frozen window ceiling \u2014 only outcomes that resolved at or before this timestamp are returned. The first page omits this; the server stamps it with the current UTC time and echoes it back. Subsequent pages must round-trip the same value to avoid pagination drift when a new outcome resolves mid-session.",
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The caller's resolved calls, newest first.",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/me/tickers": {
+      "get": {
+        "description": "User-facing only: ticker, conviction-weighted PnL %, hit rate %, resolved-call count. Sorted server-side by the same Bayesian-shrunk score the leaderboard uses, so single-bet tickers with outsized PnL never out-rank consistent multi-bet tickers. Cold-start tickers (no resolved calls) are filtered out \u2014 every row has at least one resolved bet. 404s if the caller has no source row yet.",
+        "operationId": "get_my_tickers_me_tickers_get",
+        "parameters": [
+          {
+            "description": "Caller's raw Telegram user id. Same identity-lookup convention as ``GET /me`` / ``PATCH /me``.",
+            "in": "query",
+            "name": "tg_user_id",
+            "required": true,
+            "schema": {
+              "description": "Caller's raw Telegram user id. Same identity-lookup convention as ``GET /me`` / ``PATCH /me``.",
+              "title": "Tg User Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TickersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Per-ticker breakdown of the caller's resolved calls.",
         "tags": [
           "sources"
         ]
