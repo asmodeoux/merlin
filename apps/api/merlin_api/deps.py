@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         MarketDataPort,
         NotifierPort,
     )
+    from redis.asyncio import Redis as AsyncRedis
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -52,12 +53,21 @@ class Ports:
     Keeping this as a single injectable simplifies the test override
     surface — one ``app.dependency_overrides[get_ports]`` swap and every
     route sees fakes.
+
+    ``redis`` is an *optional* async client used by the response-cache
+    helpers in ``merlin_api.cache``. Routes that don't need caching
+    leave it untouched; routes that do need caching pass it to
+    ``cached_or_compute`` which fail-opens to the upstream when the
+    client is ``None``. Tests can override the whole ``Ports`` instance
+    with ``redis=None`` (cache disabled) or with a ``fakeredis`` client
+    (cache exercised).
     """
 
     drafter: ClaimDrafterPort
     market_data: MarketDataPort
     queue: JobQueuePort
     notifier: NotifierPort
+    redis: AsyncRedis | None = None
 
 
 @lru_cache(maxsize=1)
@@ -87,6 +97,7 @@ def get_ports() -> Ports:
     from merlin_infrastructure.queue.names import RESOLUTION_QUEUE_NAME
     from merlin_infrastructure.queue.rq import RQQueueAdapter
     from redis import Redis
+    from redis.asyncio import Redis as AsyncRedisClient
 
     settings = get_settings()
 
@@ -117,6 +128,11 @@ def get_ports() -> Ports:
             bot_token=settings.telegram_bot_token or "noop",
             http_client=httpx.AsyncClient(timeout=10.0),
         ),
+        # Async Redis client for the response cache (see merlin_api.cache).
+        # Lazy connection — from_url doesn't touch the network until the
+        # first command runs, so unit tests that don't hit the cache path
+        # never need a live Redis.
+        redis=AsyncRedisClient.from_url(settings.redis_url),
     )
 
 

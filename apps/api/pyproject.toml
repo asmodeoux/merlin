@@ -40,6 +40,11 @@ dev = [
     "syrupy>=4.7",
     "testcontainers[postgres,redis]>=4.8",
     "debugpy>=1.8",
+    # In-process Redis double for unit-testing the response cache
+    # (see merlin_api.cache). The bot package already depends on this
+    # for its RedisPersistence tests; we add it here so the API tests
+    # don't need a live Redis to exercise cache hit/miss/negative paths.
+    "fakeredis>=2.26",
 ]
 
 # Apps use the conventional Hatchling two-layer shape: project root +

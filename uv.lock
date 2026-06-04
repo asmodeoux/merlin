@@ -983,6 +983,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "debugpy" },
+    { name = "fakeredis" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -995,6 +996,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "debugpy", marker = "extra == 'dev'", specifier = ">=1.8" },
+    { name = "fakeredis", marker = "extra == 'dev'", specifier = ">=2.26" },
     { name = "fastapi", specifier = ">=0.115,!=0.136.3,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
     { name = "merlin-core", editable = "packages/python/merlin_core" },
