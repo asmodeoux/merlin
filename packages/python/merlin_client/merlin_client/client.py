@@ -281,10 +281,11 @@ class MerlinClient:
     ) -> dict[str, Any]:
         """``GET /board`` — leaderboard for the window + horizon filter.
 
-        ``horizon`` is the three-mode "Day Traders" / "Swing Traders"
-        knob exposed by the bot's inline-button row. Accepted values:
-        ``"all"`` (default — pre-aggregated snapshot read), ``"short"``
-        (≤24h bets only), ``"long"`` (>24h bets only). The API rejects
+        ``horizon`` is the four-mode "Day Traders" / "Swing Traders"
+        / "Position Traders" knob exposed by the bot's inline-button
+        row. Accepted values: ``"all"`` (default — pre-aggregated
+        snapshot read), ``"day"`` (≤24h bets only), ``"swing"`` (1d-3wk
+        bets), ``"position"`` (>3wk bets only). The API rejects
         anything else with a 422.
         """
         return await self._get(

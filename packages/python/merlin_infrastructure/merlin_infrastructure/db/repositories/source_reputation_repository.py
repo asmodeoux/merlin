@@ -21,7 +21,10 @@ from merlin_core.application.ports import (
     SourceReputationRecord,
     SourceReputationRepositoryPort,
 )
-from merlin_core.contracts.horizons import HORIZON_SHORT_TERM_MAX_SECONDS
+from merlin_core.contracts.horizons import (
+    HORIZON_DAY_TRADER_MAX_SECONDS,
+    HORIZON_SWING_TRADER_MAX_SECONDS,
+)
 from merlin_core.domain.scoring import (
     accuracy_pct as compute_accuracy_pct,
 )
@@ -31,7 +34,7 @@ from merlin_core.domain.scoring import (
     shrunk_sort_score,
     weighted_mean_pnl_pct,
 )
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, desc, func, select
 
 from merlin_infrastructure.db.models import (
     Claim,
@@ -43,12 +46,12 @@ from merlin_infrastructure.db.models import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-# Three-mode horizon filter accepted by ``leaderboard``. Mirrors the
+# Four-mode horizon filter accepted by ``leaderboard``. Mirrors the
 # wire-level ``HorizonFilter`` Literal in ``merlin_core.contracts.board``
 # but kept as a plain frozenset so this adapter stays import-free of
 # ``contracts.board``. The port doc-string promises rejection of
 # anything outside this set.
-_VALID_HORIZONS: frozenset[str] = frozenset({"all", "short", "long"})
+_VALID_HORIZONS: frozenset[str] = frozenset({"all", "day", "swing", "position"})
 
 
 @dataclass(slots=True)
@@ -146,17 +149,19 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
         ``window`` is accepted today so the route stays a thin
         pass-through; we ignore it for v0 (no time-window slicing yet).
 
-        ``horizon`` is the three-mode "Day Traders" / "Swing Traders"
-        filter:
+        ``horizon`` is the four-mode "Day Traders" / "Swing Traders"
+        / "Position Traders" filter:
 
         * ``"all"`` (default) — reads the snapshot table byte-for-byte
           (the original v0 path). Zero behavior change vs. the
           pre-filter ``/board``.
-        * ``"short"`` / ``"long"`` — bypasses the snapshot and
-          recomputes per source by joining ``outcomes`` ⋈ ``claims`` ⋈
-          ``sources`` with a ``claims.horizon_seconds <= /
-          > HORIZON_SHORT_TERM_MAX_SECONDS`` predicate, then folding
-          via the same scoring helpers the worker recompute uses
+        * ``"day"`` / ``"swing"`` / ``"position"`` — bypasses the
+          snapshot and recomputes per source by joining ``outcomes``
+          ⋈ ``claims`` ⋈ ``sources`` with a bucketed
+          ``claims.horizon_seconds`` predicate (≤24h / 24h-3wk / >3wk
+          against ``HORIZON_DAY_TRADER_MAX_SECONDS`` and
+          ``HORIZON_SWING_TRADER_MAX_SECONDS``), then folding via the
+          same scoring helpers the worker recompute uses
           (``accuracy_pct``, ``conviction_weight``,
           ``directional_return_pct``, ``weighted_mean_pnl_pct``,
           ``shrunk_sort_score``). The snapshot table has no horizon
@@ -259,7 +264,7 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
         self,
         horizon: str,
     ) -> list[LeaderboardEntry]:
-        """On-the-fly leaderboard for ``horizon in {"short", "long"}``.
+        """On-the-fly leaderboard for ``horizon in {"day","swing","position"}``.
 
         One SELECT joins ``outcomes`` ⋈ ``claims`` ⋈ ``sources`` with
         a horizon-bucket predicate; the per-source fold (accuracy,
@@ -269,12 +274,22 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
         recompute uses — ensures the filtered leaderboard and the
         unfiltered one agree on every metric except the horizon slice.
 
+        Bucket boundaries are continuous and non-overlapping:
+
+        * ``day``:  ``horizon_seconds <= HORIZON_DAY_TRADER_MAX_SECONDS``
+          (≤24h).
+        * ``swing``: strictly greater than the day max, ≤
+          ``HORIZON_SWING_TRADER_MAX_SECONDS`` (24h-3wk).
+        * ``position``: strictly greater than the swing max (>3wk).
+
         Only ``status='resolved'`` outcomes count — Q-023
         ``rejected_asset_mutation`` rows and resolver-failure rows
         match the ``WHERE`` exclusion the recompute job applies.
         Sources with zero resolved outcomes in the slice are dropped
         (parity with the snapshot path's ``accuracy_pct IS NOT NULL``
-        cold-start cutoff).
+        cold-start cutoff). At v0 the ``position`` bucket is expected
+        to return empty until the first >3wk horizons mature; the bot
+        renders a tailored empty-state for that case.
 
         The ``last_call_at`` projected on each entry is the most
         recent ``resolved_at`` for that source *within the
@@ -282,12 +297,15 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
         snapshot path's ``effective_at`` (which records when the
         snapshot was written, not when the last bet landed).
         """
-        boundary = HORIZON_SHORT_TERM_MAX_SECONDS
-        horizon_predicate = (
-            (Claim.horizon_seconds <= boundary)
-            if horizon == "short"
-            else (Claim.horizon_seconds > boundary)
-        )
+        if horizon == "day":
+            horizon_predicate = Claim.horizon_seconds <= HORIZON_DAY_TRADER_MAX_SECONDS
+        elif horizon == "swing":
+            horizon_predicate = and_(
+                Claim.horizon_seconds > HORIZON_DAY_TRADER_MAX_SECONDS,
+                Claim.horizon_seconds <= HORIZON_SWING_TRADER_MAX_SECONDS,
+            )
+        else:  # "position" — validated upstream in ``leaderboard``
+            horizon_predicate = Claim.horizon_seconds > HORIZON_SWING_TRADER_MAX_SECONDS
 
         stmt = (
             select(

@@ -15,11 +15,13 @@ from pydantic import BaseModel, Field
 
 from merlin_core.contracts.horizons import HORIZON_MAX_SECONDS, HORIZON_MIN_SECONDS
 
-# Three-mode horizon filter for ``/board``. ``"all"`` mirrors the
-# pre-filter snapshot read; ``"short"`` / ``"long"`` slice by
-# ``HORIZON_SHORT_TERM_MAX_SECONDS`` (≤24h / >24h) and the bot
-# surfaces them as "Day Traders" / "Swing Traders".
-HorizonFilter = Literal["all", "short", "long"]
+# Four-mode horizon filter for ``/board``. ``"all"`` mirrors the
+# pre-filter snapshot read; ``"day"`` / ``"swing"`` / ``"position"``
+# slice by ``HORIZON_DAY_TRADER_MAX_SECONDS`` (≤24h) and
+# ``HORIZON_SWING_TRADER_MAX_SECONDS`` (≤21d), and the bot
+# surfaces them as "Day Traders" / "Swing Traders" / "Position
+# Traders" in the inline filter row.
+HorizonFilter = Literal["all", "day", "swing", "position"]
 
 
 class BoardEntry(BaseModel):
@@ -54,9 +56,9 @@ class BoardResponse(BaseModel):
 
     ``horizon`` echoes the requested filter so the bot can render the
     active filter in the message header (``"Day Traders (≤24h)"`` /
-    ``"Swing Traders (>24h)"``) and decide which two of the three
-    inline buttons to surface (the active one is hidden — it's
-    already implicit in the header text).
+    ``"Swing Traders (1d-3wk)"`` / ``"Position Traders (>3wk)"``) and
+    decide which three of the four inline buttons to surface (the
+    active one is hidden — it's already implicit in the header text).
     """
 
     entries: list[BoardEntry] = Field(default_factory=list)

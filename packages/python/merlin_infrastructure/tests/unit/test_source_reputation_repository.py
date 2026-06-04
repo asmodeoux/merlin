@@ -211,14 +211,15 @@ def _joined_row(
     return row
 
 
-@pytest.mark.parametrize("horizon", ["short", "long"])
-async def test_leaderboard_short_long_emits_outcome_claim_join(horizon: str) -> None:
+@pytest.mark.parametrize("horizon", ["day", "swing", "position"])
+async def test_leaderboard_filtered_emits_outcome_claim_join(horizon: str) -> None:
     """Filtered slices bypass the snapshot and join ``outcomes``+``claims``.
 
     Pins the structural choice — if a future refactor reads from
     ``source_reputation_history`` for the filtered slice too, the
     join will disappear and the snapshot-table-has-no-horizon-dim
-    bug rides back in.
+    bug rides back in. Parametrised over the three filtered modes
+    so each predicate-selector branch exercises the same shape.
     """
     sess = _fake_session()
     result = MagicMock()
@@ -241,8 +242,8 @@ async def test_leaderboard_short_long_emits_outcome_claim_join(horizon: str) -> 
     assert "source_reputation_history" not in lowered
 
 
-async def test_leaderboard_short_only_includes_sub_24h_bets() -> None:
-    """``horizon="short"`` aggregates only bets the SQL slice surfaces.
+async def test_leaderboard_day_only_includes_sub_24h_bets() -> None:
+    """``horizon="day"`` aggregates only bets the SQL slice surfaces.
 
     We simulate the SQL filter by feeding the repo only rows the
     ``horizon_seconds <= 86_400`` predicate would have returned —
@@ -279,7 +280,7 @@ async def test_leaderboard_short_only_includes_sub_24h_bets() -> None:
     sess.execute.return_value = result
 
     repo = SourceReputationRepository(sess)
-    entries = await repo.leaderboard("all_time", horizon="short")
+    entries = await repo.leaderboard("all_time", horizon="day")
 
     assert len(entries) == 1
     entry = entries[0]
@@ -294,15 +295,106 @@ async def test_leaderboard_short_only_includes_sub_24h_bets() -> None:
     assert entry.last_call_at == resolved_at_2
 
 
-async def test_leaderboard_horizon_drops_sources_with_no_matching_bets() -> None:
-    """A source's filtered slice can be empty → they fall off the board.
+async def test_leaderboard_swing_uses_bounded_predicate() -> None:
+    """``horizon="swing"`` SELECT bounds horizon_seconds on BOTH sides.
 
-    Parity with the snapshot path's ``accuracy_pct IS NOT NULL``
-    cold-start cutoff. If the SQL filter returns zero rows for a
-    source, the in-Python fold never builds a bucket for them — so
-    the on-the-fly slice naturally drops empty-slice sources without
-    a special branch. Pinning the behaviour here so a future
-    refactor doesn't accidentally surface a 0-bet placeholder row.
+    The swing bucket is the only one with a two-sided predicate (>
+    day_max AND <= swing_max). Compiling the statement and pattern-
+    matching the WHERE clause pins:
+
+    * Both boundary constants appear as bind parameters — so a
+      future rename of either constant fails this test before it
+      reaches a live request.
+    * The SQL references ``horizon_seconds`` at least twice
+      (compiled output uses two parametrised comparisons).
+
+    We deliberately don't assert the exact SQL string; SQLAlchemy
+    compiles the same logical predicate in different surface forms
+    across versions.
+    """
+    from merlin_core.contracts.horizons import (
+        HORIZON_DAY_TRADER_MAX_SECONDS,
+        HORIZON_SWING_TRADER_MAX_SECONDS,
+    )
+
+    sess = _fake_session()
+    result = MagicMock()
+    result.all.return_value = []
+    sess.execute.return_value = result
+
+    repo = SourceReputationRepository(sess)
+    entries = await repo.leaderboard("all_time", horizon="swing")
+    assert entries == []
+
+    stmt = sess.execute.call_args[0][0]
+    compiled = stmt.compile(compile_kwargs={"literal_binds": True})
+    rendered = str(compiled).lower()
+    # Both boundary constants must appear in the WHERE clause —
+    # ``literal_binds`` inlines them so we can pattern-match the
+    # exact integers.
+    assert str(HORIZON_DAY_TRADER_MAX_SECONDS) in rendered
+    assert str(HORIZON_SWING_TRADER_MAX_SECONDS) in rendered
+    # Two ``horizon_seconds`` references: one for the lower bound,
+    # one for the upper bound.
+    assert rendered.count("horizon_seconds") >= 2
+
+
+async def test_leaderboard_swing_aggregates_bets_inside_the_window() -> None:
+    """Fold-correctness for ``horizon="swing"`` on the bounded slice.
+
+    Same shape as the day-bucket fold test: feed the rows the SQL
+    slice would have returned (one source, two bets, both in the
+    1d-3wk window) and assert the per-source aggregation lands
+    cleanly.
+    """
+    resolved_at_1 = datetime(2026, 6, 5, 10, 0, tzinfo=UTC)
+    resolved_at_2 = datetime(2026, 6, 8, 14, 30, tzinfo=UTC)
+    rows = [
+        _joined_row(
+            source_id="tg:" + "b" * 32,
+            display_name="SwingTrader",
+            direction="long",
+            conviction="strong",
+            observed_return_pct=6.0,
+            is_correct=True,
+            resolved_at=resolved_at_1,
+        ),
+        _joined_row(
+            source_id="tg:" + "b" * 32,
+            display_name="SwingTrader",
+            direction="long",
+            conviction="medium",
+            observed_return_pct=2.0,
+            is_correct=True,
+            resolved_at=resolved_at_2,
+        ),
+    ]
+    sess = _fake_session()
+    result = MagicMock()
+    result.all.return_value = rows
+    sess.execute.return_value = result
+
+    repo = SourceReputationRepository(sess)
+    entries = await repo.leaderboard("all_time", horizon="swing")
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.display_name == "SwingTrader"
+    assert entry.calls_resolved == 2
+    assert entry.calls_correct == 2
+    assert entry.last_call_at == resolved_at_2
+
+
+async def test_leaderboard_position_returns_empty_at_v0() -> None:
+    """At v0 the ``position`` bucket is expected to be empty.
+
+    The user has zero >3wk resolutions today; the SQL slice returns
+    nothing and the API returns ``entries=[]``. This is the load-
+    bearing test for the bot's filter-aware empty-state copy on
+    day one (the most-rendered empty-state path).
+
+    Equivalent to the original "drops sources with no matching bets"
+    behaviour — kept here as a position-bucket specific anchor.
     """
     sess = _fake_session()
     result = MagicMock()
@@ -310,7 +402,7 @@ async def test_leaderboard_horizon_drops_sources_with_no_matching_bets() -> None
     sess.execute.return_value = result
 
     repo = SourceReputationRepository(sess)
-    entries = await repo.leaderboard("all_time", horizon="long")
+    entries = await repo.leaderboard("all_time", horizon="position")
     assert entries == []
 
 
@@ -362,7 +454,7 @@ async def test_leaderboard_horizon_ranks_by_shrunk_sort_score() -> None:
     sess.execute.return_value = result
 
     repo = SourceReputationRepository(sess)
-    entries = await repo.leaderboard("all_time", horizon="short")
+    entries = await repo.leaderboard("all_time", horizon="day")
 
     assert [e.display_name for e in entries] == ["OneShot", "Grinder"]
     assert entries[0].rank == 1
@@ -396,7 +488,7 @@ async def test_leaderboard_horizon_falls_back_to_anonymous_for_null_display_name
     sess.execute.return_value = result
 
     repo = SourceReputationRepository(sess)
-    entries = await repo.leaderboard("all_time", horizon="short")
+    entries = await repo.leaderboard("all_time", horizon="day")
     assert entries[0].display_name == "anonymous"
 
 
@@ -483,7 +575,7 @@ async def test_leaderboard_horizon_counts_incorrect_bets_against_accuracy() -> N
     sess.execute.return_value = result
 
     repo = SourceReputationRepository(sess)
-    entries = await repo.leaderboard("all_time", horizon="short")
+    entries = await repo.leaderboard("all_time", horizon="day")
 
     assert len(entries) == 1
     entry = entries[0]
@@ -492,27 +584,53 @@ async def test_leaderboard_horizon_counts_incorrect_bets_against_accuracy() -> N
     assert entry.accuracy_pct == pytest.approx(50.0)
 
 
-async def test_leaderboard_horizon_long_uses_strictly_greater_predicate() -> None:
-    """``horizon="long"`` exercises the ``Claim.horizon_seconds > boundary``
+async def test_leaderboard_position_uses_swing_max_as_lower_bound() -> None:
+    """``horizon="position"`` exercises the ``> HORIZON_SWING_TRADER_MAX_SECONDS``
     branch of the predicate selector.
 
-    Without a dedicated ``"long"`` test the ``else`` branch of the
-    predicate ternary never executes — even though every other
-    horizon test happens to use ``"short"``. We don't try to assert
-    SQL text here (the join-test above pins shape); the goal is
-    coverage of the conditional path that picks ``>`` over ``<=``.
+    Critical regression guard: a copy-paste bug could have the
+    ``position`` branch reference the *day-trader* max instead of
+    the swing-trader max, which would silently include swing bets
+    in the position bucket. We compile the statement and look for
+    the swing-max integer (and the absence of the day-max integer
+    in a ``>`` context) to pin the right boundary.
     """
+    from merlin_core.contracts.horizons import (
+        HORIZON_DAY_TRADER_MAX_SECONDS,
+        HORIZON_SWING_TRADER_MAX_SECONDS,
+    )
+
     sess = _fake_session()
     result = MagicMock()
     result.all.return_value = []
     sess.execute.return_value = result
 
     repo = SourceReputationRepository(sess)
-    entries = await repo.leaderboard("all_time", horizon="long")
+    entries = await repo.leaderboard("all_time", horizon="position")
     assert entries == []
 
+    stmt = sess.execute.call_args[0][0]
+    rendered = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    # Lower bound is the swing-trader max, NOT the day-trader max —
+    # the copy-paste regression we're guarding against.
+    assert str(HORIZON_SWING_TRADER_MAX_SECONDS) in rendered
+    assert str(HORIZON_DAY_TRADER_MAX_SECONDS) not in rendered
 
-async def test_leaderboard_rejects_unknown_horizon_value() -> None:
+
+@pytest.mark.parametrize(
+    "bad_horizon",
+    [
+        # Legacy 2-bucket names — explicit regression guard so a
+        # stale caller fails loudly at the adapter layer.
+        "short",
+        "long",
+        # Generic misspellings.
+        "medium",
+        "intraday",
+        "Day",
+    ],
+)
+async def test_leaderboard_rejects_unknown_horizon_value(bad_horizon: str) -> None:
     """Unknown ``horizon`` raises rather than silently returning the
     unfiltered list.
 
@@ -523,4 +641,4 @@ async def test_leaderboard_rejects_unknown_horizon_value() -> None:
     sess = _fake_session()
     repo = SourceReputationRepository(sess)
     with pytest.raises(ValueError, match="unknown horizon filter"):
-        await repo.leaderboard("all_time", horizon="medium")
+        await repo.leaderboard("all_time", horizon=bad_horizon)

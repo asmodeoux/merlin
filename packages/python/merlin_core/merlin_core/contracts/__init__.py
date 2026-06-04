@@ -32,10 +32,11 @@ from merlin_core.contracts.claims import (
 )
 from merlin_core.contracts.history import HistoryEntry, HistoryResponse
 from merlin_core.contracts.horizons import (
+    HORIZON_DAY_TRADER_MAX_SECONDS,
     HORIZON_MAX_SECONDS,
     HORIZON_MIN_SECONDS,
     HORIZON_QUICK_PICKS,
-    HORIZON_SHORT_TERM_MAX_SECONDS,
+    HORIZON_SWING_TRADER_MAX_SECONDS,
     HorizonParseError,
     HorizonRangeError,
     horizon_to_timedelta,
@@ -59,10 +60,11 @@ from merlin_core.contracts.sources import (
 from merlin_core.contracts.tickers import TickerEntry, TickersResponse
 
 __all__ = [
+    "HORIZON_DAY_TRADER_MAX_SECONDS",
     "HORIZON_MAX_SECONDS",
     "HORIZON_MIN_SECONDS",
     "HORIZON_QUICK_PICKS",
-    "HORIZON_SHORT_TERM_MAX_SECONDS",
+    "HORIZON_SWING_TRADER_MAX_SECONDS",
     "AdminBootstrapRequest",
     "AdminBootstrapResponse",
     "AssetCandidateDTO",

@@ -168,7 +168,7 @@ async def test_get_board_defaults_horizon_to_all(
     assert fake_session.reputation.horizon_calls == ["all"]
 
 
-@pytest.mark.parametrize("horizon", ["all", "short", "long"])
+@pytest.mark.parametrize("horizon", ["all", "day", "swing", "position"])
 async def test_get_board_passes_horizon_param_to_repo_and_echoes_it(
     client: httpx.AsyncClient,
     auth_headers: dict[str, str],
@@ -194,7 +194,21 @@ async def test_get_board_passes_horizon_param_to_repo_and_echoes_it(
 
 @pytest.mark.parametrize(
     "bad_horizon",
-    ["medium", "ALL", "24h", "intraday", "long_term", ""],
+    [
+        # Legacy 2-bucket vocabulary — explicit regression guard so an
+        # old client tapping a stale ``board:filter:short`` callback
+        # gets cleanly rejected at the route layer rather than reaching
+        # the repository's ``ValueError``.
+        "short",
+        "long",
+        # Generic invalid values.
+        "medium",
+        "ALL",
+        "24h",
+        "intraday",
+        "long_term",
+        "",
+    ],
 )
 async def test_get_board_rejects_invalid_horizon(
     client: httpx.AsyncClient,

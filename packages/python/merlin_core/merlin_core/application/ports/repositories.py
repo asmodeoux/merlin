@@ -774,17 +774,18 @@ class SourceReputationRepositoryPort(Protocol):
         NULL). Ranking key is ``sort_score`` (Bayesian-shrunk PnL),
         NOT the raw hit rate — locked by the design conversation.
 
-        ``horizon`` is the three-mode "Day Traders" / "Swing Traders"
-        filter (``"all"`` / ``"short"`` / ``"long"``). ``"all"``
-        reads the snapshot table byte-for-byte (zero behavior change
-        vs. pre-filter ``/board``). ``"short"`` and ``"long"``
-        bypass the snapshot and recompute on-the-fly by joining
-        ``outcomes`` + ``claims`` and filtering on
-        ``claims.horizon_seconds`` against
-        ``HORIZON_SHORT_TERM_MAX_SECONDS`` — the snapshot table has
-        no horizon dimension at v0. ``str`` (not the ``Literal``)
-        so the port stays stdlib + typing-only; callers should pass
-        ``"all" | "short" | "long"`` and the adapter rejects anything
-        else.
+        ``horizon`` is the four-mode "Day Traders" / "Swing Traders"
+        / "Position Traders" filter (``"all"`` / ``"day"`` / ``"swing"``
+        / ``"position"``). ``"all"`` reads the snapshot table
+        byte-for-byte (zero behavior change vs. pre-filter ``/board``).
+        ``"day"`` / ``"swing"`` / ``"position"`` bypass the snapshot
+        and recompute on-the-fly by joining ``outcomes`` + ``claims``
+        and slicing ``claims.horizon_seconds`` against
+        ``HORIZON_DAY_TRADER_MAX_SECONDS`` (24h) and
+        ``HORIZON_SWING_TRADER_MAX_SECONDS`` (21d) — the snapshot
+        table has no horizon dimension at v0. ``str`` (not the
+        ``Literal``) so the port stays stdlib + typing-only; callers
+        should pass ``"all" | "day" | "swing" | "position"`` and the
+        adapter rejects anything else.
         """
         ...

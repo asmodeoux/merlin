@@ -32,13 +32,15 @@ async def get_board(
     window: str = Query(default="all_time", pattern="^(all_time|30d|7d)$"),
     horizon: str = Query(
         default="all",
-        pattern="^(all|short|long)$",
+        pattern="^(all|day|swing|position)$",
         description=(
-            "Three-mode horizon filter the bot surfaces as 'Day Traders' "
-            "(<=24h), 'Swing Traders' (>24h), and 'All'. The boundary is "
-            "HORIZON_SHORT_TERM_MAX_SECONDS in merlin_core.contracts.horizons. "
-            "'all' reads the pre-aggregated snapshot table; 'short' / 'long' "
-            "recompute on-the-fly so the snapshot table stays horizon-agnostic."
+            "Four-mode horizon filter the bot surfaces as 'Day Traders' "
+            "(<=24h), 'Swing Traders' (1d-3wk), 'Position Traders' (>3wk), "
+            "and 'All'. Boundaries are HORIZON_DAY_TRADER_MAX_SECONDS and "
+            "HORIZON_SWING_TRADER_MAX_SECONDS in merlin_core.contracts.horizons. "
+            "'all' reads the pre-aggregated snapshot table; 'day' / 'swing' / "
+            "'position' recompute on-the-fly so the snapshot table stays "
+            "horizon-agnostic."
         ),
     ),
     session: AsyncSession = Depends(get_session),

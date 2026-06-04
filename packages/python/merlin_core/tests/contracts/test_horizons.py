@@ -24,10 +24,11 @@ from datetime import timedelta
 
 import pytest
 from merlin_core.contracts.horizons import (
+    HORIZON_DAY_TRADER_MAX_SECONDS,
     HORIZON_MAX_SECONDS,
     HORIZON_MIN_SECONDS,
     HORIZON_QUICK_PICKS,
-    HORIZON_SHORT_TERM_MAX_SECONDS,
+    HORIZON_SWING_TRADER_MAX_SECONDS,
     HorizonParseError,
     HorizonRangeError,
     horizon_to_timedelta,
@@ -47,20 +48,35 @@ def test_max_is_ninety_days() -> None:
     assert HORIZON_MAX_SECONDS == 90 * 86_400
 
 
-def test_short_term_boundary_is_24_hours() -> None:
+def test_day_trader_boundary_is_24_hours() -> None:
     """The ``/board`` "Day Traders" cutoff is exactly 24h in seconds.
 
     Pinned here so a future reviewer thinking of widening it sees
     the deliberate canonical-day-trader choice (and not a 48h
     accidental match to ``_HOURS_TO_DAYS_THRESHOLD_HOURS``).
     """
-    assert HORIZON_SHORT_TERM_MAX_SECONDS == 86_400
-    assert HORIZON_SHORT_TERM_MAX_SECONDS == 24 * 3_600
+    assert HORIZON_DAY_TRADER_MAX_SECONDS == 86_400
+    assert HORIZON_DAY_TRADER_MAX_SECONDS == 24 * 3_600
 
 
-def test_short_term_boundary_lies_within_horizon_range() -> None:
-    """Sanity: the segmentation boundary is a legal horizon value."""
-    assert HORIZON_MIN_SECONDS <= HORIZON_SHORT_TERM_MAX_SECONDS <= HORIZON_MAX_SECONDS
+def test_swing_trader_boundary_is_three_weeks() -> None:
+    """The ``/board`` "Swing Traders" cutoff is exactly 21 days.
+
+    Pinned alongside the day-trader constant so any rebucketing
+    review sees both boundaries at once. 21 days = 3 weeks is the
+    common "active management horizon" cap before traders mentally
+    re-label a hold as a position trade.
+    """
+    assert HORIZON_SWING_TRADER_MAX_SECONDS == 1_814_400
+    assert HORIZON_SWING_TRADER_MAX_SECONDS == 21 * 86_400
+
+
+def test_segmentation_boundaries_are_ordered_inside_horizon_range() -> None:
+    """Sanity: ``MIN <= day_max < swing_max <= MAX`` so the three
+    horizon buckets are non-empty and non-overlapping."""
+    assert HORIZON_MIN_SECONDS <= HORIZON_DAY_TRADER_MAX_SECONDS
+    assert HORIZON_DAY_TRADER_MAX_SECONDS < HORIZON_SWING_TRADER_MAX_SECONDS
+    assert HORIZON_SWING_TRADER_MAX_SECONDS <= HORIZON_MAX_SECONDS
 
 
 def test_quick_picks_are_all_inside_range_and_sorted() -> None:

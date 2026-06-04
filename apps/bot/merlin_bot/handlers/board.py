@@ -77,43 +77,55 @@ _PODIUM_EMOJI: dict[int, str] = {1: "🥇", 2: "🥈", 3: "🥉"}
 # it identically across clients and it doesn't need HTML-escaping.
 _GAP_LINE = "…"
 
-# Horizon-filter inline buttons. Three callback-data constants for the
-# three modes; the regex pattern gates the CallbackQueryHandler so
+# Horizon-filter inline buttons. Four callback-data constants for the
+# four modes; the regex pattern gates the CallbackQueryHandler so
 # unrelated callbacks never reach ``on_filter_callback``. Plain
 # prefix-string callback_data per the in-tree convention (alpha steps,
 # history pagination) — typed CallbackData would require enabling
 # ``arbitrary_callback_data`` on the ApplicationBuilder, out of scope.
 CB_BOARD_FILTER_ALL = "board:filter:all"
-CB_BOARD_FILTER_SHORT = "board:filter:short"
-CB_BOARD_FILTER_LONG = "board:filter:long"
+CB_BOARD_FILTER_DAY = "board:filter:day"
+CB_BOARD_FILTER_SWING = "board:filter:swing"
+CB_BOARD_FILTER_POSITION = "board:filter:position"
 _BOARD_FILTER_CB_PREFIX = "board:filter:"
-_BOARD_FILTER_PATTERN = r"^board:filter:(all|short|long)$"
+_BOARD_FILTER_PATTERN = r"^board:filter:(all|day|swing|position)$"
 
-# Three-mode filter the bot exposes. The wire value (``"all"`` /
-# ``"short"`` / ``"long"``) is what we pass to ``client.get_board``
-# and what comes back on ``BoardResponse.horizon``. Mirrored here as
-# a frozenset for in-handler validation; ``contracts.board.HorizonFilter``
-# is the canonical Literal but lives behind the contract import.
-_VALID_FILTERS: frozenset[str] = frozenset({"all", "short", "long"})
+# Four-mode filter the bot exposes. The wire value (``"all"`` /
+# ``"day"`` / ``"swing"`` / ``"position"``) is what we pass to
+# ``client.get_board`` and what comes back on ``BoardResponse.horizon``.
+# Mirrored here as a frozenset for in-handler validation;
+# ``contracts.board.HorizonFilter`` is the canonical Literal but lives
+# behind the contract import.
+_VALID_FILTERS: frozenset[str] = frozenset({"all", "day", "swing", "position"})
+
+# Stable display order for filter buttons + empty-state nudges. ``all``
+# first when it's a non-active option, then day/swing/position in
+# increasing-horizon order. Defined once so the keyboard layout and
+# the empty-state "tap X, Y, or Z" copy stay in lock-step.
+_FILTER_ORDER: tuple[str, ...] = ("all", "day", "swing", "position")
 
 # Human labels for each filter — used in both the inline-button text
-# and the rendered message-header suffix. The "≤24h" / ">24h"
-# disclosure on the header keeps the segmentation honest (the button
-# itself stays short; the header line carries the precise threshold).
+# and the rendered message-header suffix. The "≤24h" / "1d-3wk" /
+# ">3wk" disclosure on the header keeps the segmentation honest (the
+# button itself stays short; the header line carries the precise
+# threshold).
 _FILTER_BUTTON_LABEL: dict[str, str] = {
     "all": "All",
-    "short": "Day Traders",
-    "long": "Swing Traders",
+    "day": "Day Traders",
+    "swing": "Swing Traders",
+    "position": "Position Traders",
 }
 _FILTER_HEADER_SUFFIX: dict[str, str] = {
     "all": "",
-    "short": " · Day Traders (≤24h)",
-    "long": " · Swing Traders (>24h)",
+    "day": " · Day Traders (≤24h)",
+    "swing": " · Swing Traders (1d-3wk)",
+    "position": " · Position Traders (>3wk)",
 }
 _FILTER_CALLBACK_DATA: dict[str, str] = {
     "all": CB_BOARD_FILTER_ALL,
-    "short": CB_BOARD_FILTER_SHORT,
-    "long": CB_BOARD_FILTER_LONG,
+    "day": CB_BOARD_FILTER_DAY,
+    "swing": CB_BOARD_FILTER_SWING,
+    "position": CB_BOARD_FILTER_POSITION,
 }
 
 # Substring Telegram returns when ``edit_message_text`` is called with
@@ -132,9 +144,9 @@ async def board_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     the leaderboard still renders — just without self-highlight.
 
     Initial render is unfiltered (``horizon="all"``); the user toggles
-    between Day Traders / Swing Traders / All via the inline-button
-    row attached below the message. The two-of-three button rule lives
-    in ``_filter_keyboard``.
+    between Day Traders / Swing Traders / Position Traders / All via
+    the inline-button row attached below the message. The three-of-four
+    button rule (active is hidden) lives in ``_filter_keyboard``.
     """
     if update.message is None or update.effective_user is None:
         return
@@ -165,9 +177,10 @@ async def on_filter_callback(
     """Re-render ``/board`` in place for the tapped horizon filter.
 
     The regex ``pattern`` on the registered ``CallbackQueryHandler``
-    guarantees ``query.data`` matches ``board:filter:(all|short|long)``;
-    we defensively validate anyway so a future regex bug fails closed
-    rather than silently passing an unknown value to the API.
+    guarantees ``query.data`` matches
+    ``board:filter:(all|day|swing|position)``; we defensively validate
+    anyway so a future regex bug fails closed rather than silently
+    passing an unknown value to the API.
 
     Mirrors the edit-in-place semantics of
     ``handlers/alpha/ui.py::render`` and ``handlers/history.py::
@@ -256,7 +269,7 @@ async def _fetch_and_render(
     Returns ``(None, None)`` on a board-fetch error (the caller renders
     a temporary-error message); a populated ``(text, keyboard)`` pair
     on success — including the empty-state path. The keyboard is
-    always the two-non-active filter buttons so users can switch
+    always the three non-active filter buttons so users can switch
     filters even when the active slice is empty.
     """
     board_task = asyncio.create_task(
@@ -322,22 +335,23 @@ def _coerce_filter(echoed: object, fallback: str) -> str:
 
 
 def _filter_keyboard(active_filter: str) -> InlineKeyboardMarkup:
-    """Build the two-button row for the horizon filter.
+    """Build the three-button row for the horizon filter.
 
-    Per the "3 modes, 2 buttons" rule: the active filter is implicit
-    in the message header text, so the inline row shows the two
+    Per the "4 modes, 3 buttons" rule: the active filter is implicit
+    in the message header text, so the inline row shows the three
     *non-active* filters. Every tap therefore switches to a different
     view — no "tap the selected one and nothing happens" UX surprise.
-    Order is stable (``all`` first when present, then ``short``,
-    then ``long``) so the buttons don't jump around between renders.
+    Order is stable (``all`` first when non-active, then ``day``,
+    ``swing``, ``position`` in increasing-horizon order — the
+    ``_FILTER_ORDER`` constant) so the buttons don't jump around
+    between renders.
     """
-    order = ("all", "short", "long")
     row = [
         InlineKeyboardButton(
             _FILTER_BUTTON_LABEL[mode],
             callback_data=_FILTER_CALLBACK_DATA[mode],
         )
-        for mode in order
+        for mode in _FILTER_ORDER
         if mode != active_filter
     ]
     return InlineKeyboardMarkup([row])
@@ -378,10 +392,10 @@ def _render_board(
     don't wonder why a +10% one-shot ranks mid-pack.
 
     ``active_filter`` controls the header-line suffix ("Leaderboard
-    · Day Traders (≤24h)" / "· Swing Traders (>24h)") and is also
-    passed through to the empty-state branch so users see WHICH
-    slice is empty rather than wondering whether the whole product
-    has no data.
+    · Day Traders (≤24h)" / "· Swing Traders (1d-3wk)" /
+    "· Position Traders (>3wk)") and is also passed through to the
+    empty-state branch so users see WHICH slice is empty rather than
+    wondering whether the whole product has no data.
     """
     entries = payload.get("entries") or []
     if not entries:
@@ -591,22 +605,33 @@ def _empty_state_text(*, active_filter: str = "all") -> str:
     language that ages badly.
 
     Filter-aware: a populated "All" board paired with an empty
-    ``short`` / ``long`` slice is the realistic state on day one
-    (and the whole reason the ``/board`` redesign got buttons), so
-    the empty-state for a filtered view tells the user WHICH slice
-    is empty and nudges them to switch.
+    ``day`` / ``swing`` / ``position`` slice is the realistic state
+    on day one (and the whole reason the ``/board`` redesign got
+    buttons), so the empty-state for a filtered view tells the user
+    WHICH slice is empty and nudges them to the *other three*
+    filters by name. ``position`` gets a slightly longer copy because
+    at v0 it's the expected day-one state (zero >3wk resolutions
+    until the first ones mature) — the extra sentence explains the
+    structural reason so users don't read it as a missing feature.
     """
-    if active_filter == "short":
+    if active_filter == "day":
         return (
             "No Day Trader resolutions yet (≤24h horizon).\n"
             "\n"
-            "Tap Swing Traders or All to see the populated boards."
+            "Tap Swing Traders, Position Traders, or All to see the populated boards."
         )
-    if active_filter == "long":
+    if active_filter == "swing":
         return (
-            "No Swing Trader resolutions yet (>24h horizon).\n"
+            "No Swing Trader resolutions yet (1d-3wk horizon).\n"
             "\n"
-            "Tap Day Traders or All to see the populated boards."
+            "Tap Day Traders, Position Traders, or All to see the populated boards."
+        )
+    if active_filter == "position":
+        return (
+            "No Position Trader resolutions yet (>3wk horizon).\n"
+            "\n"
+            "These take 3+ weeks to mature — "
+            "tap Day Traders, Swing Traders, or All for the active boards."
         )
     return (
         "Leaderboard unlocks after the first resolutions.\n"

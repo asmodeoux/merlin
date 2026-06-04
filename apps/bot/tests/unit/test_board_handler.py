@@ -21,8 +21,9 @@ import pytest
 from merlin_bot.api_dependency import BOT_DATA_KEY
 from merlin_bot.handlers.board import (
     CB_BOARD_FILTER_ALL,
-    CB_BOARD_FILTER_LONG,
-    CB_BOARD_FILTER_SHORT,
+    CB_BOARD_FILTER_DAY,
+    CB_BOARD_FILTER_POSITION,
+    CB_BOARD_FILTER_SWING,
     _empty_state_text,
     _filter_keyboard,
     _render_board,
@@ -1061,32 +1062,55 @@ def _kb_callbacks(keyboard: InlineKeyboardMarkup) -> list[str]:
     [
         (
             "all",
-            ["Day Traders", "Swing Traders"],
-            [CB_BOARD_FILTER_SHORT, CB_BOARD_FILTER_LONG],
+            ["Day Traders", "Swing Traders", "Position Traders"],
+            [
+                CB_BOARD_FILTER_DAY,
+                CB_BOARD_FILTER_SWING,
+                CB_BOARD_FILTER_POSITION,
+            ],
         ),
         (
-            "short",
-            ["All", "Swing Traders"],
-            [CB_BOARD_FILTER_ALL, CB_BOARD_FILTER_LONG],
+            "day",
+            ["All", "Swing Traders", "Position Traders"],
+            [
+                CB_BOARD_FILTER_ALL,
+                CB_BOARD_FILTER_SWING,
+                CB_BOARD_FILTER_POSITION,
+            ],
         ),
         (
-            "long",
-            ["All", "Day Traders"],
-            [CB_BOARD_FILTER_ALL, CB_BOARD_FILTER_SHORT],
+            "swing",
+            ["All", "Day Traders", "Position Traders"],
+            [
+                CB_BOARD_FILTER_ALL,
+                CB_BOARD_FILTER_DAY,
+                CB_BOARD_FILTER_POSITION,
+            ],
+        ),
+        (
+            "position",
+            ["All", "Day Traders", "Swing Traders"],
+            [
+                CB_BOARD_FILTER_ALL,
+                CB_BOARD_FILTER_DAY,
+                CB_BOARD_FILTER_SWING,
+            ],
         ),
     ],
 )
-def test_filter_keyboard_shows_two_non_active_buttons(
+def test_filter_keyboard_shows_three_non_active_buttons(
     active: str,
     expected_labels: list[str],
     expected_callbacks: list[str],
 ) -> None:
-    """3 modes, 2 buttons: the active filter is always omitted.
+    """4 modes, 3 buttons: the active filter is always omitted.
 
     Pinned because the entire UX rule lives in this one helper — if
-    the loop ever degrades to "show all three", the active filter
+    the loop ever degrades to "show all four", the active filter
     would still be tappable and the header text would lie about the
-    current slice.
+    current slice. Conversely, if the loop ever drops to two non-
+    active buttons the user loses a way to reach one of the slices
+    via a single tap.
     """
     keyboard = _filter_keyboard(active)
     assert isinstance(keyboard, InlineKeyboardMarkup)
@@ -1097,25 +1121,29 @@ def test_filter_keyboard_shows_two_non_active_buttons(
 def test_filter_keyboard_button_order_is_stable_across_renders() -> None:
     """Filter-button order doesn't change between renders.
 
-    The two non-active buttons always appear in the canonical
-    ``all → short → long`` order; the active one is dropped from
-    that list. Stable layout avoids the "where did that button go"
-    UX surprise.
+    The three non-active buttons always appear in the canonical
+    ``all → day → swing → position`` order; the active one is
+    dropped from that list. Stable layout avoids the "where did
+    that button go" UX surprise.
     """
-    # Active "short" → ["All", "Swing Traders"] (all comes before long)
-    kb_short = _filter_keyboard("short")
-    assert _kb_labels(kb_short) == ["All", "Swing Traders"]
-    # Active "long" → ["All", "Day Traders"] (all still first)
-    kb_long = _filter_keyboard("long")
-    assert _kb_labels(kb_long) == ["All", "Day Traders"]
+    # Active "day" → ["All", "Swing Traders", "Position Traders"]
+    kb_day = _filter_keyboard("day")
+    assert _kb_labels(kb_day) == ["All", "Swing Traders", "Position Traders"]
+    # Active "swing" → ["All", "Day Traders", "Position Traders"]
+    kb_swing = _filter_keyboard("swing")
+    assert _kb_labels(kb_swing) == ["All", "Day Traders", "Position Traders"]
+    # Active "position" → ["All", "Day Traders", "Swing Traders"]
+    kb_position = _filter_keyboard("position")
+    assert _kb_labels(kb_position) == ["All", "Day Traders", "Swing Traders"]
 
 
 @pytest.mark.parametrize(
     "active, expected_suffix",
     [
         ("all", ""),
-        ("short", " · Day Traders (≤24h)"),
-        ("long", " · Swing Traders (>24h)"),
+        ("day", " · Day Traders (≤24h)"),
+        ("swing", " · Swing Traders (1d-3wk)"),
+        ("position", " · Position Traders (>3wk)"),
     ],
 )
 def test_render_board_header_reflects_active_filter(
@@ -1124,9 +1152,9 @@ def test_render_board_header_reflects_active_filter(
 ) -> None:
     """The header line carries the human-readable filter label.
 
-    Pins the "≤24h" / ">24h" disclosure on the header — the buttons
-    themselves stay short, the header tells users the precise
-    boundary so the segmentation is honest.
+    Pins the "≤24h" / "1d-3wk" / ">3wk" disclosure on the header —
+    the buttons themselves stay short, the header tells users the
+    precise boundary so the segmentation is honest.
     """
     payload = {
         "window": "all_time",
@@ -1138,25 +1166,50 @@ def test_render_board_header_reflects_active_filter(
     assert first_line == f"<b>Leaderboard</b>{expected_suffix}"
 
 
-def test_empty_state_text_for_short_mentions_day_traders() -> None:
+def test_empty_state_text_for_day_mentions_other_three_filters() -> None:
     """Filtered empty state names the empty slice + nudges to switch.
 
     A day-1 reality is that the unfiltered board has data but the
     ≤24h slice is empty (most users place multi-day calls). The
     empty-state must say WHICH slice is empty so users don't think
-    the whole product broke.
+    the whole product broke, and the nudge points at every other
+    filter so the user has a one-tap route to whatever IS populated.
     """
-    text = _empty_state_text(active_filter="short")
+    text = _empty_state_text(active_filter="day")
     assert "Day Trader" in text
     assert "≤24h" in text
-    assert "Swing Traders" in text or "All" in text
+    assert "Swing Traders" in text
+    assert "Position Traders" in text
+    assert "All" in text
 
 
-def test_empty_state_text_for_long_mentions_swing_traders() -> None:
-    text = _empty_state_text(active_filter="long")
+def test_empty_state_text_for_swing_mentions_other_three_filters() -> None:
+    text = _empty_state_text(active_filter="swing")
     assert "Swing Trader" in text
-    assert ">24h" in text
-    assert "Day Traders" in text or "All" in text
+    assert "1d-3wk" in text
+    assert "Day Traders" in text
+    assert "Position Traders" in text
+    assert "All" in text
+
+
+def test_empty_state_text_for_position_explains_maturation_window() -> None:
+    """Day-1 reality: zero >3wk resolutions exist yet.
+
+    The position bucket's empty-state is the most-rendered filter-
+    empty path on launch, so its copy gets an extra sentence
+    explaining WHY it's empty (bets take 3+ weeks to mature) — that
+    framing keeps users from reading the gap as a missing feature.
+    """
+    text = _empty_state_text(active_filter="position")
+    assert "Position Trader" in text
+    assert ">3wk" in text
+    # Day-1 framing: explains the structural reason for the empty
+    # bucket, not just "no data yet".
+    assert "3+ weeks" in text or "3 weeks" in text
+    # Nudge points at the three other filters by name.
+    assert "Day Traders" in text
+    assert "Swing Traders" in text
+    assert "All" in text
 
 
 def test_empty_state_text_for_all_is_the_original_copy() -> None:
@@ -1166,13 +1219,19 @@ def test_empty_state_text_for_all_is_the_original_copy() -> None:
     assert "Leaderboard unlocks" in text
 
 
-def test_render_board_empty_short_slice_uses_filtered_copy() -> None:
-    """Empty + filter active → the filter-specific empty state fires."""
+def test_render_board_empty_position_slice_uses_filtered_copy() -> None:
+    """Empty + filter active → the filter-specific empty state fires.
+
+    Uses the ``position`` bucket because that's the realistic
+    day-one path (the user has zero >3wk resolved bets), so this
+    test is also a smoke-check for the load-bearing copy.
+    """
     text = _render_board(
-        {"entries": [], "window": "all_time", "horizon": "short"},
-        active_filter="short",
+        {"entries": [], "window": "all_time", "horizon": "position"},
+        active_filter="position",
     )
-    assert "Day Trader" in text
+    assert "Position Trader" in text
+    assert ">3wk" in text
 
 
 # --- Callback handler round-trip ------------------------------------------
@@ -1223,23 +1282,27 @@ class _FakeContextWithBot:
 
 
 @pytest.mark.parametrize(
-    "callback_data, expected_filter",
+    "callback_data, expected_filter, expected_header_token",
     [
-        (CB_BOARD_FILTER_ALL, "all"),
-        (CB_BOARD_FILTER_SHORT, "short"),
-        (CB_BOARD_FILTER_LONG, "long"),
+        (CB_BOARD_FILTER_ALL, "all", ""),
+        (CB_BOARD_FILTER_DAY, "day", "Day Traders"),
+        (CB_BOARD_FILTER_SWING, "swing", "Swing Traders"),
+        (CB_BOARD_FILTER_POSITION, "position", "Position Traders"),
     ],
 )
 async def test_on_filter_callback_refetches_with_chosen_filter(
     callback_data: str,
     expected_filter: str,
+    expected_header_token: str,
 ) -> None:
     """Tapping a filter button re-fetches /board with the new horizon
     and edits the message in place with the matching keyboard.
 
     Pins the full callback round-trip: parse → fetch → edit. A bug
     in the prefix-strip would either send the wrong filter to the
-    API or fail to find a valid one and bail silently.
+    API or fail to find a valid one and bail silently. Parametrized
+    across the four modes so every callback constant exercises the
+    happy path.
     """
     client = AsyncMock()
     # The API echoes the requested horizon back; the bot trusts the
@@ -1270,21 +1333,23 @@ async def test_on_filter_callback_refetches_with_chosen_filter(
     )
     assert len(query.edited) == 1
     edited_text, edited_kwargs = query.edited[0]
+    first_line = edited_text.splitlines()[0]
     if expected_filter == "all":
-        assert edited_text.splitlines()[0] == "<b>Leaderboard</b>"
-    elif expected_filter == "short":
-        assert "Day Traders" in edited_text.splitlines()[0]
+        assert first_line == "<b>Leaderboard</b>"
     else:
-        assert "Swing Traders" in edited_text.splitlines()[0]
+        assert expected_header_token in first_line
     # The reply keyboard is updated to drop the now-active filter's
-    # button — i.e. the two non-active filters are presented.
+    # button — i.e. the three non-active filters are presented.
     keyboard = edited_kwargs["reply_markup"]
     labels = _kb_labels(keyboard)
-    assert expected_filter not in (
-        "all" if "All" in labels else "",
-        "short" if "Day Traders" in labels else "",
-        "long" if "Swing Traders" in labels else "",
-    )
+    assert len(labels) == 3
+    active_label = {
+        "all": "All",
+        "day": "Day Traders",
+        "swing": "Swing Traders",
+        "position": "Position Traders",
+    }[expected_filter]
+    assert active_label not in labels
 
 
 async def test_on_filter_callback_swallows_message_not_modified() -> None:
@@ -1334,13 +1399,13 @@ async def test_on_filter_callback_falls_back_to_send_message_on_other_badrequest
     client.get_board.return_value = {
         "entries": [_row_entry(rank=1, name="Alice")],
         "window": "all_time",
-        "horizon": "short",
+        "horizon": "day",
     }
     client.get_me.return_value = {
         "display_name": "Alice",
         "calls_resolved_total": 5,
     }
-    query = _FakeQuery(data=CB_BOARD_FILTER_SHORT)
+    query = _FakeQuery(data=CB_BOARD_FILTER_DAY)
     query.edit_side_effect = BadRequest("message can't be edited")
     update = _FakeUpdateWithQuery(
         callback_query=query,
@@ -1385,8 +1450,10 @@ async def test_on_filter_callback_ignores_malformed_callback_data() -> None:
 
 
 def test_build_callback_handler_pattern_matches_each_filter() -> None:
-    """The registered regex must accept all three filter values and
-    reject anything else."""
+    """The registered regex must accept all four filter values and
+    reject anything else — including the renamed-away ``short`` /
+    ``long`` keys so an old client tapping a stale button gets
+    cleanly ignored at the dispatcher layer."""
     import re
 
     handler = build_callback_handler()
@@ -1396,8 +1463,14 @@ def test_build_callback_handler_pattern_matches_each_filter() -> None:
     # ``pattern`` may be a str or a compiled regex; coerce for assertion.
     regex = re.compile(pattern) if isinstance(pattern, str) else pattern
     assert regex.match(CB_BOARD_FILTER_ALL) is not None
-    assert regex.match(CB_BOARD_FILTER_SHORT) is not None
-    assert regex.match(CB_BOARD_FILTER_LONG) is not None
+    assert regex.match(CB_BOARD_FILTER_DAY) is not None
+    assert regex.match(CB_BOARD_FILTER_SWING) is not None
+    assert regex.match(CB_BOARD_FILTER_POSITION) is not None
+    # Regression: legacy callback_data strings from the 2-bucket
+    # ship must be rejected so an old in-flight message is a no-op
+    # rather than firing the handler with an unknown bucket name.
+    assert regex.match("board:filter:short") is None
+    assert regex.match("board:filter:long") is None
     assert regex.match("board:filter:medium") is None
     assert regex.match("history:page:0:0") is None
 
@@ -1488,7 +1561,7 @@ async def test_on_filter_callback_shows_toast_when_fetch_fails() -> None:
         "display_name": "Alice",
         "calls_resolved_total": 5,
     }
-    query = _FakeQuery(data=CB_BOARD_FILTER_SHORT)
+    query = _FakeQuery(data=CB_BOARD_FILTER_DAY)
     update = _FakeUpdateWithQuery(
         callback_query=query,
         effective_user=_FakeUser(id=42),
@@ -1524,13 +1597,13 @@ async def test_on_filter_callback_fallback_skipped_when_no_effective_chat() -> N
     client.get_board.return_value = {
         "entries": [_row_entry(rank=1, name="Alice")],
         "window": "all_time",
-        "horizon": "long",
+        "horizon": "swing",
     }
     client.get_me.return_value = {
         "display_name": "Alice",
         "calls_resolved_total": 5,
     }
-    query = _FakeQuery(data=CB_BOARD_FILTER_LONG)
+    query = _FakeQuery(data=CB_BOARD_FILTER_SWING)
     query.edit_side_effect = BadRequest("message can't be edited")
     update = _FakeUpdateWithQuery(
         callback_query=query,

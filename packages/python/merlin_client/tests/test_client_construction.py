@@ -238,7 +238,7 @@ async def test_get_board_defaults_window_and_horizon_on_the_wire() -> None:
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize("horizon", ["all", "short", "long"])
+@pytest.mark.parametrize("horizon", ["all", "day", "swing", "position"])
 async def test_get_board_threads_horizon_kwarg_into_query_string(
     horizon: str,
 ) -> None:
