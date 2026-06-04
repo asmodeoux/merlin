@@ -26,6 +26,7 @@ from merlin_bot.commands_setup import register_commands
 from merlin_bot.config import Settings
 from merlin_bot.error_handler import handle as on_error
 from merlin_bot.handlers.cancel import cancel_command
+from merlin_bot.middleware.rate_limit import build_handler as build_rate_limit_handler
 from merlin_bot.persistence import build_persistence
 
 if TYPE_CHECKING:
@@ -87,6 +88,15 @@ def build_application(settings: Settings) -> Application:
     )
 
     application: Application = builder.build()
+
+    # Rate-limit TypeHandler runs at ``group=-1`` so PTB evaluates it
+    # before any business handler in group 0. It throttles only the
+    # ``/alpha`` LLM-trigger paths (OpenRouter cost protection); every
+    # other handler — ``/board``, ``/me``, callback buttons, in-flow
+    # text edits — passes through untouched. See
+    # ``merlin_bot.middleware.rate_limit`` for the trigger heuristic
+    # and the Redis-backed bucket logic.
+    application.add_handler(build_rate_limit_handler(), group=-1)
 
     # Register handlers. Stateless ``CommandHandler``s come first so
     # they're reachable from inside any conversation — PTB matches
