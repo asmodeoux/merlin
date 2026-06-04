@@ -29,9 +29,21 @@ def run() -> None:
             port=8080,
             webhook_url=settings.telegram_webhook_url,
             secret_token=settings.telegram_webhook_secret or None,
+            # If the bot crashed and reconnects, drop whatever Telegram
+            # queued in the meantime. Without this, a crash + reconnect
+            # replays the entire backlog — which could include a wave
+            # of /alpha messages from one user that would chew through
+            # the OpenRouter budget all at once, bypassing the inbound
+            # rate limiter that's keyed off live timestamps.
+            drop_pending_updates=True,
         )
     else:
-        application.run_polling()
+        application.run_polling(
+            # Same rationale as the webhook branch above — a crash +
+            # reconnect should not replay queued updates against
+            # OpenRouter / CoinGecko.
+            drop_pending_updates=True,
+        )
 
 
 if __name__ == "__main__":

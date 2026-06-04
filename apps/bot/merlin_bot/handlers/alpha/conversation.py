@@ -27,6 +27,14 @@ from merlin_bot.handlers.alpha import (
 )
 from merlin_bot.handlers.alpha.states import AlphaState
 
+# Seconds of inactivity before an abandoned ``/alpha`` conversation
+# auto-ends. Two minutes is generous for a user picking through the
+# preview/edit flow; it's also short enough that the freeform
+# catch-all entry-point starts firing again on the user's next
+# message (instead of the AWAIT_TEXT handler intercepting whatever
+# they type — which would fire the LLM extractor on stale context).
+ALPHA_CONVERSATION_TIMEOUT_SECONDS = 120
+
 
 def _resolve_cancel_command() -> Any:
     """Late import the shared ``/cancel`` handler.
@@ -131,4 +139,14 @@ def build_handler() -> ConversationHandler:
         fallbacks=[CommandHandler("cancel", _resolve_cancel_command())],
         name="alpha",
         persistent=False,
+        # Auto-end abandoned conversations after a period of
+        # inactivity so a user who hits ``/alpha`` and walks away
+        # doesn't keep their AWAIT_TEXT slot indefinitely. Without
+        # this, every subsequent message they send (a chat in another
+        # context, a typo, anything) gets intercepted by the freeform
+        # handler and fires the LLM extractor on out-of-context input.
+        # PTB's ``conversation_timeout`` requires the JobQueue extra,
+        # which the bot already pulls in via
+        # ``python-telegram-bot[..., job-queue, ...]``.
+        conversation_timeout=ALPHA_CONVERSATION_TIMEOUT_SECONDS,
     )

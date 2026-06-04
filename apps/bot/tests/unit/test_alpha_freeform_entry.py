@@ -49,3 +49,20 @@ def test_welcome_done_text_promises_freeform_entry() -> None:
     # The exact phrasing isn't pinned — just the promise that typing
     # something other than /alpha is supported.
     assert "tell me" in text.lower() or "/alpha" in text.lower()
+
+
+def test_alpha_handler_has_conversation_timeout() -> None:
+    """An abandoned ``/alpha`` (user hits the command, walks away)
+    must auto-end after a bounded period. Without this, the
+    AWAIT_TEXT slot intercepts the user's next message — whatever
+    they type — and fires the LLM extractor on stale, out-of-context
+    input. This burns the OpenRouter budget for no UX benefit."""
+    handler = build_handler()
+    assert handler.conversation_timeout is not None, (
+        "/alpha ConversationHandler must set conversation_timeout so "
+        "abandoned AWAIT_TEXT slots release on their own. See "
+        "ALPHA_CONVERSATION_TIMEOUT_SECONDS in conversation.py."
+    )
+    # 2 min ± reasonable slack — pin the order of magnitude, not the
+    # exact value, so we can tune it without rewriting the test.
+    assert 60 <= handler.conversation_timeout <= 600
