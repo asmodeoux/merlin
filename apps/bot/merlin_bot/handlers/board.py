@@ -48,9 +48,10 @@ from typing import Any
 
 from merlin_client import MerlinClient
 from merlin_client.errors import MerlinHTTPError
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import CommandHandler, ContextTypes
+from telegram.error import BadRequest
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from merlin_bot.api_dependency import BOT_DATA_KEY
 
@@ -76,6 +77,52 @@ _PODIUM_EMOJI: dict[int, str] = {1: "🥇", 2: "🥈", 3: "🥉"}
 # it identically across clients and it doesn't need HTML-escaping.
 _GAP_LINE = "…"
 
+# Horizon-filter inline buttons. Three callback-data constants for the
+# three modes; the regex pattern gates the CallbackQueryHandler so
+# unrelated callbacks never reach ``on_filter_callback``. Plain
+# prefix-string callback_data per the in-tree convention (alpha steps,
+# history pagination) — typed CallbackData would require enabling
+# ``arbitrary_callback_data`` on the ApplicationBuilder, out of scope.
+CB_BOARD_FILTER_ALL = "board:filter:all"
+CB_BOARD_FILTER_SHORT = "board:filter:short"
+CB_BOARD_FILTER_LONG = "board:filter:long"
+_BOARD_FILTER_CB_PREFIX = "board:filter:"
+_BOARD_FILTER_PATTERN = r"^board:filter:(all|short|long)$"
+
+# Three-mode filter the bot exposes. The wire value (``"all"`` /
+# ``"short"`` / ``"long"``) is what we pass to ``client.get_board``
+# and what comes back on ``BoardResponse.horizon``. Mirrored here as
+# a frozenset for in-handler validation; ``contracts.board.HorizonFilter``
+# is the canonical Literal but lives behind the contract import.
+_VALID_FILTERS: frozenset[str] = frozenset({"all", "short", "long"})
+
+# Human labels for each filter — used in both the inline-button text
+# and the rendered message-header suffix. The "≤24h" / ">24h"
+# disclosure on the header keeps the segmentation honest (the button
+# itself stays short; the header line carries the precise threshold).
+_FILTER_BUTTON_LABEL: dict[str, str] = {
+    "all": "All",
+    "short": "Day Traders",
+    "long": "Swing Traders",
+}
+_FILTER_HEADER_SUFFIX: dict[str, str] = {
+    "all": "",
+    "short": " · Day Traders (≤24h)",
+    "long": " · Swing Traders (>24h)",
+}
+_FILTER_CALLBACK_DATA: dict[str, str] = {
+    "all": CB_BOARD_FILTER_ALL,
+    "short": CB_BOARD_FILTER_SHORT,
+    "long": CB_BOARD_FILTER_LONG,
+}
+
+# Substring Telegram returns when ``edit_message_text`` is called with
+# the same content as the existing message. Tapping the currently-active
+# filter button is technically impossible (we hide it), but a fast
+# double-tap on a different filter can race into this state — swallow
+# it silently rather than letting the spinner hang.
+_NOT_MODIFIED_SUBSTRING = "message is not modified"
+
 
 async def board_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """``GET /board`` (+ ``GET /me``) and reply with the rendered top-N.
@@ -83,6 +130,11 @@ async def board_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     /board is the must-have; /me is best-effort because we only use it
     to recognise "this row is the caller, bold it". If /me errors,
     the leaderboard still renders — just without self-highlight.
+
+    Initial render is unfiltered (``horizon="all"``); the user toggles
+    between Day Traders / Swing Traders / All via the inline-button
+    row attached below the message. The two-of-three button rule lives
+    in ``_filter_keyboard``.
     """
     if update.message is None or update.effective_user is None:
         return
@@ -90,23 +142,138 @@ async def board_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     client: MerlinClient = context.bot_data[BOT_DATA_KEY]
     tg_user_id = update.effective_user.id
 
-    board_task = asyncio.create_task(client.get_board(window="all_time"))
+    text, keyboard = await _fetch_and_render(
+        client,
+        tg_user_id=tg_user_id,
+        active_filter="all",
+    )
+    if text is None:
+        await update.message.reply_text(_temporary_error_text())
+        return
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def on_filter_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Re-render ``/board`` in place for the tapped horizon filter.
+
+    The regex ``pattern`` on the registered ``CallbackQueryHandler``
+    guarantees ``query.data`` matches ``board:filter:(all|short|long)``;
+    we defensively validate anyway so a future regex bug fails closed
+    rather than silently passing an unknown value to the API.
+
+    Mirrors the edit-in-place semantics of
+    ``handlers/alpha/ui.py::render`` and ``handlers/history.py::
+    on_page_callback``: ``query.edit_message_text`` with a
+    "message is not modified" swallow + a ``send_message`` fallback
+    when the original message is too old to edit (Telegram drops
+    edit rights after 48h).
+    """
+    query = update.callback_query
+    if query is None or query.data is None or update.effective_user is None:
+        return
+
+    new_filter = query.data.removeprefix(_BOARD_FILTER_CB_PREFIX)
+    if new_filter not in _VALID_FILTERS:
+        _log.warning("board filter callback got unexpected data: %r", query.data)
+        # Still clear the spinner so the button doesn't hang for 30s.
+        await query.answer()
+        return
+
+    client: MerlinClient = context.bot_data[BOT_DATA_KEY]
+    tg_user_id = update.effective_user.id
+
+    text, keyboard = await _fetch_and_render(
+        client,
+        tg_user_id=tg_user_id,
+        active_filter=new_filter,
+    )
+    if text is None:
+        # Re-fetch failed — leave the existing message intact rather
+        # than wiping it for a temporary outage. The toast is the
+        # ONLY ``query.answer`` call on this path: Telegram only
+        # honours one ``answerCallbackQuery`` per query, and a
+        # bare ``query.answer()`` earlier would silently swallow
+        # the toast we want the user to see.
+        await query.answer(
+            text="Couldn't refresh — try again in a moment.",
+            show_alert=False,
+        )
+        return
+
+    # Clear the spinner now that we have something to render. Done
+    # before ``edit_message_text`` so the spinner clears even if the
+    # edit raises (the user's tap should always feel responsive).
+    await query.answer()
+
+    try:
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+    except BadRequest as e:
+        if _NOT_MODIFIED_SUBSTRING in str(e).lower():
+            return
+        _log.warning(
+            "board filter edit_message_text fell back to send_message: %s",
+            e,
+        )
+        if update.effective_chat is not None:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+
+
+def build_handler() -> CommandHandler:
+    """Wire the ``/board`` CommandHandler."""
+    return CommandHandler("board", board_command)
+
+
+def build_callback_handler() -> CallbackQueryHandler:
+    """Wire the inline-button handler for the horizon-filter row."""
+    return CallbackQueryHandler(on_filter_callback, pattern=_BOARD_FILTER_PATTERN)
+
+
+async def _fetch_and_render(
+    client: MerlinClient,
+    *,
+    tg_user_id: int,
+    active_filter: str,
+) -> tuple[str | None, InlineKeyboardMarkup | None]:
+    """Run the parallel ``/board`` + ``/me`` fetch and render the reply.
+
+    Returns ``(None, None)`` on a board-fetch error (the caller renders
+    a temporary-error message); a populated ``(text, keyboard)`` pair
+    on success — including the empty-state path. The keyboard is
+    always the two-non-active filter buttons so users can switch
+    filters even when the active slice is empty.
+    """
+    board_task = asyncio.create_task(
+        client.get_board(window="all_time", horizon=active_filter),
+    )
     me_task = asyncio.create_task(client.get_me(tg_user_id=tg_user_id))
 
     try:
         board_payload = await board_task
     except MerlinHTTPError as e:
         _log.warning("get_board failed: %s", e)
-        await update.message.reply_text(_temporary_error_text())
-        # Drain the /me future so we don't leak an "Exception was
-        # never retrieved" warning into the worker logs.
         me_task.cancel()
-        return
+        return None, None
     except Exception as e:
         _log.warning("get_board transport error: %s", e)
-        await update.message.reply_text(_temporary_error_text())
         me_task.cancel()
-        return
+        return None, None
 
     self_display_name: str | None = None
     self_resolved_total: int = 0
@@ -126,19 +293,54 @@ async def board_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except (TypeError, ValueError):
             self_resolved_total = 0
 
-    await update.message.reply_text(
-        _render_board(
-            board_payload,
-            self_display_name=self_display_name,
-            self_resolved_total=self_resolved_total,
-        ),
-        parse_mode=ParseMode.HTML,
+    # Trust the server's echo over the requested filter so the
+    # rendered header always matches the slice the user is seeing —
+    # a stale-deploy mismatch shows the truth, not the request.
+    rendered_filter = _coerce_filter(board_payload.get("horizon"), active_filter)
+
+    text = _render_board(
+        board_payload,
+        self_display_name=self_display_name,
+        self_resolved_total=self_resolved_total,
+        active_filter=rendered_filter,
     )
+    keyboard = _filter_keyboard(rendered_filter)
+    return text, keyboard
 
 
-def build_handler() -> CommandHandler:
-    """Wire the ``/board`` CommandHandler."""
-    return CommandHandler("board", board_command)
+def _coerce_filter(echoed: object, fallback: str) -> str:
+    """Coerce a wire ``horizon`` echo to one of the three valid modes.
+
+    Defensive: ``BoardResponse.horizon`` is typed as a ``Literal`` on
+    the server, but a mid-deploy old API could omit the field. We
+    fall back to the requested filter when the server's echo is
+    missing or unknown so the rendered header stays sensible.
+    """
+    if isinstance(echoed, str) and echoed in _VALID_FILTERS:
+        return echoed
+    return fallback if fallback in _VALID_FILTERS else "all"
+
+
+def _filter_keyboard(active_filter: str) -> InlineKeyboardMarkup:
+    """Build the two-button row for the horizon filter.
+
+    Per the "3 modes, 2 buttons" rule: the active filter is implicit
+    in the message header text, so the inline row shows the two
+    *non-active* filters. Every tap therefore switches to a different
+    view — no "tap the selected one and nothing happens" UX surprise.
+    Order is stable (``all`` first when present, then ``short``,
+    then ``long``) so the buttons don't jump around between renders.
+    """
+    order = ("all", "short", "long")
+    row = [
+        InlineKeyboardButton(
+            _FILTER_BUTTON_LABEL[mode],
+            callback_data=_FILTER_CALLBACK_DATA[mode],
+        )
+        for mode in order
+        if mode != active_filter
+    ]
+    return InlineKeyboardMarkup([row])
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +353,7 @@ def _render_board(
     *,
     self_display_name: str | None = None,
     self_resolved_total: int = 0,
+    active_filter: str = "all",
 ) -> str:
     """Compose the ``/board`` reply text (HTML).
 
@@ -173,14 +376,21 @@ def _render_board(
 
     A footer demystifies the ranking method in one line so users
     don't wonder why a +10% one-shot ranks mid-pack.
+
+    ``active_filter`` controls the header-line suffix ("Leaderboard
+    · Day Traders (≤24h)" / "· Swing Traders (>24h)") and is also
+    passed through to the empty-state branch so users see WHICH
+    slice is empty rather than wondering whether the whole product
+    has no data.
     """
     entries = payload.get("entries") or []
     if not entries:
-        return _empty_state_text()
+        return _empty_state_text(active_filter=active_filter)
 
     top_entries = entries[:LEADERBOARD_LIMIT]
 
-    lines = ["<b>Leaderboard</b>"]
+    header_suffix = _FILTER_HEADER_SUFFIX.get(active_filter, "")
+    lines = [f"<b>Leaderboard</b>{header_suffix}"]
     for entry in top_entries:
         lines.append(_render_row(entry, self_display_name=self_display_name))
 
@@ -372,14 +582,32 @@ def _format_calls_chunk(resolved: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _empty_state_text() -> str:
-    """Empty-state copy for when no source has resolved a call yet.
+def _empty_state_text(*, active_filter: str = "all") -> str:
+    """Empty-state copy for when the requested slice has no resolutions.
 
     Frames the gap as a product choice ("unlocks after the first
     resolutions") rather than a missing feature. Avoids version
     markers, internal scoring nouns, and any "soon" / "coming soon"
     language that ages badly.
+
+    Filter-aware: a populated "All" board paired with an empty
+    ``short`` / ``long`` slice is the realistic state on day one
+    (and the whole reason the ``/board`` redesign got buttons), so
+    the empty-state for a filtered view tells the user WHICH slice
+    is empty and nudges them to switch.
     """
+    if active_filter == "short":
+        return (
+            "No Day Trader resolutions yet (≤24h horizon).\n"
+            "\n"
+            "Tap Swing Traders or All to see the populated boards."
+        )
+    if active_filter == "long":
+        return (
+            "No Swing Trader resolutions yet (>24h horizon).\n"
+            "\n"
+            "Tap Day Traders or All to see the populated boards."
+        )
     return (
         "Leaderboard unlocks after the first resolutions.\n"
         "\n"

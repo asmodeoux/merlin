@@ -273,9 +273,24 @@ class MerlinClient:
     # -----------------------------------------------------------------------
     # Board
     # -----------------------------------------------------------------------
-    async def get_board(self, *, window: str = "all_time") -> dict[str, Any]:
-        """``GET /board`` — leaderboard for the window."""
-        return await self._get("/board", params={"window": window})
+    async def get_board(
+        self,
+        *,
+        window: str = "all_time",
+        horizon: str = "all",
+    ) -> dict[str, Any]:
+        """``GET /board`` — leaderboard for the window + horizon filter.
+
+        ``horizon`` is the three-mode "Day Traders" / "Swing Traders"
+        knob exposed by the bot's inline-button row. Accepted values:
+        ``"all"`` (default — pre-aggregated snapshot read), ``"short"``
+        (≤24h bets only), ``"long"`` (>24h bets only). The API rejects
+        anything else with a 422.
+        """
+        return await self._get(
+            "/board",
+            params={"window": window, "horizon": horizon},
+        )
 
     # -----------------------------------------------------------------------
     # Assets (Q-027 lazy resolution)

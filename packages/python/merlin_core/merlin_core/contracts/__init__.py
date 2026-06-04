@@ -16,7 +16,12 @@ from merlin_core.contracts.assets import (
     AssetSearchResponse,
     ResolveAssetRequest,
 )
-from merlin_core.contracts.board import BoardEntry, BoardResponse, MeResponse
+from merlin_core.contracts.board import (
+    BoardEntry,
+    BoardResponse,
+    HorizonFilter,
+    MeResponse,
+)
 from merlin_core.contracts.claims import (
     ClaimDraftRequest,
     ClaimDraftResponse,
@@ -30,6 +35,7 @@ from merlin_core.contracts.horizons import (
     HORIZON_MAX_SECONDS,
     HORIZON_MIN_SECONDS,
     HORIZON_QUICK_PICKS,
+    HORIZON_SHORT_TERM_MAX_SECONDS,
     HorizonParseError,
     HorizonRangeError,
     horizon_to_timedelta,
@@ -56,6 +62,7 @@ __all__ = [
     "HORIZON_MAX_SECONDS",
     "HORIZON_MIN_SECONDS",
     "HORIZON_QUICK_PICKS",
+    "HORIZON_SHORT_TERM_MAX_SECONDS",
     "AdminBootstrapRequest",
     "AdminBootstrapResponse",
     "AssetCandidateDTO",
@@ -71,6 +78,7 @@ __all__ = [
     "ExtractedFieldsDTO",
     "HistoryEntry",
     "HistoryResponse",
+    "HorizonFilter",
     "HorizonParseError",
     "HorizonRangeError",
     "MeResponse",

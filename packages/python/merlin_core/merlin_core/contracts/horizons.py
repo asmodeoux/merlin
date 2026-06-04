@@ -25,6 +25,20 @@ from datetime import timedelta
 HORIZON_MIN_SECONDS: int = 3_600  # 1 hour
 HORIZON_MAX_SECONDS: int = 7_776_000  # 90 days
 
+# Segmentation boundary for the ``/board`` "Day Traders" vs
+# "Swing Traders" filter. A claim with ``horizon_seconds <=
+# HORIZON_SHORT_TERM_MAX_SECONDS`` is classified as short-term
+# ("Day Traders" = intraday by the SEC PDT convention); anything
+# strictly greater is long-term ("Swing Traders"). Public because
+# the leaderboard repo + bot rendering both import it; deliberately
+# distinct from the private ``_HOURS_TO_DAYS_THRESHOLD_HOURS``
+# above, which is a humaniser display threshold (hours-vs-days
+# rendering at 48h), NOT a domain segmentation rule. Widening this
+# to 48h (172_800) is a one-line change with no migration thanks
+# to the on-the-fly leaderboard slice in
+# ``SourceReputationRepository.leaderboard``.
+HORIZON_SHORT_TERM_MAX_SECONDS: int = 86_400  # 24 hours
+
 # Unit boundaries used by ``humanise_horizon`` to pick the cleanest
 # representation. Named here so the comparisons read intentionally
 # (``HOURS_TO_DAYS_THRESHOLD_HOURS`` rather than a bare ``48``) and

@@ -32,9 +32,15 @@ TEST_TOKEN = "test-internal-token"
 class _FakeReputationRepo:
     leaderboard_rows: list[LeaderboardEntry] = field(default_factory=list)
     window_calls: list[str] = field(default_factory=list)
+    horizon_calls: list[str] = field(default_factory=list)
 
-    async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
+    async def leaderboard(
+        self,
+        window: str,
+        horizon: str = "all",
+    ) -> list[LeaderboardEntry]:
         self.window_calls.append(window)
+        self.horizon_calls.append(horizon)
         return list(self.leaderboard_rows)
 
 
@@ -143,6 +149,73 @@ async def test_get_board_rejects_invalid_window(
         headers=auth_headers,
     )
     assert response.status_code == 422
+
+
+async def test_get_board_defaults_horizon_to_all(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Pre-filter clients still call ``/board`` → horizon defaults to ``"all"``.
+
+    Pins that the new query param is genuinely optional — a stale
+    bot release that knows nothing about horizons must keep working.
+    """
+    response = await client.get("/board", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["horizon"] == "all"
+    assert fake_session.reputation.horizon_calls == ["all"]
+
+
+@pytest.mark.parametrize("horizon", ["all", "short", "long"])
+async def test_get_board_passes_horizon_param_to_repo_and_echoes_it(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    horizon: str,
+) -> None:
+    """``horizon`` round-trips end-to-end.
+
+    The repo receives the bot's choice (so the SQL slice can run);
+    the response echoes it back (so the bot can render the active
+    filter in the header).
+    """
+    response = await client.get(
+        "/board",
+        params={"horizon": horizon},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["horizon"] == horizon
+    assert fake_session.reputation.horizon_calls == [horizon]
+
+
+@pytest.mark.parametrize(
+    "bad_horizon",
+    ["medium", "ALL", "24h", "intraday", "long_term", ""],
+)
+async def test_get_board_rejects_invalid_horizon(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    bad_horizon: str,
+) -> None:
+    """FastAPI's regex must catch a malformed ``horizon`` before the repo.
+
+    Equivalently: a typo / hostile client can never smuggle an
+    unknown bucket through to the SQL layer.
+    """
+    response = await client.get(
+        "/board",
+        params={"horizon": bad_horizon},
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    # The repo was never reached — confirms the regex gates the param
+    # before the dependency-injected fake gets a turn.
+    assert fake_session.reputation.horizon_calls == []
 
 
 async def test_get_board_renders_populated_entries(

@@ -8,11 +8,18 @@ rules in the bot-flow plan.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from merlin_core.contracts.horizons import HORIZON_MAX_SECONDS, HORIZON_MIN_SECONDS
+
+# Three-mode horizon filter for ``/board``. ``"all"`` mirrors the
+# pre-filter snapshot read; ``"short"`` / ``"long"`` slice by
+# ``HORIZON_SHORT_TERM_MAX_SECONDS`` (≤24h / >24h) and the bot
+# surfaces them as "Day Traders" / "Swing Traders".
+HorizonFilter = Literal["all", "short", "long"]
 
 
 class BoardEntry(BaseModel):
@@ -43,10 +50,18 @@ class BoardEntry(BaseModel):
 
 
 class BoardResponse(BaseModel):
-    """``GET /board`` response."""
+    """``GET /board`` response.
+
+    ``horizon`` echoes the requested filter so the bot can render the
+    active filter in the message header (``"Day Traders (≤24h)"`` /
+    ``"Swing Traders (>24h)"``) and decide which two of the three
+    inline buttons to surface (the active one is hidden — it's
+    already implicit in the header text).
+    """
 
     entries: list[BoardEntry] = Field(default_factory=list)
     window: str = "all_time"
+    horizon: HorizonFilter = "all"
 
 
 class OpenCallEntry(BaseModel):

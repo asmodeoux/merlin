@@ -191,7 +191,7 @@
         "type": "object"
       },
       "BoardResponse": {
-        "description": "``GET /board`` response.",
+        "description": "``GET /board`` response.\n\n``horizon`` echoes the requested filter so the bot can render the\nactive filter in the message header (``\"Day Traders (\u226424h)\"`` /\n``\"Swing Traders (>24h)\"``) and decide which two of the three\ninline buttons to surface (the active one is hidden \u2014 it's\nalready implicit in the header text).",
         "properties": {
           "entries": {
             "items": {
@@ -199,6 +199,16 @@
             },
             "title": "Entries",
             "type": "array"
+          },
+          "horizon": {
+            "default": "all",
+            "enum": [
+              "all",
+              "short",
+              "long"
+            ],
+            "title": "Horizon",
+            "type": "string"
           },
           "window": {
             "default": "all_time",
@@ -1324,6 +1334,19 @@
               "default": "all_time",
               "pattern": "^(all_time|30d|7d)$",
               "title": "Window",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Three-mode horizon filter the bot surfaces as 'Day Traders' (<=24h), 'Swing Traders' (>24h), and 'All'. The boundary is HORIZON_SHORT_TERM_MAX_SECONDS in merlin_core.contracts.horizons. 'all' reads the pre-aggregated snapshot table; 'short' / 'long' recompute on-the-fly so the snapshot table stays horizon-agnostic.",
+            "in": "query",
+            "name": "horizon",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "description": "Three-mode horizon filter the bot surfaces as 'Day Traders' (<=24h), 'Swing Traders' (>24h), and 'All'. The boundary is HORIZON_SHORT_TERM_MAX_SECONDS in merlin_core.contracts.horizons. 'all' reads the pre-aggregated snapshot table; 'short' / 'long' recompute on-the-fly so the snapshot table stays horizon-agnostic.",
+              "pattern": "^(all|short|long)$",
+              "title": "Horizon",
               "type": "string"
             }
           },

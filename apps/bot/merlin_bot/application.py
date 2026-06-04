@@ -100,6 +100,9 @@ def build_application(settings: Settings) -> Application:
     # follow.
     from merlin_bot.handlers.admin import build_invite_handler, build_revoke_handler
     from merlin_bot.handlers.alpha import build_handler as build_alpha_handler
+    from merlin_bot.handlers.board import (
+        build_callback_handler as build_board_callback_handler,
+    )
     from merlin_bot.handlers.board import build_handler as build_board_handler
     from merlin_bot.handlers.help import build_handler as build_help_handler
     from merlin_bot.handlers.history import (
@@ -115,6 +118,7 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(build_revoke_handler())
     application.add_handler(build_me_handler())
     application.add_handler(build_board_handler())
+    application.add_handler(build_board_callback_handler())
     application.add_handler(build_tickers_handler())
     application.add_handler(build_history_handler())
     application.add_handler(build_history_callback_handler())

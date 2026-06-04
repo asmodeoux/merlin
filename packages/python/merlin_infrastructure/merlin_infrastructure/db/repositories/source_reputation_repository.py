@@ -11,6 +11,7 @@ attempts at the DB layer too.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -20,12 +21,53 @@ from merlin_core.application.ports import (
     SourceReputationRecord,
     SourceReputationRepositoryPort,
 )
+from merlin_core.contracts.horizons import HORIZON_SHORT_TERM_MAX_SECONDS
+from merlin_core.domain.scoring import (
+    accuracy_pct as compute_accuracy_pct,
+)
+from merlin_core.domain.scoring import (
+    conviction_weight,
+    directional_return_pct,
+    shrunk_sort_score,
+    weighted_mean_pnl_pct,
+)
 from sqlalchemy import desc, func, select
 
-from merlin_infrastructure.db.models import Source, SourceReputationHistory
+from merlin_infrastructure.db.models import (
+    Claim,
+    Outcome,
+    Source,
+    SourceReputationHistory,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+# Three-mode horizon filter accepted by ``leaderboard``. Mirrors the
+# wire-level ``HorizonFilter`` Literal in ``merlin_core.contracts.board``
+# but kept as a plain frozenset so this adapter stays import-free of
+# ``contracts.board``. The port doc-string promises rejection of
+# anything outside this set.
+_VALID_HORIZONS: frozenset[str] = frozenset({"all", "short", "long"})
+
+
+@dataclass(slots=True)
+class _SourceFold:
+    """Mutable fold-bucket for the on-the-fly horizon slice.
+
+    One bucket per ``source_id`` while we walk the joined
+    ``outcomes`` ⋈ ``claims`` rows. The lists stay in lock-step
+    (``directions[i]`` / ``convictions[i]`` / ``returns[i]`` belong
+    to the same outcome) so the downstream scoring fold can pair
+    them via ``zip(..., strict=True)``.
+    """
+
+    display_name: str | None
+    directions: list[str] = field(default_factory=list)
+    convictions: list[str] = field(default_factory=list)
+    returns: list[float] = field(default_factory=list)
+    correct_count: int = 0
+    last_call_at: datetime | None = None
 
 
 def _to_record(row: SourceReputationHistory) -> SourceReputationRecord:
@@ -94,33 +136,71 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
             return None
         return _to_record(row)
 
-    async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
+    async def leaderboard(
+        self,
+        window: str,
+        horizon: str = "all",
+    ) -> list[LeaderboardEntry]:
         """Top sources by latest snapshot's ``sort_score``.
 
         ``window`` is accepted today so the route stays a thin
         pass-through; we ignore it for v0 (no time-window slicing yet).
-        The query reads the *latest* snapshot per source via a
-        correlated subquery + joins ``sources`` for the display name.
-        Cold-start sources (no resolved outcomes) are filtered by
-        ``accuracy_pct IS NOT NULL`` — equivalently, the matching
-        DB CHECK guarantees ``weighted_pnl_pct IS NOT NULL`` and
-        ``outcomes_resolved > 0`` for the same row.
 
-        ORDER BY ``sort_score`` DESC is the locked ranking key
-        (Bayesian-shrunk PnL). The tiebreaker is
-        ``outcomes_resolved`` DESC so equally-ranked sources with
-        more bets surface first — a track-record bias on the rare
-        exact tie. ``weighted_pnl_pct`` DESC sits below that as a
-        final tiebreaker.
+        ``horizon`` is the three-mode "Day Traders" / "Swing Traders"
+        filter:
 
-        The display-name fallback is ``"anonymous"`` so the bot never
-        renders a blank line on the leaderboard — sources that haven't
-        set ``display_name`` still show up if they've resolved
-        outcomes. The 40-character cap on ``Source.display_name``
-        means the fallback can never overflow the bot's row width.
+        * ``"all"`` (default) — reads the snapshot table byte-for-byte
+          (the original v0 path). Zero behavior change vs. the
+          pre-filter ``/board``.
+        * ``"short"`` / ``"long"`` — bypasses the snapshot and
+          recomputes per source by joining ``outcomes`` ⋈ ``claims`` ⋈
+          ``sources`` with a ``claims.horizon_seconds <= /
+          > HORIZON_SHORT_TERM_MAX_SECONDS`` predicate, then folding
+          via the same scoring helpers the worker recompute uses
+          (``accuracy_pct``, ``conviction_weight``,
+          ``directional_return_pct``, ``weighted_mean_pnl_pct``,
+          ``shrunk_sort_score``). The snapshot table has no horizon
+          dimension at v0, so a per-request recompute is the cheapest
+          honest answer — and at v0 traffic (~100 claims/day per the
+          recompute job docstring) it's a single round-trip plus
+          in-Python folds.
+
+        Either path:
+
+        * Cold-start / empty-slice sources are dropped — the snapshot
+          path filters by ``accuracy_pct IS NOT NULL``; the filtered
+          path drops sources whose horizon-sliced bet count is zero.
+        * ORDER BY ``sort_score`` DESC is the locked ranking key
+          (Bayesian-shrunk PnL). Tiebreaker is bet-count DESC, then
+          PnL DESC — a track-record bias on exact ties.
+        * The display-name fallback is ``"anonymous"`` so the bot
+          never renders a blank row.
+
+        Raises ``ValueError`` on an unrecognised ``horizon`` value so
+        a bad caller fails loudly rather than silently returning the
+        unfiltered list.
         """
         del window  # v0 reads all-time only — the column wasn't sliced
 
+        if horizon not in _VALID_HORIZONS:
+            raise ValueError(
+                f"unknown horizon filter: {horizon!r}; expected one of {sorted(_VALID_HORIZONS)}",
+            )
+
+        if horizon == "all":
+            return await self._leaderboard_from_snapshots()
+        return await self._leaderboard_by_horizon(horizon)
+
+    async def _leaderboard_from_snapshots(self) -> list[LeaderboardEntry]:
+        """All-time leaderboard from ``source_reputation_history``.
+
+        The original v0 path: latest snapshot per source via a
+        correlated subquery, joined to ``sources`` for the display
+        name. Cold-start sources are filtered by
+        ``accuracy_pct IS NOT NULL`` — equivalently, the matching
+        DB CHECK guarantees ``weighted_pnl_pct IS NOT NULL`` and
+        ``outcomes_resolved > 0`` for the same row.
+        """
         latest_effective = (
             select(
                 SourceReputationHistory.source_id.label("sid"),
@@ -174,3 +254,139 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
                 ),
             )
         return entries
+
+    async def _leaderboard_by_horizon(
+        self,
+        horizon: str,
+    ) -> list[LeaderboardEntry]:
+        """On-the-fly leaderboard for ``horizon in {"short", "long"}``.
+
+        One SELECT joins ``outcomes`` ⋈ ``claims`` ⋈ ``sources`` with
+        a horizon-bucket predicate; the per-source fold (accuracy,
+        weighted PnL, shrunk sort score) happens in Python via the
+        shared ``merlin_core.domain.scoring`` helpers. Keeping the
+        per-bet math in one place — the same helpers the worker
+        recompute uses — ensures the filtered leaderboard and the
+        unfiltered one agree on every metric except the horizon slice.
+
+        Only ``status='resolved'`` outcomes count — Q-023
+        ``rejected_asset_mutation`` rows and resolver-failure rows
+        match the ``WHERE`` exclusion the recompute job applies.
+        Sources with zero resolved outcomes in the slice are dropped
+        (parity with the snapshot path's ``accuracy_pct IS NOT NULL``
+        cold-start cutoff).
+
+        The ``last_call_at`` projected on each entry is the most
+        recent ``resolved_at`` for that source *within the
+        horizon-sliced bets* — strictly more informative than the
+        snapshot path's ``effective_at`` (which records when the
+        snapshot was written, not when the last bet landed).
+        """
+        boundary = HORIZON_SHORT_TERM_MAX_SECONDS
+        horizon_predicate = (
+            (Claim.horizon_seconds <= boundary)
+            if horizon == "short"
+            else (Claim.horizon_seconds > boundary)
+        )
+
+        stmt = (
+            select(
+                Outcome.source_id,
+                Source.display_name,
+                Claim.direction,
+                Claim.conviction,
+                Outcome.observed_return_pct,
+                Outcome.is_correct,
+                Outcome.resolved_at,
+            )
+            .join(Claim, Claim.id == Outcome.claim_id)
+            .join(Source, Source.source_id == Outcome.source_id)
+            .where(
+                Outcome.status == "resolved",
+                horizon_predicate,
+            )
+        )
+
+        result = await self._session.execute(stmt)
+        rows = result.all()
+
+        # Fold each joined outcome row into its source's bucket. The
+        # CHECK constraints make ``observed_return_pct`` / ``is_correct``
+        # non-NULL on resolved rows; the ``or 0.0`` and ``bool(...)``
+        # casts mirror ``OutcomeRepository.fetch_resolved_for_reputation``
+        # so a future schema relaxation can't silently feed a None into
+        # the scoring pipeline.
+        per_source: dict[str, _SourceFold] = {}
+        for row in rows:
+            sid = str(row.source_id)
+            bucket = per_source.get(sid)
+            if bucket is None:
+                bucket = _SourceFold(display_name=row.display_name)
+                per_source[sid] = bucket
+            bucket.directions.append(str(row.direction))
+            bucket.convictions.append(str(row.conviction))
+            bucket.returns.append(float(row.observed_return_pct or 0.0))
+            if bool(row.is_correct):
+                bucket.correct_count += 1
+            if bucket.last_call_at is None or row.resolved_at > bucket.last_call_at:
+                bucket.last_call_at = row.resolved_at
+
+        # Score each source with the same helpers the worker recompute
+        # uses. Sort key triple mirrors the snapshot path:
+        # ``sort_score`` DESC, ``resolved`` DESC, ``pnl_pct`` DESC.
+        scored: list[tuple[float, int, float, LeaderboardEntry]] = []
+        for bucket in per_source.values():
+            resolved = len(bucket.returns)
+            if resolved == 0:  # pragma: no cover
+                # Structurally unreachable: a bucket only enters
+                # ``per_source`` after the row-loop above appends at
+                # least one ``return``. The guard documents the
+                # invariant and protects against a future refactor
+                # that decouples bucket creation from the append.
+                continue
+            accuracy = compute_accuracy_pct(bucket.correct_count, resolved)
+            weights = [conviction_weight(c) for c in bucket.convictions]
+            contributions = [
+                directional_return_pct(d, r) * w
+                for d, r, w in zip(
+                    bucket.directions,
+                    bucket.returns,
+                    weights,
+                    strict=True,
+                )
+            ]
+            pnl_pct = weighted_mean_pnl_pct(contributions, weights)
+            sort_score = shrunk_sort_score(pnl_pct, resolved)
+            if accuracy is None or pnl_pct is None:  # pragma: no cover
+                # Structurally unreachable: ``accuracy_pct`` returns
+                # ``None`` only on zero-resolved (caught above);
+                # ``weighted_mean_pnl_pct`` returns ``None`` only on
+                # empty input or Σ(weights)==0 (impossible while
+                # ``conviction_weight`` floors at 1). Skip rather
+                # than crash if a future scoring tweak ever lets a
+                # ``None`` slip through.
+                continue
+            entry = LeaderboardEntry(
+                rank=0,  # filled after the sort
+                display_name=bucket.display_name or "anonymous",
+                calls_resolved=resolved,
+                calls_correct=bucket.correct_count,
+                accuracy_pct=float(accuracy),
+                weighted_pnl_pct=float(pnl_pct),
+                last_call_at=bucket.last_call_at,
+            )
+            scored.append((sort_score, resolved, float(pnl_pct), entry))
+
+        scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+        return [
+            LeaderboardEntry(
+                rank=rank,
+                display_name=entry.display_name,
+                calls_resolved=entry.calls_resolved,
+                calls_correct=entry.calls_correct,
+                accuracy_pct=entry.accuracy_pct,
+                weighted_pnl_pct=entry.weighted_pnl_pct,
+                last_call_at=entry.last_call_at,
+            )
+            for rank, (_, _, _, entry) in enumerate(scored, start=1)
+        ]

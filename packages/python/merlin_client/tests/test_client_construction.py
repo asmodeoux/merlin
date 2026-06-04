@@ -203,3 +203,61 @@ async def test_get_my_history_threads_as_of_when_provided() -> None:
 
     # httpx URL-encodes the ``:`` as ``%3A`` in the query string.
     assert "as_of=2026-04-28T12%3A00%3A00Z" in captured["query"]
+
+
+@pytest.mark.fast
+async def test_get_board_defaults_window_and_horizon_on_the_wire() -> None:
+    """``get_board()`` with no kwargs sends ``window=all_time&horizon=all``.
+
+    Pins the defaults at the SDK boundary so a future relaxation of
+    the route's regex (or a typo in the kwarg names) doesn't silently
+    skip the param — the bot reads the response's ``horizon`` echo
+    to render the active filter, so a missing send-side value would
+    misrender the header.
+    """
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["query"] = str(request.url.query.decode())
+        return httpx.Response(
+            200,
+            json={"entries": [], "window": "all_time", "horizon": "all"},
+        )
+
+    async with MerlinClient(
+        base_url="http://localhost:8000",
+        token="secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get_board()
+
+    assert captured["path"] == "/board"
+    assert "window=all_time" in captured["query"]
+    assert "horizon=all" in captured["query"]
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("horizon", ["all", "short", "long"])
+async def test_get_board_threads_horizon_kwarg_into_query_string(
+    horizon: str,
+) -> None:
+    """The three documented filter values all reach the server verbatim."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["query"] = str(request.url.query.decode())
+        return httpx.Response(
+            200,
+            json={"entries": [], "window": "all_time", "horizon": horizon},
+        )
+
+    async with MerlinClient(
+        base_url="http://localhost:8000",
+        token="secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.get_board(horizon=horizon)
+
+    assert f"horizon={horizon}" in captured["query"]
+    assert result.get("horizon") == horizon

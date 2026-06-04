@@ -20,14 +20,22 @@ from unittest.mock import AsyncMock
 import pytest
 from merlin_bot.api_dependency import BOT_DATA_KEY
 from merlin_bot.handlers.board import (
+    CB_BOARD_FILTER_ALL,
+    CB_BOARD_FILTER_LONG,
+    CB_BOARD_FILTER_SHORT,
     _empty_state_text,
+    _filter_keyboard,
     _render_board,
     _render_row,
     board_command,
+    build_callback_handler,
     build_handler,
+    on_filter_callback,
 )
 from merlin_client.errors import MerlinHTTPError
-from telegram.ext import CommandHandler
+from telegram import InlineKeyboardMarkup
+from telegram.error import BadRequest
+from telegram.ext import CallbackQueryHandler, CommandHandler
 from telegram.warnings import PTBUserWarning
 
 _ = PTBUserWarning  # re-exported so the type checker keeps the symbol
@@ -788,7 +796,7 @@ async def test_board_command_hits_board_and_me_apis() -> None:
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    client.get_board.assert_awaited_once_with(window="all_time")
+    client.get_board.assert_awaited_once_with(window="all_time", horizon="all")
     client.get_me.assert_awaited_once_with(tg_user_id=12345)
     assert update.message is not None
     body, kwargs = update.message.replies[0]
@@ -796,6 +804,8 @@ async def test_board_command_hits_board_and_me_apis() -> None:
     assert "<b>Alice</b>" in body
     # Parse mode is HTML.
     assert kwargs.get("parse_mode") is not None
+    # The horizon filter keyboard is always attached on first render.
+    assert kwargs.get("reply_markup") is not None
 
 
 async def test_board_command_appends_caller_row_when_outside_top_n() -> None:
@@ -1029,3 +1039,544 @@ def test_board_handler_registered_in_application(
             if isinstance(handler, CommandHandler):
                 commands_registered.update(handler.commands)
     assert "board" in commands_registered
+
+
+# ---------------------------------------------------------------------------
+# Horizon filter — keyboard, header, callback round-trip
+# ---------------------------------------------------------------------------
+
+
+def _kb_labels(keyboard: InlineKeyboardMarkup) -> list[str]:
+    """Flatten a one-row keyboard's button labels for easy assertion."""
+    return [btn.text for row in keyboard.inline_keyboard for btn in row]
+
+
+def _kb_callbacks(keyboard: InlineKeyboardMarkup) -> list[str]:
+    """Flatten a one-row keyboard's callback_data values."""
+    return [str(btn.callback_data) for row in keyboard.inline_keyboard for btn in row]
+
+
+@pytest.mark.parametrize(
+    "active, expected_labels, expected_callbacks",
+    [
+        (
+            "all",
+            ["Day Traders", "Swing Traders"],
+            [CB_BOARD_FILTER_SHORT, CB_BOARD_FILTER_LONG],
+        ),
+        (
+            "short",
+            ["All", "Swing Traders"],
+            [CB_BOARD_FILTER_ALL, CB_BOARD_FILTER_LONG],
+        ),
+        (
+            "long",
+            ["All", "Day Traders"],
+            [CB_BOARD_FILTER_ALL, CB_BOARD_FILTER_SHORT],
+        ),
+    ],
+)
+def test_filter_keyboard_shows_two_non_active_buttons(
+    active: str,
+    expected_labels: list[str],
+    expected_callbacks: list[str],
+) -> None:
+    """3 modes, 2 buttons: the active filter is always omitted.
+
+    Pinned because the entire UX rule lives in this one helper — if
+    the loop ever degrades to "show all three", the active filter
+    would still be tappable and the header text would lie about the
+    current slice.
+    """
+    keyboard = _filter_keyboard(active)
+    assert isinstance(keyboard, InlineKeyboardMarkup)
+    assert _kb_labels(keyboard) == expected_labels
+    assert _kb_callbacks(keyboard) == expected_callbacks
+
+
+def test_filter_keyboard_button_order_is_stable_across_renders() -> None:
+    """Filter-button order doesn't change between renders.
+
+    The two non-active buttons always appear in the canonical
+    ``all → short → long`` order; the active one is dropped from
+    that list. Stable layout avoids the "where did that button go"
+    UX surprise.
+    """
+    # Active "short" → ["All", "Swing Traders"] (all comes before long)
+    kb_short = _filter_keyboard("short")
+    assert _kb_labels(kb_short) == ["All", "Swing Traders"]
+    # Active "long" → ["All", "Day Traders"] (all still first)
+    kb_long = _filter_keyboard("long")
+    assert _kb_labels(kb_long) == ["All", "Day Traders"]
+
+
+@pytest.mark.parametrize(
+    "active, expected_suffix",
+    [
+        ("all", ""),
+        ("short", " · Day Traders (≤24h)"),
+        ("long", " · Swing Traders (>24h)"),
+    ],
+)
+def test_render_board_header_reflects_active_filter(
+    active: str,
+    expected_suffix: str,
+) -> None:
+    """The header line carries the human-readable filter label.
+
+    Pins the "≤24h" / ">24h" disclosure on the header — the buttons
+    themselves stay short, the header tells users the precise
+    boundary so the segmentation is honest.
+    """
+    payload = {
+        "window": "all_time",
+        "horizon": active,
+        "entries": [_row_entry(rank=1, name="Alice")],
+    }
+    text = _render_board(payload, active_filter=active)
+    first_line = text.splitlines()[0]
+    assert first_line == f"<b>Leaderboard</b>{expected_suffix}"
+
+
+def test_empty_state_text_for_short_mentions_day_traders() -> None:
+    """Filtered empty state names the empty slice + nudges to switch.
+
+    A day-1 reality is that the unfiltered board has data but the
+    ≤24h slice is empty (most users place multi-day calls). The
+    empty-state must say WHICH slice is empty so users don't think
+    the whole product broke.
+    """
+    text = _empty_state_text(active_filter="short")
+    assert "Day Trader" in text
+    assert "≤24h" in text
+    assert "Swing Traders" in text or "All" in text
+
+
+def test_empty_state_text_for_long_mentions_swing_traders() -> None:
+    text = _empty_state_text(active_filter="long")
+    assert "Swing Trader" in text
+    assert ">24h" in text
+    assert "Day Traders" in text or "All" in text
+
+
+def test_empty_state_text_for_all_is_the_original_copy() -> None:
+    """Default empty state is unchanged — no regression for clients
+    that never specify a filter."""
+    text = _empty_state_text()
+    assert "Leaderboard unlocks" in text
+
+
+def test_render_board_empty_short_slice_uses_filtered_copy() -> None:
+    """Empty + filter active → the filter-specific empty state fires."""
+    text = _render_board(
+        {"entries": [], "window": "all_time", "horizon": "short"},
+        active_filter="short",
+    )
+    assert "Day Trader" in text
+
+
+# --- Callback handler round-trip ------------------------------------------
+
+
+@dataclass
+class _FakeQuery:
+    data: str
+    answered: list[dict[str, Any]] = field(default_factory=list)
+    edited: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    edit_side_effect: Exception | None = None
+
+    async def answer(self, **kw: Any) -> None:
+        self.answered.append(kw)
+
+    async def edit_message_text(self, text: str, **kw: Any) -> None:
+        if self.edit_side_effect is not None:
+            exc = self.edit_side_effect
+            self.edit_side_effect = None
+            raise exc
+        self.edited.append((text, kw))
+
+
+@dataclass
+class _FakeChat:
+    id: int = 99
+
+
+@dataclass
+class _FakeUpdateWithQuery:
+    callback_query: _FakeQuery | None
+    effective_user: _FakeUser | None = None
+    effective_chat: _FakeChat | None = None
+
+
+@dataclass
+class _FakeBot:
+    sent: list[tuple[int, str, dict[str, Any]]] = field(default_factory=list)
+
+    async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
+        self.sent.append((chat_id, text, kw))
+
+
+@dataclass
+class _FakeContextWithBot:
+    bot_data: dict[str, Any]
+    bot: _FakeBot = field(default_factory=_FakeBot)
+
+
+@pytest.mark.parametrize(
+    "callback_data, expected_filter",
+    [
+        (CB_BOARD_FILTER_ALL, "all"),
+        (CB_BOARD_FILTER_SHORT, "short"),
+        (CB_BOARD_FILTER_LONG, "long"),
+    ],
+)
+async def test_on_filter_callback_refetches_with_chosen_filter(
+    callback_data: str,
+    expected_filter: str,
+) -> None:
+    """Tapping a filter button re-fetches /board with the new horizon
+    and edits the message in place with the matching keyboard.
+
+    Pins the full callback round-trip: parse → fetch → edit. A bug
+    in the prefix-strip would either send the wrong filter to the
+    API or fail to find a valid one and bail silently.
+    """
+    client = AsyncMock()
+    # The API echoes the requested horizon back; the bot trusts the
+    # echo to render the header.
+    client.get_board.return_value = {
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "window": "all_time",
+        "horizon": expected_filter,
+    }
+    client.get_me.return_value = {
+        "display_name": "Alice",
+        "calls_resolved_total": 5,
+    }
+
+    query = _FakeQuery(data=callback_data)
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client})
+
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+
+    client.get_board.assert_awaited_once_with(
+        window="all_time",
+        horizon=expected_filter,
+    )
+    assert len(query.edited) == 1
+    edited_text, edited_kwargs = query.edited[0]
+    if expected_filter == "all":
+        assert edited_text.splitlines()[0] == "<b>Leaderboard</b>"
+    elif expected_filter == "short":
+        assert "Day Traders" in edited_text.splitlines()[0]
+    else:
+        assert "Swing Traders" in edited_text.splitlines()[0]
+    # The reply keyboard is updated to drop the now-active filter's
+    # button — i.e. the two non-active filters are presented.
+    keyboard = edited_kwargs["reply_markup"]
+    labels = _kb_labels(keyboard)
+    assert expected_filter not in (
+        "all" if "All" in labels else "",
+        "short" if "Day Traders" in labels else "",
+        "long" if "Swing Traders" in labels else "",
+    )
+
+
+async def test_on_filter_callback_swallows_message_not_modified() -> None:
+    """A race that lands "message is not modified" must NOT raise.
+
+    Telegram returns this when the new text/keyboard match the
+    existing message exactly. The user's spinner has already cleared
+    via ``query.answer()`` — re-raising would surface a Sentry
+    error for what is fundamentally a no-op.
+    """
+    client = AsyncMock()
+    client.get_board.return_value = {
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "window": "all_time",
+        "horizon": "all",
+    }
+    client.get_me.return_value = {
+        "display_name": "Alice",
+        "calls_resolved_total": 5,
+    }
+    query = _FakeQuery(data=CB_BOARD_FILTER_ALL)
+    query.edit_side_effect = BadRequest("Message is not modified")
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    bot = _FakeBot()
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
+
+    # Must not raise.
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+
+    # And must NOT fall back to send_message — the existing card is
+    # already correct, we just couldn't edit it because it was identical.
+    assert bot.sent == []
+
+
+async def test_on_filter_callback_falls_back_to_send_message_on_other_badrequest() -> None:
+    """Non-"not modified" BadRequest (e.g. message too old) re-sends.
+
+    Telegram drops edit rights after 48h. When that fires we must
+    deliver the user the refreshed board via a new message rather
+    than silently losing the tap.
+    """
+    client = AsyncMock()
+    client.get_board.return_value = {
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "window": "all_time",
+        "horizon": "short",
+    }
+    client.get_me.return_value = {
+        "display_name": "Alice",
+        "calls_resolved_total": 5,
+    }
+    query = _FakeQuery(data=CB_BOARD_FILTER_SHORT)
+    query.edit_side_effect = BadRequest("message can't be edited")
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    bot = _FakeBot()
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
+
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+
+    assert len(bot.sent) == 1
+    sent_chat_id, sent_text, sent_kwargs = bot.sent[0]
+    assert sent_chat_id == 99
+    assert "Day Traders" in sent_text.splitlines()[0]
+    assert sent_kwargs.get("reply_markup") is not None
+
+
+async def test_on_filter_callback_ignores_malformed_callback_data() -> None:
+    """A callback whose data slips past the regex isn't passed to /board.
+
+    Defends against a future regex weakening that lets unrelated
+    callbacks reach this handler — we must never forward an unknown
+    bucket name to the API.
+    """
+    client = AsyncMock()
+    query = _FakeQuery(data="board:filter:medium")
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client})
+
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+
+    # query.answer was still called (spinner cleared) but no API
+    # call and no edit/send.
+    assert query.answered  # spinner cleared
+    client.get_board.assert_not_called()
+    assert query.edited == []
+
+
+def test_build_callback_handler_pattern_matches_each_filter() -> None:
+    """The registered regex must accept all three filter values and
+    reject anything else."""
+    import re
+
+    handler = build_callback_handler()
+    assert isinstance(handler, CallbackQueryHandler)
+    pattern = handler.pattern
+    assert pattern is not None
+    # ``pattern`` may be a str or a compiled regex; coerce for assertion.
+    regex = re.compile(pattern) if isinstance(pattern, str) else pattern
+    assert regex.match(CB_BOARD_FILTER_ALL) is not None
+    assert regex.match(CB_BOARD_FILTER_SHORT) is not None
+    assert regex.match(CB_BOARD_FILTER_LONG) is not None
+    assert regex.match("board:filter:medium") is None
+    assert regex.match("history:page:0:0") is None
+
+
+async def test_on_filter_callback_short_circuits_when_callback_query_missing() -> None:
+    """Defensive: an Update with no ``callback_query`` must return
+    silently — not crash, not call the API, not touch ``query``."""
+    client = AsyncMock()
+    update = _FakeUpdateWithQuery(
+        callback_query=None,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client})
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+    client.get_board.assert_not_called()
+
+
+async def test_on_filter_callback_short_circuits_when_query_data_missing() -> None:
+    """A callback query with ``data=None`` (rare but possible for
+    legacy clients) MUST return silently rather than try to parse
+    the missing payload."""
+    client = AsyncMock()
+    query = _FakeQuery(data=None)  # type: ignore[arg-type]
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client})
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+    client.get_board.assert_not_called()
+    assert query.answered == []  # no spinner to clear when we never engaged
+
+
+async def test_on_filter_callback_short_circuits_when_user_missing() -> None:
+    """``effective_user is None`` (channel posts, inline mode, ...)
+    means we have no ``tg_user_id`` to thread into /me; bail before
+    touching the API."""
+    client = AsyncMock()
+    query = _FakeQuery(data=CB_BOARD_FILTER_ALL)
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=None,
+        effective_chat=_FakeChat(id=99),
+    )
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client})
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+    client.get_board.assert_not_called()
+
+
+async def test_on_filter_callback_malformed_data_clears_spinner() -> None:
+    """A regex-evading callback (defense in depth) must still call
+    ``query.answer()`` so the tap doesn't hang for 30s.
+
+    Pairs with ``test_on_filter_callback_ignores_malformed_callback_data``
+    — that test pins the no-API-call behavior, this one pins the
+    spinner clear. Together they document the malformed-callback
+    contract.
+    """
+    client = AsyncMock()
+    query = _FakeQuery(data="board:filter:medium")
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client})
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+    assert len(query.answered) == 1  # spinner cleared exactly once
+    # The clear is a bare answer() — no toast text — because there's
+    # no user-actionable message for a malformed callback.
+    assert query.answered[0] == {}
+
+
+async def test_on_filter_callback_shows_toast_when_fetch_fails() -> None:
+    """``get_board`` failing during a callback must surface a toast.
+
+    Telegram only honours ONE ``answerCallbackQuery`` per query, so
+    the toast call has to be the only answer call on this path. If
+    the handler ever calls ``answer()`` before the toast, the user
+    will see no feedback and silently retry. We pin both: the
+    message stays intact (no edit, no send) and the toast lands.
+    """
+    client = AsyncMock()
+    client.get_board.side_effect = MerlinHTTPError(503, "down")
+    client.get_me.return_value = {
+        "display_name": "Alice",
+        "calls_resolved_total": 5,
+    }
+    query = _FakeQuery(data=CB_BOARD_FILTER_SHORT)
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=_FakeChat(id=99),
+    )
+    bot = _FakeBot()
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
+
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+
+    # The toast is the ONLY answer call on this path.
+    assert len(query.answered) == 1
+    toast_kwargs = query.answered[0]
+    assert "try again" in (toast_kwargs.get("text") or "").lower()
+    assert toast_kwargs.get("show_alert") is False
+    # Message stays intact — no edit attempt, no fallback send.
+    assert query.edited == []
+    assert bot.sent == []
+
+
+async def test_on_filter_callback_fallback_skipped_when_no_effective_chat() -> None:
+    """The ``send_message`` fallback needs an ``effective_chat`` to
+    target. If PTB hands us an Update without one (extreme edge
+    case — typically only happens for some inline dispatches), we
+    log the failed edit but don't crash on a None chat_id.
+
+    Pins the ``if update.effective_chat is not None`` guard.
+    Without it the bot would raise ``AttributeError: 'NoneType'``
+    and surface as a Sentry error for a corner case that already
+    failed silently from the user's POV (edit raised, no chat).
+    """
+    client = AsyncMock()
+    client.get_board.return_value = {
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "window": "all_time",
+        "horizon": "long",
+    }
+    client.get_me.return_value = {
+        "display_name": "Alice",
+        "calls_resolved_total": 5,
+    }
+    query = _FakeQuery(data=CB_BOARD_FILTER_LONG)
+    query.edit_side_effect = BadRequest("message can't be edited")
+    update = _FakeUpdateWithQuery(
+        callback_query=query,
+        effective_user=_FakeUser(id=42),
+        effective_chat=None,  # ← the branch under test
+    )
+    bot = _FakeBot()
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
+
+    # Must not raise.
+    await on_filter_callback(update, ctx)  # type: ignore[arg-type]
+
+    assert bot.sent == []  # the guard prevented the fallback send
+
+
+@pytest.mark.filterwarnings("ignore::telegram.warnings.PTBUserWarning")
+def test_board_callback_handler_registered_in_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``build_application`` must include the board filter callback.
+
+    Otherwise tapping a filter button would do nothing — the spinner
+    would clear via PTB's default but the bot would never react.
+    """
+    from merlin_bot.application import build_application
+    from merlin_bot.config import Settings
+
+    settings = Settings(
+        telegram_bot_token="test-token",
+        merlin_api_base_url="http://test",
+        merlin_api_internal_token="test-token",
+    )
+    monkeypatch.setattr(
+        "merlin_bot.api_dependency.attach_client",
+        lambda *_a, **_kw: None,
+    )
+    application = build_application(settings)
+    patterns: list[str] = []
+    for group in application.handlers.values():
+        for handler in group:
+            if isinstance(handler, CallbackQueryHandler):
+                pattern = handler.pattern
+                if pattern is not None:
+                    patterns.append(
+                        pattern if isinstance(pattern, str) else pattern.pattern,
+                    )
+    assert any(
+        "board:filter:" in p for p in patterns
+    ), f"board filter CallbackQueryHandler not registered; saw {patterns}"

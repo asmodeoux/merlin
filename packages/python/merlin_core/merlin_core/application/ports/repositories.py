@@ -760,7 +760,11 @@ class SourceReputationRepositoryPort(Protocol):
         """
         ...
 
-    async def leaderboard(self, window: str) -> list[LeaderboardEntry]:
+    async def leaderboard(
+        self,
+        window: str,
+        horizon: str = "all",
+    ) -> list[LeaderboardEntry]:
         """Top sources by latest snapshot's ``sort_score``.
 
         ``window`` is accepted for forward compatibility; v0 ignores it
@@ -769,5 +773,18 @@ class SourceReputationRepositoryPort(Protocol):
         omitted (their ``accuracy_pct`` and ``weighted_pnl_pct`` are
         NULL). Ranking key is ``sort_score`` (Bayesian-shrunk PnL),
         NOT the raw hit rate — locked by the design conversation.
+
+        ``horizon`` is the three-mode "Day Traders" / "Swing Traders"
+        filter (``"all"`` / ``"short"`` / ``"long"``). ``"all"``
+        reads the snapshot table byte-for-byte (zero behavior change
+        vs. pre-filter ``/board``). ``"short"`` and ``"long"``
+        bypass the snapshot and recompute on-the-fly by joining
+        ``outcomes`` + ``claims`` and filtering on
+        ``claims.horizon_seconds`` against
+        ``HORIZON_SHORT_TERM_MAX_SECONDS`` — the snapshot table has
+        no horizon dimension at v0. ``str`` (not the ``Literal``)
+        so the port stays stdlib + typing-only; callers should pass
+        ``"all" | "short" | "long"`` and the adapter rejects anything
+        else.
         """
         ...

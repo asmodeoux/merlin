@@ -27,6 +27,7 @@ from merlin_core.contracts.horizons import (
     HORIZON_MAX_SECONDS,
     HORIZON_MIN_SECONDS,
     HORIZON_QUICK_PICKS,
+    HORIZON_SHORT_TERM_MAX_SECONDS,
     HorizonParseError,
     HorizonRangeError,
     horizon_to_timedelta,
@@ -44,6 +45,22 @@ def test_min_is_one_hour() -> None:
 
 def test_max_is_ninety_days() -> None:
     assert HORIZON_MAX_SECONDS == 90 * 86_400
+
+
+def test_short_term_boundary_is_24_hours() -> None:
+    """The ``/board`` "Day Traders" cutoff is exactly 24h in seconds.
+
+    Pinned here so a future reviewer thinking of widening it sees
+    the deliberate canonical-day-trader choice (and not a 48h
+    accidental match to ``_HOURS_TO_DAYS_THRESHOLD_HOURS``).
+    """
+    assert HORIZON_SHORT_TERM_MAX_SECONDS == 86_400
+    assert HORIZON_SHORT_TERM_MAX_SECONDS == 24 * 3_600
+
+
+def test_short_term_boundary_lies_within_horizon_range() -> None:
+    """Sanity: the segmentation boundary is a legal horizon value."""
+    assert HORIZON_MIN_SECONDS <= HORIZON_SHORT_TERM_MAX_SECONDS <= HORIZON_MAX_SECONDS
 
 
 def test_quick_picks_are_all_inside_range_and_sorted() -> None:

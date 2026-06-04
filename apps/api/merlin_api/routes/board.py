@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Depends, Query
 from merlin_core.contracts import BoardEntry, BoardResponse
+from merlin_core.contracts.board import HorizonFilter
 
 from merlin_api.deps import get_session
 
@@ -29,21 +30,38 @@ router = APIRouter(tags=["board"])
 )
 async def get_board(
     window: str = Query(default="all_time", pattern="^(all_time|30d|7d)$"),
+    horizon: str = Query(
+        default="all",
+        pattern="^(all|short|long)$",
+        description=(
+            "Three-mode horizon filter the bot surfaces as 'Day Traders' "
+            "(<=24h), 'Swing Traders' (>24h), and 'All'. The boundary is "
+            "HORIZON_SHORT_TERM_MAX_SECONDS in merlin_core.contracts.horizons. "
+            "'all' reads the pre-aggregated snapshot table; 'short' / 'long' "
+            "recompute on-the-fly so the snapshot table stays horizon-agnostic."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> BoardResponse:
-    """Return the leaderboard for the requested window.
+    """Return the leaderboard for the requested window + horizon filter.
 
     Thin pass-through over ``SourceReputationRepository.leaderboard``,
-    which already filters cold-start sources and orders by the
-    Bayesian-shrunk sort score. The route maps the repository's
-    ``LeaderboardEntry`` records to ``BoardEntry`` wire DTOs 1:1.
+    which already filters cold-start / empty-slice sources and orders
+    by the Bayesian-shrunk sort score. The route maps the repository's
+    ``LeaderboardEntry`` records to ``BoardEntry`` wire DTOs 1:1 and
+    echoes ``horizon`` back so the bot can render the active filter
+    in the message header.
     """
     from merlin_infrastructure.db.repositories import SourceReputationRepository
 
     repo = SourceReputationRepository(session)
-    rows = await repo.leaderboard(window)
+    rows = await repo.leaderboard(window, horizon=horizon)
+    # FastAPI's regex ``pattern`` narrows ``horizon`` at runtime to
+    # the three valid literals; mypy can't see that constraint, so
+    # the cast pins the type at the wire boundary.
     return BoardResponse(
         window=window,
+        horizon=cast(HorizonFilter, horizon),
         entries=[
             BoardEntry(
                 rank=row.rank,
