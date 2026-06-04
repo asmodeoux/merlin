@@ -11,7 +11,7 @@ on ``source_reputation_history``:
 
 * ``weighted_pnl_pct`` — ``Σ(directional_return × conviction_weight) / n``.
   Signed, nullable cold-start (same NULL contract as ``accuracy_pct``).
-  Honest signed values: a +0.3% win at low conviction contributes
+  Honest signed values: a +0.3% win at weak conviction contributes
   +0.3% × 1 = +0.3%; the flat threshold is NOT applied here (it stays
   exclusive to the hit-rate boolean).
 

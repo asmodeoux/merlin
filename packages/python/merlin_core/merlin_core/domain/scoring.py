@@ -109,7 +109,7 @@ def accuracy_pct(outcomes_correct: int, outcomes_resolved: int) -> float | None:
 # Three layered functions, each testable in isolation:
 #
 #   conviction_weight(...)         per-bet stake multiplier from the
-#                                  ``low / medium / high`` enum.
+#                                  ``weak / medium / strong / very_strong`` enum.
 #   directional_return_pct(...)    signs ``observed_return_pct`` so positive
 #                                  always means "the user was right".
 #   weighted_mean_pnl_pct(...)     aggregate over a source's resolved bets.

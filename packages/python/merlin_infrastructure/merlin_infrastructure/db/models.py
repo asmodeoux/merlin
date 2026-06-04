@@ -457,8 +457,8 @@ class SourceReputationHistory(Base):
       view.
     * Conviction-weighted PnL (``weighted_pnl_pct``) — magnitude +
       direction, signed, with each bet's contribution scaled by its
-      stated conviction (low=1x, med=3x, high=5x). Honest about
-      signed magnitude; flat threshold NOT applied.
+      stated conviction (weak=1x, medium=3x, strong=5x, very_strong=7x).
+      Honest about signed magnitude; flat threshold NOT applied.
     * Sort score (``sort_score``) — Bayesian-shrunk PnL,
       ``weighted_pnl_pct x n / (n + 5)``, used as the leaderboard ORDER
       BY key. Demotes lucky one-shots; lets a consistent grinder
