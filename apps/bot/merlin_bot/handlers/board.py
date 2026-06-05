@@ -145,8 +145,9 @@ async def board_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     Initial render is unfiltered (``horizon="all"``); the user toggles
     between Day Traders / Swing Traders / Position Traders / All via
-    the inline-button row attached below the message. The three-of-four
-    button rule (active is hidden) lives in ``_filter_keyboard``.
+    the inline-button column attached below the message. The
+    three-of-four button rule (active is hidden) and the vertical-stack
+    layout live in ``_filter_keyboard``.
     """
     if update.message is None or update.effective_user is None:
         return
@@ -335,26 +336,36 @@ def _coerce_filter(echoed: object, fallback: str) -> str:
 
 
 def _filter_keyboard(active_filter: str) -> InlineKeyboardMarkup:
-    """Build the three-button row for the horizon filter.
+    """Build the three-button vertical column for the horizon filter.
 
     Per the "4 modes, 3 buttons" rule: the active filter is implicit
-    in the message header text, so the inline row shows the three
+    in the message header text, so the inline keyboard shows the three
     *non-active* filters. Every tap therefore switches to a different
     view — no "tap the selected one and nothing happens" UX surprise.
+
+    Buttons stack vertically (one per row) rather than horizontally:
+    the "Position Traders" label is wide enough that three side-by-side
+    buttons overflow on narrow mobile clients (Telegram doesn't wrap
+    inline-keyboard rows for us — it just truncates), so a one-button-
+    per-row column is the only layout that guarantees the labels stay
+    fully readable across every client width.
+
     Order is stable (``all`` first when non-active, then ``day``,
     ``swing``, ``position`` in increasing-horizon order — the
     ``_FILTER_ORDER`` constant) so the buttons don't jump around
     between renders.
     """
-    row = [
-        InlineKeyboardButton(
-            _FILTER_BUTTON_LABEL[mode],
-            callback_data=_FILTER_CALLBACK_DATA[mode],
-        )
+    rows = [
+        [
+            InlineKeyboardButton(
+                _FILTER_BUTTON_LABEL[mode],
+                callback_data=_FILTER_CALLBACK_DATA[mode],
+            ),
+        ]
         for mode in _FILTER_ORDER
         if mode != active_filter
     ]
-    return InlineKeyboardMarkup([row])
+    return InlineKeyboardMarkup(rows)
 
 
 # ---------------------------------------------------------------------------

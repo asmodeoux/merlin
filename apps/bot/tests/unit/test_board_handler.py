@@ -1048,12 +1048,12 @@ def test_board_handler_registered_in_application(
 
 
 def _kb_labels(keyboard: InlineKeyboardMarkup) -> list[str]:
-    """Flatten a one-row keyboard's button labels for easy assertion."""
+    """Flatten a keyboard's button labels (any row layout) for easy assertion."""
     return [btn.text for row in keyboard.inline_keyboard for btn in row]
 
 
 def _kb_callbacks(keyboard: InlineKeyboardMarkup) -> list[str]:
-    """Flatten a one-row keyboard's callback_data values."""
+    """Flatten a keyboard's callback_data values (any row layout)."""
     return [str(btn.callback_data) for row in keyboard.inline_keyboard for btn in row]
 
 
@@ -1135,6 +1135,28 @@ def test_filter_keyboard_button_order_is_stable_across_renders() -> None:
     # Active "position" → ["All", "Day Traders", "Swing Traders"]
     kb_position = _filter_keyboard("position")
     assert _kb_labels(kb_position) == ["All", "Day Traders", "Swing Traders"]
+
+
+@pytest.mark.parametrize("active", ["all", "day", "swing", "position"])
+def test_filter_keyboard_renders_buttons_vertically_one_per_row(
+    active: str,
+) -> None:
+    """Layout regression: each filter button gets its own row.
+
+    "Position Traders" + "Swing Traders" + "All" side-by-side overflows
+    on narrow mobile Telegram clients (Telegram truncates rather than
+    wraps inline-keyboard rows), so we stack the three non-active
+    buttons vertically. Pinned here so a future "compact it back to
+    one row" refactor fails this test before reaching users.
+    """
+    keyboard = _filter_keyboard(active)
+    rows = keyboard.inline_keyboard
+    assert len(rows) == 3, f"expected 3 rows for active={active!r}, got {len(rows)}"
+    for row_idx, row in enumerate(rows):
+        assert len(row) == 1, (
+            f"row {row_idx} should hold exactly one button (vertical layout); "
+            f"got {len(row)} buttons"
+        )
 
 
 @pytest.mark.parametrize(
