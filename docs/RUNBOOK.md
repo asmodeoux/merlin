@@ -23,35 +23,104 @@ of the failing service's logs and exits 1.
 
 VS Code: **🚀 Verify Dev Stack (full launch + healthcheck)** task.
 
-## 1. DB restore from Fly Postgres snapshot
+After Fly is up, the parallel ritual is "rotate the local bot token":
+the prod Telegram bot polls from a Fly machine, so the local stack
+**must not share the same `TELEGRAM_BOT_TOKEN`** — only one polling
+loop per token is allowed by the Bot API. Register a second bot in
+BotFather for dev, drop the token into `apps/{bot,api,worker}/.env`,
+and re-run `make dev-up`.
+
+## 1. DB restore from Fly Managed Postgres snapshot
 
 Reference: MVP §12.8.
 
 When to use: data corruption, accidental drop, ransomware, or a failed
 migration we couldn't fix forward.
 
+**Cluster facts (pinned 2026-06-07):**
+
+- Cluster ID: `zp2wjre68v90dn4q`
+- App slug: `merlin-pg` (org `merlin-445`, region `iad`)
+- Backups: Fly takes a daily snapshot, 7-day retention. See
+  `fly mpg backups list <CLUSTER_ID>` for the snapshot catalogue.
+
+**Recovery commands:**
+
+```bash
+# 0. Inventory
+fly mpg list                                   # confirm cluster
+fly mpg backups list zp2wjre68v90dn4q          # available snapshots
+
+# 1. Restore into a fresh cluster (Fly forbids in-place restore on MPG;
+#    creates a new cluster from snapshot and you re-point apps at it)
+fly mpg backups restore zp2wjre68v90dn4q \
+  --backup-id <id-from-list> \
+  --new-cluster-name merlin-pg-rollback
+
+# 2. Detach the broken cluster + attach the new one
+fly mpg detach zp2wjre68v90dn4q --app merlin-api
+fly mpg detach zp2wjre68v90dn4q --app merlin-worker
+fly mpg attach <new-cluster-id> --app merlin-api      # writes DATABASE_URL secret
+fly mpg attach <new-cluster-id> --app merlin-worker
+deploy/fly/set-secrets.sh                              # rewrites scheme to asyncpg
+
+# 3. Restart machines so they pick up the new DATABASE_URL
+fly machine restart -a merlin-api --select all
+fly machine restart -a merlin-worker --select all
+
+# 4. Smoke
+curl -sf https://merlin-api.fly.dev/ready
+```
+
+**Faster path — rebuild from local snapshot:**
+
+```bash
+export MPG_RAW_DSN="postgresql://...<new-cluster>..."
+make fly-db-restore           # alembic upgrade head + psql data load
+```
+
+This is the path used during the initial bootstrap (2026-06-07).
+Acceptable only when the data delta between local and prod is small or
+when you've just pulled prod down via `make db-pull-from-fly`
+beforehand and are restoring what was prod-as-of-pull.
+
 **TODO Sprint 4:**
 
-- Document the `fly postgres backup list` + `fly postgres backup restore`
-  sequence with the exact app slugs.
 - Capture the verified RTO (target ≤ 60 min) + RPO (target ≤ 24 h, Fly
   daily snapshots).
-- Test a restore on a scratch app and record the result.
+- Test a `fly mpg backups restore` end-to-end on a scratch cluster.
 
 ## 2. Bot down recovery
 
 Reference: MVP §12.8.
 
-When to use: `merlin-bot` exited or stuck, no Telegram replies.
+When to use: `merlin-tg-bot` (Fly app slug — `merlin-bot` was taken
+globally on first provision) exited or stuck, no Telegram replies.
 
-**TODO Sprint 4:**
+```bash
+# 1. Triage
+fly status -a merlin-tg-bot
+fly logs   -a merlin-tg-bot --since 30m | rg -i 'error|conflict|forbidden'
 
-- `fly status -a merlin-bot` triage.
-- Logs spelunking: `fly logs -a merlin-bot --since 1h | rg ERROR`.
-- Restart path: `fly machine restart <id> -a merlin-bot`.
-- Token rotation: `fly secrets set TELEGRAM_BOT_TOKEN=...`.
-- Webhook-mode-only — verify the `secret_token` round-trip with
-  `curl -X POST https://api.telegram.org/bot<TOKEN>/getWebhookInfo`.
+# 2. Common case: PTB polling claims another instance owns the loop.
+#    Only one machine may run with TELEGRAM_MODE=polling per token.
+fly scale show  -a merlin-tg-bot                       # should be count=1
+fly scale count 1 -a merlin-tg-bot                     # force back to 1 if drifted
+
+# 3. Restart a stuck machine
+fly machine list    -a merlin-tg-bot
+fly machine restart <id> -a merlin-tg-bot
+
+# 4. Token rotation (BotFather /revoke first, then):
+echo "TELEGRAM_BOT_TOKEN=<new>" | fly secrets import -a merlin-tg-bot
+echo "TELEGRAM_BOT_TOKEN=<new>" | fly secrets import -a merlin-api      # the API also calls TG (admin notifier)
+echo "TELEGRAM_BOT_TOKEN=<new>" | fly secrets import -a merlin-worker   # the worker calls bot API directly per plan §3
+fly machine restart -a merlin-tg-bot --select all
+```
+
+When the bot eventually moves to webhook mode (Phase 2), verify the
+secret-token round-trip with
+`curl -s "https://api.telegram.org/bot$TOKEN/getWebhookInfo"`.
 
 ## 3. Worker stuck / lag triage
 
@@ -59,12 +128,26 @@ Reference: MVP §12.8.
 
 When to use: resolution backlog, RQ queue depth growing.
 
-**TODO Sprint 4:**
+```bash
+# 1. Triage
+fly status -a merlin-worker
+fly logs   -a merlin-worker --since 30m | rg -i 'error|timeout|stale'
 
-- Inspect: `fly ssh console -a merlin-worker -C "rq info"`.
-- Drain a single stuck job: `rq requeue <job_id>`.
-- Empty a poison-message queue: `rq empty <queue>` with rationale logged.
-- Scale: `fly scale count 2 -a merlin-worker`.
+# 2. Inspect RQ state from inside the container (Redis URL is the only
+#    networking the worker needs; rq info reads it from $REDIS_URL).
+fly ssh console -a merlin-worker -C "uv run --package merlin-worker rq info"
+
+# 3. Drain or replay
+fly ssh console -a merlin-worker -C "uv run --package merlin-worker rq requeue <job_id>"
+fly ssh console -a merlin-worker -C "uv run --package merlin-worker rq empty <queue>"   # last resort; log the reason
+
+# 4. Scale horizontally (worker is stateless modulo the DB).
+fly scale count 2 -a merlin-worker
+
+# 5. Restart a wedged machine
+fly machine list    -a merlin-worker
+fly machine restart <id> -a merlin-worker
+```
 
 ## 4. Resolution-failed sweep
 

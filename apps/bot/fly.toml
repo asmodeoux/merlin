@@ -1,11 +1,30 @@
-# fly.toml for merlin-bot.
+# fly.toml for the bot service.
+#
+# The Fly app slug is `merlin-tg-bot` because the bare `merlin-bot` name
+# was already taken globally on Fly at first provision (2026-06-07).
+# The Python package is still `merlin_bot` and the docker-compose
+# service is still `merlin-bot`; only the Fly app identifier differs.
 #
 # v0 runs in polling mode (single instance — TG forbids concurrent
 # polling for the same token). Phase 2 may flip to webhook mode for
 # horizontal scaling; the prod Dockerfile already exposes 8080 for that
 # transition.
+#
+# Machine count is pinned to ONE (no HA standby) because Telegram
+# rejects concurrent `getUpdates` for the same token with
+# `Conflict: terminated by other getUpdates request`. A stopped
+# standby would be safe at rest, but every failover and every deploy
+# overlap is a race window where two pollers exist briefly. The
+# tradeoff for polling-mode is ~20s of bot downtime per deploy /
+# host-failure event in exchange for zero risk of the TG `Conflict`
+# noise loop. To enforce: `fly scale count 1 -a merlin-tg-bot` after
+# first deploy (Fly's default first-deploy HA creates the standby on
+# us). fly.toml can't directly express "no standby"; the
+# `[deploy].strategy = "immediate"` setting below makes subsequent
+# deploys honour the scale=1 state by killing the old machine before
+# starting the new one (no overlap window).
 
-app = "merlin-bot"
+app = "merlin-tg-bot"
 primary_region = "iad"
 kill_signal = "SIGINT"
 kill_timeout = "30s"
@@ -15,6 +34,13 @@ kill_timeout = "30s"
 
 [build.args]
   TARGET = "prod"
+
+[deploy]
+  # immediate (vs default rolling) = kill the old machine, THEN start
+  # the new one. Necessary for polling bots: rolling briefly runs both,
+  # and both would try to claim the TG long-poll lease at the same
+  # time. See the file-header comment for the full rationale.
+  strategy = "immediate"
 
 [env]
   ENVIRONMENT   = "prod"

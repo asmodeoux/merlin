@@ -10,7 +10,9 @@
         test-infra test-client test-e2e cov cov-html openapi openapi-check env-check \
         deps-audit gitleaks pip-audit dep-review db-migrate db-revision \
         db-reset seed dev dev-up dev-down dev-logs dev-rebuild docker-test \
-        dev-verify docs-check ci ci-fast clean
+        dev-verify docs-check ci ci-fast clean \
+        fly-deploy-api fly-deploy-bot fly-deploy-worker fly-deploy-all \
+        fly-secrets-sync fly-db-restore db-pull-from-fly
 
 # ---------------------------------------------------------------------------
 # meta
@@ -188,6 +190,30 @@ ci: install-frozen lint format-check type layers openapi-check env-check pip-aud
 	@echo ""
 
 ci-fast: install-frozen lint format-check type layers openapi-check env-check docs-check test-preflight test-unit ## Fast CI (skip integration + snapshot + audit).
+
+##@ Fly.io
+# Order in fly-deploy-all is intentional: api first (its release_command
+# runs alembic migrations before traffic flips), then worker (so the
+# resolution queue is up before bot starts taking claims), then bot.
+fly-deploy-api: ## fly deploy merlin-api (runs alembic via release_command).
+	fly deploy --config apps/api/fly.toml --app merlin-api
+
+fly-deploy-worker: ## fly deploy merlin-worker.
+	fly deploy --config apps/worker/fly.toml --app merlin-worker
+
+fly-deploy-bot: ## fly deploy merlin-tg-bot (Fly app slug; `merlin-bot` was taken globally).
+	fly deploy --config apps/bot/fly.toml --app merlin-tg-bot
+
+fly-deploy-all: fly-deploy-api fly-deploy-worker fly-deploy-bot ## Deploy all three Fly apps in the right order.
+
+fly-secrets-sync: ## One-shot push of secrets to Fly from apps/<svc>/.env (see deploy/fly/README.md).
+	@deploy/fly/set-secrets.sh
+
+fly-db-restore: ## Snapshot local docker pg + restore into Fly Managed Postgres.
+	@deploy/fly/db-restore-from-local.sh
+
+db-pull-from-fly: ## Reverse direction — snapshot Fly Managed Postgres + restore into local docker pg.
+	@deploy/fly/db-pull-to-local.sh
 
 ##@ Cleanup
 clean: ## Remove caches and build artifacts.

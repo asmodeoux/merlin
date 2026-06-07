@@ -104,6 +104,43 @@
     { "label": "📝 Env: Check parity (.env.example ↔ Settings)", "type": "shell", "command": "make env-check", "problemMatcher": [] },
 
     // ===================================================================
+    // Deploy (Fly.io)
+    // Each task shells out to the matching Makefile target so VS Code
+    // stays a thin trigger surface (same pattern as `make dev-up` etc.).
+    // The API deploy will surface the `release_command` (alembic) output
+    // in the same terminal pane; if migrations fail Fly aborts the
+    // release and machines keep serving the previous version.
+    // ===================================================================
+    {
+      "label": "🚀 Deploy: API",
+      "type": "shell",
+      "command": "make fly-deploy-api",
+      "presentation": { "panel": "shared", "clear": true, "reveal": "always", "focus": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "🤖 Deploy: Bot",
+      "type": "shell",
+      "command": "make fly-deploy-bot",
+      "presentation": { "panel": "shared", "clear": true, "reveal": "always", "focus": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "⚙️ Deploy: Worker",
+      "type": "shell",
+      "command": "make fly-deploy-worker",
+      "presentation": { "panel": "shared", "clear": true, "reveal": "always", "focus": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "🚀 Deploy: All (API → Worker → Bot)",
+      "type": "shell",
+      "command": "make fly-deploy-all",
+      "presentation": { "panel": "shared", "clear": true, "reveal": "always", "focus": true },
+      "problemMatcher": []
+    },
+
+    // ===================================================================
     // Clean
     // ===================================================================
     { "label": "🧼 Clean: Caches + artifacts", "type": "shell", "command": "make clean", "problemMatcher": [] }

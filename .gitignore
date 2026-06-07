@@ -63,6 +63,16 @@ dmypy.json
 
 # Fly.io -------------------------------------------------------------------
 .fly/
+# Workspace-local Fly secrets cache (only the MERLIN_API_INTERNAL_TOKEN
+# needs to live here, because Fly never returns secret values back via
+# the CLI and the three apps must share the same HMAC value). The real
+# source of truth is `fly secrets list -a <app>` once pushed.
+deploy/fly/.internal-token
+deploy/fly/.mpg-dsn
+deploy/fly/.redis-url
+deploy/fly/*.dump
+deploy/fly/*.sql
+deploy/fly/*.sql.raw
 
 # Docker -------------------------------------------------------------------
 docker-compose.override.yml
