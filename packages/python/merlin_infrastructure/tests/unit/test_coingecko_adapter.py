@@ -188,19 +188,20 @@ async def test_get_price_at_empty_narrow_then_empty_wide_raises_market_data_erro
 
 @respx.mock
 async def test_get_price_at_empty_narrow_then_populated_wide_recovers() -> None:
-    """Empty ±5min + populated ±30min → return the closest bucket (recovery path).
+    """Empty ±5min + populated ±30min → return the TWAP across the wide window.
 
     Pins the SOL-bet recovery scenario: CoinGecko's narrow lookup
     returns no buckets (sparsity around the exact minute) but a wider
-    lookup catches the nearest one. The adapter returns the closest
-    available price rather than rejecting the bet.
+    lookup catches some. The adapter returns the time-weighted
+    average across the available buckets rather than rejecting the
+    bet.
     """
     when = datetime(2026, 6, 2, 19, 41, 18, tzinfo=UTC)
     target_ms = int(when.timestamp() * 1000)
     narrow_from = int((when - timedelta(minutes=5)).timestamp())
     wide_from = int((when - timedelta(minutes=30)).timestamp())
-    # The narrow window returns empty; the wide window catches a bucket
-    # ~12min before ``when`` (within ±30min, outside ±5min).
+    # The narrow window returns empty; the wide window catches two
+    # buckets within ±30min around ``when`` (outside ±5min).
     respx.get(f"{_BASE_URL}/coins/solana/market_chart/range", params={"from": narrow_from}).mock(
         return_value=httpx.Response(200, json={"prices": []})
     )
@@ -211,14 +212,29 @@ async def test_get_price_at_empty_narrow_then_populated_wide_recovers() -> None:
         )
     )
     pp = await _adapter().get_price_at("solana", when)
-    # Closest bucket (-12min) wins, not the further one (-25min).
-    assert pp.price_usd == pytest.approx(142.5)
+    # Trapezoidal TWAP across the two buckets in the wide-window slice:
+    # 0.5 * (140.0 + 142.5) = 141.25.
+    assert pp.price_usd == pytest.approx(141.25)
     assert pp.coingecko_id == "solana"
 
 
 @respx.mock
-async def test_get_price_at_picks_nearest_bucket() -> None:
-    """CoinGecko returns 5-min buckets; adapter picks the closest to ``when``."""
+async def test_get_price_at_returns_twap_over_buckets() -> None:
+    """Three buckets at non-uniform spacing → time-weighted average, not nearest.
+
+    Replaces the previously-pinned nearest-bucket contract. Under
+    nearest-pick, ``when`` was ~30s after the middle bucket so the
+    return would have been 101.5 — but two seconds of clock skew
+    could push it onto either the -4min or +4.5min bucket and flip
+    the outcome on threshold-near calls. The TWAP collapses that
+    bucket-alignment lottery into a single deterministic answer.
+
+    Math (trapezoidal rule over the bucket span):
+      - Sorted ts offsets: -240s, -30s, +270s — span 510s.
+      - Trapezoid 1: 0.5 · (100.0 + 101.5) · 210s = 21157.5
+      - Trapezoid 2: 0.5 · (101.5 + 102.0) · 300s = 30525.0
+      - TWAP = 51682.5 / 510 ≈ 101.34.
+    """
     when = datetime(2026, 6, 2, 19, 41, 18, tzinfo=UTC)
     target_ms = int(when.timestamp() * 1000)
     respx.get(f"{_BASE_URL}/coins/bitcoin/market_chart/range").mock(
@@ -234,4 +250,98 @@ async def test_get_price_at_picks_nearest_bucket() -> None:
         )
     )
     pp = await _adapter().get_price_at("bitcoin", when)
-    assert pp.price_usd == pytest.approx(101.5)
+    assert pp.price_usd == pytest.approx(101.3382, rel=1e-4)
+    # ``returned_at`` is the midpoint of the bucket span (the as-of
+    # timestamp the TWAP corresponds to). For the offsets above the
+    # midpoint is at +15s relative to ``when``.
+    assert pp.returned_at == datetime.fromtimestamp((target_ms + 15_000) / 1000, tz=UTC)
+
+
+@respx.mock
+async def test_get_price_at_twap_smooths_noise_below_threshold() -> None:
+    """The [99.8, 100.1, 100.6] scenario evenly straddling t_resolve.
+
+    Encodes the user's exact question: a long call entered at $100,
+    resolution returns these three buckets centred on ``t_resolve``.
+    Under nearest-pick the outcome would have been a coin flip
+    between flat (closest = 99.8 or 100.1) and won (closest = 100.6)
+    depending purely on bucket alignment. Under TWAP the answer is
+    deterministic: 0.5·(99.8+100.1)·dt + 0.5·(100.1+100.6)·dt over
+    2·dt = (99.95 + 100.35)/2 = 100.15 → +0.15% return → flat. The
+    trader's directional read was correct, but the actual move stayed
+    inside noise — and the resolver no longer rewards / punishes a
+    threshold-crossing bucket that the user couldn't see.
+    """
+    when = datetime(2026, 6, 2, 19, 41, 18, tzinfo=UTC)
+    target_ms = int(when.timestamp() * 1000)
+    respx.get(f"{_BASE_URL}/coins/bitcoin/market_chart/range").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "prices": [
+                    [target_ms - 300_000, 99.8],
+                    [target_ms, 100.1],
+                    [target_ms + 300_000, 100.6],
+                ]
+            },
+        )
+    )
+    pp = await _adapter().get_price_at("bitcoin", when)
+    assert pp.price_usd == pytest.approx(100.15)
+
+
+@respx.mock
+async def test_get_price_at_twap_single_bucket_returns_that_price() -> None:
+    """Degenerate n=1 case: TWAP collapses to the only bucket.
+
+    With one data point there's no integral to compute. The adapter
+    must NOT raise; it returns the single price honestly and
+    surfaces that bucket's timestamp as the ``returned_at`` so
+    audits show exactly which point was used.
+    """
+    when = datetime(2026, 6, 2, 19, 41, 18, tzinfo=UTC)
+    target_ms = int(when.timestamp() * 1000)
+    respx.get(f"{_BASE_URL}/coins/bitcoin/market_chart/range").mock(
+        return_value=httpx.Response(
+            200,
+            json={"prices": [[target_ms - 60_000, 101.7]]},
+        )
+    )
+    pp = await _adapter().get_price_at("bitcoin", when)
+    assert pp.price_usd == pytest.approx(101.7)
+    assert pp.returned_at == datetime.fromtimestamp((target_ms - 60_000) / 1000, tz=UTC)
+
+
+@respx.mock
+async def test_get_price_at_twap_handles_non_uniform_spacing() -> None:
+    """Non-uniform bucket spacing must weight by interval, not by count.
+
+    Three buckets: 100.0 at -600s, 100.0 at -30s, 110.0 at 0s.
+    Naive arithmetic mean would give (100+100+110)/3 ≈ 103.33,
+    over-weighting the brief 10% spike at the end. Trapezoidal TWAP:
+
+      - Trap 1: 0.5·(100.0 + 100.0)·570s = 57000.0
+      - Trap 2: 0.5·(100.0 + 110.0)·30s = 3150.0
+      - TWAP = 60150.0 / 600s = 100.25
+
+    Pins the property that a transient spike on the boundary of the
+    window CAN'T move the TWAP by more than the spike's time-share
+    of the window — exactly the protection trader UX wants against
+    end-of-window wicks.
+    """
+    when = datetime(2026, 6, 2, 19, 41, 18, tzinfo=UTC)
+    target_ms = int(when.timestamp() * 1000)
+    respx.get(f"{_BASE_URL}/coins/bitcoin/market_chart/range").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "prices": [
+                    [target_ms - 600_000, 100.0],
+                    [target_ms - 30_000, 100.0],
+                    [target_ms, 110.0],
+                ]
+            },
+        )
+    )
+    pp = await _adapter().get_price_at("bitcoin", when)
+    assert pp.price_usd == pytest.approx(100.25)

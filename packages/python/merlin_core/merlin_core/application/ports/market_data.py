@@ -32,8 +32,13 @@ class PricePoint:
     """A single historical price point with replay-grade timestamps.
 
     ``requested_at`` is what the resolver asked for; ``returned_at`` is
-    what CoinGecko's bucket said. The pair is persisted on
-    ``outcomes.resolution_price_*_ref`` so audits replay exactly.
+    the data source's effective "as-of" timestamp for ``price_usd``.
+    For point-in-time backends this is the actual tick / bucket
+    timestamp; for TWAP-over-window backends (the CoinGecko adapter at
+    v0) this is the midpoint of the bucket span the average was
+    computed over. Either way, the pair is persisted on
+    ``outcomes.resolution_price_*_ref`` so audits replay against a
+    concrete instant.
     """
 
     coingecko_id: str

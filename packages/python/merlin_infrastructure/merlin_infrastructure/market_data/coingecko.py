@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import Any, Final
 
 import httpx
@@ -25,11 +26,15 @@ from merlin_core.domain import AssetCandidate
 _log = logging.getLogger("merlin.infrastructure.market_data.coingecko")
 
 _DEFAULT_TIMEOUT_S: Final = 15.0
-# Q-026: accept ±5-minute timestamp rounding from CoinGecko's bucketed
-# ranges. The resolver passes the requested ``when``; we ask CoinGecko
-# for a small window around it and pick the closest bucket.
+# Q-026: ±5-minute price window around the requested ``when``. The
+# resolver passes a target timestamp; we ask CoinGecko for the bucket
+# series across this window and TWAP across it. Window width is the
+# institutional sweet spot — wide enough to smooth single-bucket noise
+# (a 5-min spike where the user's ``t_resolve`` happened to land), narrow
+# enough that the picked price remains meaningful for short-horizon
+# bets.
 _PRICE_WINDOW = timedelta(minutes=5)
-# Fallback window used ONLY when the narrow ±5min lookup returns an
+# Fallback window used ONLY when the canonical ±5min lookup returns an
 # empty ``prices`` series. Lets us tell apart "CoinGecko was sparse
 # around this exact minute" (recoverable — widen + try again) from
 # "the asset genuinely no longer exists" (HTTP 404 — Q-023 reject).
@@ -44,8 +49,8 @@ _PRICE_WINDOW = timedelta(minutes=5)
 # Widening to ±30min before declaring asset-gone catches the sparse
 # case (CoinGecko's free tier guarantees 5-min granularity inside
 # the last 24h; ±30min always straddles enough buckets) while
-# staying narrow enough to keep the picked price meaningful for
-# short-horizon bets.
+# staying narrow enough to keep the TWAP meaningful for short-horizon
+# bets.
 _PRICE_WINDOW_WIDE = timedelta(minutes=30)
 _MAX_SEARCH_RESULTS = 5
 
@@ -187,7 +192,24 @@ class CoinGeckoAdapter:
         )
 
     async def get_price_at(self, coingecko_id: str, when: datetime) -> PricePoint:
-        """``GET /coins/{id}/market_chart/range`` → nearest price point ±5min.
+        """``GET /coins/{id}/market_chart/range`` → TWAP across a ±5min window.
+
+        Returns the **time-weighted average** of all bucket prices in
+        the window around ``when``, not a single nearest-by-timestamp
+        pick. Rationale (the trader-UX argument):
+
+        * **Bucket-alignment lottery is removed.** Under nearest-pick a
+          user's outcome could flip between flat / won / lost purely on
+          which 5-min bucket ``t_resolve`` happened to land in — a coin
+          flip the user has zero control over. TWAP smooths that noise:
+          a real +X% directional move stays ~+X%, a ±ε wobble averages
+          to ~0%.
+        * **TWAP is the institutional execution benchmark.** Disputing a
+          single tick is easy; disputing "the time-weighted average over
+          the ±5min window around your resolve time" is hard and
+          replicable from any public chart in 10 seconds.
+        * **Direction-symmetric.** No optimistic / pessimistic /
+          long-vs-short branching: same formula for every claim.
 
         Two-stage lookup so an empty CoinGecko response can't masquerade
         as a missing asset:
@@ -200,7 +222,8 @@ class CoinGeckoAdapter:
           live SOL-bet bug where the Demo tier returned an empty payload
           for the narrow window (sparsity / silent rate-limit pushback)
           and the resolver permanently rejected the claim as a Q-023
-          asset mutation.
+          asset mutation. The TWAP is then computed over whichever stage
+          produced data.
 
         After both stages, if there are still no prices we raise
         ``MarketDataError`` — *not* ``AssetNotFoundError``. The
@@ -213,6 +236,10 @@ class CoinGeckoAdapter:
         CoinGecko still raises ``AssetNotFoundError`` (handled in
         :meth:`_fetch_market_chart_range`) so a real delisting still
         reaches the Q-023 reject path.
+
+        Returned ``PricePoint``: ``requested_at = when``; ``returned_at``
+        is the midpoint of the bucket span used to compute the TWAP
+        (the effective "as-of" timestamp of the reported price).
         """
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
@@ -247,15 +274,64 @@ class CoinGeckoAdapter:
                 "hiccup — RQ will retry the resolution job."
             )
 
-        target_ms = int(when.timestamp() * 1000)
-        ts_ms, price = min(prices, key=lambda p: abs(p[0] - target_ms))
-        returned_at = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+        twap_price, midpoint_ms = self._twap(prices)
+        returned_at = datetime.fromtimestamp(midpoint_ms / 1000, tz=UTC)
         return PricePoint(
             coingecko_id=coingecko_id,
             requested_at=when,
             returned_at=returned_at,
-            price_usd=float(price),
+            price_usd=twap_price,
         )
+
+    @staticmethod
+    def _twap(prices: list[list[float]]) -> tuple[float, int]:
+        """Trapezoidal time-weighted average over ``[ts_ms, price]`` buckets.
+
+        Returns ``(twap_price_usd, midpoint_ms)``. The midpoint is the
+        average of the first and last bucket timestamps — i.e. the
+        effective "as-of" time of the integral. Callers expose it on
+        ``PricePoint.returned_at`` so the outcomes table's audit
+        references (``price_t0_ref`` / ``price_resolve_ref``) still
+        anchor each TWAP to a concrete instant for replay.
+
+        Math: standard trapezoidal-rule integral of a piecewise-linear
+        price curve divided by its time span. For uniformly-spaced
+        buckets this reduces to the arithmetic mean with halved
+        endpoints — i.e. close to ``mean(prices)`` — which is what
+        you'd get from CoinGecko's evenly-stepped grid in 99% of
+        calls. The trapezoidal formula stays correct when CoinGecko
+        returns a non-uniform grid (e.g. a transient data gap leaves
+        an isolated bucket on one side of the window) — each bucket
+        is weighted by the time interval it actually represents, not
+        by its position in the list.
+
+        Edge cases:
+
+        * **Single bucket**: TWAP is that price; midpoint is that
+          bucket's timestamp. Degenerate but honest — with one data
+          point there's no integral to compute.
+        * **All same-timestamp buckets** (defensive; CoinGecko doesn't
+          emit this shape but a future data source might): fall back
+          to the arithmetic mean of the prices and use the shared
+          timestamp as the midpoint. Prevents a divide-by-zero on the
+          time span.
+        """
+        sorted_prices = sorted(prices, key=lambda p: p[0])
+        first_ts_ms = int(sorted_prices[0][0])
+        last_ts_ms = int(sorted_prices[-1][0])
+        if len(sorted_prices) == 1:
+            return float(sorted_prices[0][1]), first_ts_ms
+        span_ms = last_ts_ms - first_ts_ms
+        midpoint_ms = (first_ts_ms + last_ts_ms) // 2
+        if span_ms == 0:
+            mean_price = sum(float(p[1]) for p in sorted_prices) / len(sorted_prices)
+            return mean_price, first_ts_ms
+        total_area = 0.0
+        for (ts_a, p_a), (ts_b, p_b) in pairwise(sorted_prices):
+            dt = float(ts_b - ts_a)
+            total_area += 0.5 * (float(p_a) + float(p_b)) * dt
+        twap = total_area / float(span_ms)
+        return twap, midpoint_ms
 
     async def _fetch_market_chart_range(
         self,
