@@ -22,7 +22,7 @@ points at exactly which guard slipped.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -155,14 +155,65 @@ async def test_get_price_at_non_json_2xx_raises_with_body_preview() -> None:
 
 
 @respx.mock
-async def test_get_price_at_empty_prices_raises_asset_not_found() -> None:
-    """A 2xx + valid JSON but no price points is also an asset-availability problem."""
-    respx.get(f"{_BASE_URL}/coins/bitcoin/market_chart/range").mock(
+async def test_get_price_at_empty_narrow_then_empty_wide_raises_market_data_error() -> None:
+    """Empty narrow + empty wide → ``MarketDataError`` (NOT asset-not-found).
+
+    Live regression: an empty ``prices`` payload from CoinGecko used to
+    raise ``AssetNotFoundError`` (read by the resolver as a Q-023 asset
+    mutation), so a transient Demo-tier sparsity hiccup permanently
+    rejected a user's bet with the misleading "your token's listing
+    changed" notification.
+
+    The fix's contract: the adapter retries once with a wider window
+    (±30min) before declaring the asset missing, and even on a second
+    empty payload it raises ``MarketDataError`` so RQ's retry policy
+    can pick the job up again. ``AssetNotFoundError`` is now reserved
+    for the genuine 404-from-CoinGecko path.
+    """
+    route = respx.get(f"{_BASE_URL}/coins/bitcoin/market_chart/range").mock(
         return_value=httpx.Response(200, json={"prices": []})
     )
     when = datetime(2026, 6, 2, 19, 41, 18, tzinfo=UTC)
-    with pytest.raises(AssetNotFoundError):
+    with pytest.raises(MarketDataError) as exc:
         await _adapter().get_price_at("bitcoin", when)
+    msg = str(exc.value)
+    assert "no prices" in msg
+    assert "bitcoin" in msg
+    assert "RQ will retry" in msg
+    # Two calls: the canonical ±5min lookup + the ±30min fallback. The
+    # adapter must NOT widen indefinitely — exactly one retry, then
+    # surface up to the resolver / RQ.
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_get_price_at_empty_narrow_then_populated_wide_recovers() -> None:
+    """Empty ±5min + populated ±30min → return the closest bucket (recovery path).
+
+    Pins the SOL-bet recovery scenario: CoinGecko's narrow lookup
+    returns no buckets (sparsity around the exact minute) but a wider
+    lookup catches the nearest one. The adapter returns the closest
+    available price rather than rejecting the bet.
+    """
+    when = datetime(2026, 6, 2, 19, 41, 18, tzinfo=UTC)
+    target_ms = int(when.timestamp() * 1000)
+    narrow_from = int((when - timedelta(minutes=5)).timestamp())
+    wide_from = int((when - timedelta(minutes=30)).timestamp())
+    # The narrow window returns empty; the wide window catches a bucket
+    # ~12min before ``when`` (within ±30min, outside ±5min).
+    respx.get(f"{_BASE_URL}/coins/solana/market_chart/range", params={"from": narrow_from}).mock(
+        return_value=httpx.Response(200, json={"prices": []})
+    )
+    respx.get(f"{_BASE_URL}/coins/solana/market_chart/range", params={"from": wide_from}).mock(
+        return_value=httpx.Response(
+            200,
+            json={"prices": [[target_ms - 720_000, 142.5], [target_ms - 1_500_000, 140.0]]},
+        )
+    )
+    pp = await _adapter().get_price_at("solana", when)
+    # Closest bucket (-12min) wins, not the further one (-25min).
+    assert pp.price_usd == pytest.approx(142.5)
+    assert pp.coingecko_id == "solana"
 
 
 @respx.mock
