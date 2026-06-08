@@ -50,9 +50,9 @@ def test_get_ports_takes_no_arguments() -> None:
     import inspect
 
     sig = inspect.signature(get_ports)
-    assert (
-        list(sig.parameters) == []
-    ), "get_ports must take no arguments — see deps.py NOTE for the regression history."
+    assert list(sig.parameters) == [], (
+        "get_ports must take no arguments — see deps.py NOTE for the regression history."
+    )
 
 
 def test_get_ports_constructs_without_hashability_crash() -> None:

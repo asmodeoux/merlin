@@ -88,9 +88,9 @@ async def test_admin_start_skips_invite_and_calls_bootstrap() -> None:
     assert ctx.user_data["source_id"] == "tg:abc123"
     # The reply must be the admin-flavoured welcome, NOT the "paste your code" prompt.
     assert update.message is not None
-    assert not any(
-        "paste" in r.lower() for r in update.message.replies
-    ), "admin must NOT be asked to paste an invite code"
+    assert not any("paste" in r.lower() for r in update.message.replies), (
+        "admin must NOT be asked to paste an invite code"
+    )
     # The admin welcome mentions /invite (the command they can use).
     assert any("/invite" in r for r in update.message.replies)
 

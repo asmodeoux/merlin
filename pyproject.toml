@@ -36,7 +36,7 @@ merlin-worker = { workspace = true }
 [dependency-groups]
 dev = [
     "pre-commit>=4",
-    "ruff>=0.7",
+    "ruff>=0.15,<0.16",
     "mypy>=1.13",
     "import-linter>=2.1",
     "pytest>=8",

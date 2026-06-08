@@ -289,9 +289,9 @@ def test_render_me_open_call_lines_use_bullet_prefix() -> None:
     # Every open-call line starts with "• " — verified by counting how
     # many lines satisfy the rule against the known count.
     bulleted = [line for line in text.splitlines() if line.startswith("• ")]
-    assert (
-        len(bulleted) == 2
-    ), f"expected one bullet per open call (got {len(bulleted)}); raw text was:\n{text}"
+    assert len(bulleted) == 2, (
+        f"expected one bullet per open call (got {len(bulleted)}); raw text was:\n{text}"
+    )
     assert "• ETH long" in text
     assert "• BTC short" in text
     # The OLD two-space-indent form must NOT appear — that's exactly
@@ -653,9 +653,9 @@ def test_resolves_at_chunk_integrates_into_open_call_line() -> None:
     # between the helper's ``int()`` floor and the wall-clock tick that
     # may have advanced between ``timedelta()`` and ``_render_me``.
     assert "TON short — 24 hours, resolves in " in text, text
-    assert (
-        "resolves in 3 hours 14 minutes" in text or "resolves in 3 hours 15 minutes" in text
-    ), text
+    assert "resolves in 3 hours 14 minutes" in text or "resolves in 3 hours 15 minutes" in text, (
+        text
+    )
 
 
 # ---------------------------------------------------------------------------

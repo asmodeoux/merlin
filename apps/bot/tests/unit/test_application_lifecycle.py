@@ -97,16 +97,16 @@ async def test_post_init_populates_bot_data(
 
     await post_init(app)
 
-    assert (
-        BOT_DATA_KEY in app.bot_data
-    ), f"{BOT_DATA_KEY!r} missing after post_init — handlers can't reach the MerlinClient."
+    assert BOT_DATA_KEY in app.bot_data, (
+        f"{BOT_DATA_KEY!r} missing after post_init — handlers can't reach the MerlinClient."
+    )
     assert BOT_DATA_ADMIN_KEY in app.bot_data, (
         f"{BOT_DATA_ADMIN_KEY!r} missing after post_init — admin "
         "/start will fall through to the public invite flow."
     )
-    assert (
-        151594111 in app.bot_data[BOT_DATA_ADMIN_KEY]
-    ), "configured admin chat id missing from the allowlist set."
+    assert 151594111 in app.bot_data[BOT_DATA_ADMIN_KEY], (
+        "configured admin chat id missing from the allowlist set."
+    )
 
 
 async def test_post_init_survives_persistence_overwrite(

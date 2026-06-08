@@ -13,9 +13,13 @@ repos:
   # ruff — lint + format. Replaces black/flake8/isort.
   # ---------------------------------------------------------------------------
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.7.4
+    # Pin matches `[dependency-groups].dev` in pyproject.toml and the
+    # `ruff format --check` GitHub Actions step (.github/workflows/ci.yml).
+    # If one of these moves, the others must move with it — otherwise
+    # the pre-commit hook and `make ci` will disagree on whitespace.
+    rev: v0.15.14
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 

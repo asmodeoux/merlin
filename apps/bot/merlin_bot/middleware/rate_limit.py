@@ -137,7 +137,7 @@ def _is_alpha_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
 
 
 _COOLDOWN_REPLY = (
-    "Easy — give me a few seconds before the next call. " f"Try again in {ALPHA_COOLDOWN_SECONDS}s."
+    f"Easy — give me a few seconds before the next call. Try again in {ALPHA_COOLDOWN_SECONDS}s."
 )
 _HOURLY_REPLY = (
     "You've hit the hourly cap on new calls. Take a breath; the limit "

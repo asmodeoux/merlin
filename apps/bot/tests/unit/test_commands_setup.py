@@ -168,9 +168,9 @@ async def test_register_commands_tolerates_badrequest_on_admin_chat(
         )
 
     assert app.bot.public_calls == 1, "public command push must succeed"
-    assert app.bot.chat_scope_attempts == [
-        151594111
-    ], "we must still attempt the admin push so it lands on the next boot when the chat exists"
+    assert app.bot.chat_scope_attempts == [151594111], (
+        "we must still attempt the admin push so it lands on the next boot when the chat exists"
+    )
 
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1, "the BadRequest must be logged as a warning"

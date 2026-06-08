@@ -1672,6 +1672,6 @@ def test_board_callback_handler_registered_in_application(
                     patterns.append(
                         pattern if isinstance(pattern, str) else pattern.pattern,
                     )
-    assert any(
-        "board:filter:" in p for p in patterns
-    ), f"board filter CallbackQueryHandler not registered; saw {patterns}"
+    assert any("board:filter:" in p for p in patterns), (
+        f"board filter CallbackQueryHandler not registered; saw {patterns}"
+    )

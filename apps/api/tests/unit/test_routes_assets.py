@@ -245,7 +245,7 @@ async def test_search_cache_key_is_normalised(
         await client.get("/assets/search", params={"q": "Eth"}, headers=auth_headers)
 
     assert market.search_calls == ["ETH"], (
-        "case + whitespace variants must share a cache slot — " f"got {market.search_calls!r}"
+        f"case + whitespace variants must share a cache slot — got {market.search_calls!r}"
     )
 
 
@@ -485,7 +485,7 @@ async def test_resolve_negative_cache_short_circuits_retry(
     assert r1.status_code == 404
     assert r2.status_code == 404
     assert market.metadata_calls == ["asdfghjkl"], (
-        "negative caching must short-circuit the second call — " f"got {market.metadata_calls!r}"
+        f"negative caching must short-circuit the second call — got {market.metadata_calls!r}"
     )
 
 

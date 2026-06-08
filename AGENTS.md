@@ -206,7 +206,7 @@ GH_REPO=org/repo ./scripts/bootstrap_github_settings.sh
   enqueues. All scheduling is Redis-only via RQ Scheduler `enqueue_at`).
 - RQ **>=2.0,<3** + redis **>=5.2,<6**.
 - Pydantic **>=2.9,<3**, pydantic-settings **>=2.6,<3**.
-- ruff **0.7.4**, mypy via `uv run mypy`, import-linter via
+- ruff **0.15.14**, mypy via `uv run mypy`, import-linter via
   `uv run lint-imports`.
 - pytest **>=8**, pytest-asyncio **>=0.24**, syrupy **>=4.7**,
   hypothesis **>=6.115**, testcontainers **>=4.8**.

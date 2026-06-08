@@ -42,9 +42,9 @@ _FORBIDDEN_TOKENS = (
 def _assert_bot_voice(text: str) -> None:
     lower = text.lower()
     for token in _FORBIDDEN_TOKENS:
-        assert (
-            token.lower() not in lower
-        ), f"Forbidden bot-voice token {token!r} in outcome string: {text!r}"
+        assert token.lower() not in lower, (
+            f"Forbidden bot-voice token {token!r} in outcome string: {text!r}"
+        )
 
 
 def test_outcome_won_uses_human_horizon_and_plain_percent() -> None:

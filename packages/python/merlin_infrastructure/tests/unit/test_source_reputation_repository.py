@@ -174,9 +174,9 @@ async def test_leaderboard_query_compiles_with_sort_score_order_by() -> None:
     outcomes_resolved_pos = lowered.find("outcomes_resolved desc")
     assert sort_score_pos >= 0, "sort_score is not ORDER BYed DESC"
     assert outcomes_resolved_pos >= 0, "outcomes_resolved tiebreaker missing"
-    assert (
-        sort_score_pos < outcomes_resolved_pos
-    ), "sort_score must precede outcomes_resolved in the ORDER BY chain"
+    assert sort_score_pos < outcomes_resolved_pos, (
+        "sort_score must precede outcomes_resolved in the ORDER BY chain"
+    )
 
 
 # ---------------------------------------------------------------------------
