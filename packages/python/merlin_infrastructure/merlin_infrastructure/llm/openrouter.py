@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -60,9 +61,29 @@ _log = logging.getLogger("merlin.infrastructure.llm.openrouter")
 # Per-field confidence thresholds. Below threshold, the field appears
 # in ``missing_fields`` and the bot surfaces it on the preview rather
 # than auto-filling. Calibrated against the v1 prompt's example outputs.
+#
+# ``_HORIZON_CONFIDENCE_FLOOR`` was originally 0.85, which lined up
+# with the v2 example outputs (0.95-0.97 on explicit "3 hours" / "2
+# weeks"). Live Sprint-1 traffic surfaced a class of input where the
+# duration is unambiguous to a human ("SOL long for 2 hours, must
+# recover from a huge drop") but gpt-5-mini's well-calibrated
+# confidence dips into 0.70-0.80 because of the surrounding
+# contingency clause. The hard 0.85 gate then dropped the value and
+# the bot forced the user to set the horizon manually — the exact
+# UX failure we built the LLM path to avoid.
+#
+# Two compensating moves landed alongside the lowered floor:
+# (a) the v3 prompt teaches the model that a contingency clause does
+# NOT dilute horizon confidence (so the model itself reports higher
+# numbers), and (b) ``_horizon_backstop_from_text`` below recovers a
+# duration from the user text whenever the gate culls or the model
+# returns null. Together the three moves make "for 2 hours" (and
+# similar) round-trip even on adversarial phrasing. The range gate
+# at ``[HORIZON_MIN_SECONDS, HORIZON_MAX_SECONDS]`` remains the
+# real safety net — confidence is a UX gate, not a correctness gate.
 _ASSET_CONFIDENCE_FLOOR = 0.85
 _DIRECTION_CONFIDENCE_FLOOR = 0.9
-_HORIZON_CONFIDENCE_FLOOR = 0.85
+_HORIZON_CONFIDENCE_FLOOR = 0.70
 _CONVICTION_CONFIDENCE_FLOOR = 0.7
 
 # Conviction reads tone ("could moon", "I'm pretty sure"), not keywords —
@@ -235,11 +256,11 @@ class OpenRouterClaimDrafter:
             _DIRECTION_CONFIDENCE_FLOOR,
         )
         # Horizon is now an integer-seconds count instead of a Literal
-        # bucket. The prompt asks the model to emit ``horizon_seconds``
-        # directly; we accept either key for one prompt-revision of
-        # transition (the older ``horizon`` schema still ships with the
-        # current ``claim_extraction_v1.md`` if the model refuses to
-        # follow v2). Range-bound + confidence-gate before we trust it.
+        # bucket. The latest prompt asks the model to emit
+        # ``horizon_seconds`` directly; we accept either key so a stale
+        # model snapshot that still follows the v1 ``"3h"`` / ``"14d"``
+        # shape doesn't break extraction. Range-bound + confidence-gate
+        # before we trust it.
         horizon_raw = extracted.get("horizon_seconds")
         if horizon_raw is None:
             horizon_raw = extracted.get("horizon")
@@ -249,6 +270,26 @@ class OpenRouterClaimDrafter:
         horizon_seconds = _coerce_horizon_seconds(
             _gated(horizon_raw, horizon_confidence, _HORIZON_CONFIDENCE_FLOOR)
         )
+        # Deterministic backstop: when the LLM didn't deliver a usable
+        # horizon (low confidence, null emission, out-of-range value)
+        # but the user text has an unambiguous "for / in / within N
+        # <unit>" phrase, recover it via the canonical domain parser.
+        # The range gate inside ``_horizon_backstop_from_text`` keeps
+        # garbage out; the conservative preposition set keeps false
+        # positives down. Logged so the audit trail is reconstructable
+        # from the parse_metadata confidences + the application log.
+        if horizon_seconds is None:
+            backstop_seconds = _horizon_backstop_from_text(user_text)
+            if backstop_seconds is not None:
+                _log.info(
+                    "horizon backstop recovered %ds from user text "
+                    "(LLM raw=%r, confidence=%s, floor=%s)",
+                    backstop_seconds,
+                    horizon_raw,
+                    horizon_confidence,
+                    _HORIZON_CONFIDENCE_FLOOR,
+                )
+                horizon_seconds = backstop_seconds
         conviction = _gated(
             extracted.get("conviction"),
             confidences.get("conviction"),
@@ -370,8 +411,9 @@ def _coerce_horizon_seconds(value: object) -> int | None:
 
     Returns ``None`` when the value can't be coerced or falls outside
     ``[HORIZON_MIN_SECONDS, HORIZON_MAX_SECONDS]``. The caller treats
-    ``None`` as "the model didn't deliver a usable horizon" and adds
-    it to ``missing_fields``, which the bot surfaces as the picker.
+    ``None`` as "the model didn't deliver a usable horizon" and either
+    runs ``_horizon_backstop_from_text`` or adds the field to
+    ``missing_fields``, which the bot surfaces as the picker.
     """
     seconds = _value_to_seconds(value)
     if seconds is None:
@@ -379,6 +421,63 @@ def _coerce_horizon_seconds(value: object) -> int | None:
     if seconds < HORIZON_MIN_SECONDS or seconds > HORIZON_MAX_SECONDS:
         return None
     return seconds
+
+
+# Conservative preposition set: "for / in / within / over" are the
+# four phrasings that idiomatically introduce a horizon in a trading
+# claim ("for 2 hours", "in 3 days", "within 2 weeks", "over 24
+# hours"). Deliberately excludes "after" / "by" / "next" because
+# those frequently introduce referential time phrases that are NOT
+# the user's horizon ("after 2 hours of analysis", "by 2 weeks ago",
+# "the next analysis I do"). The preposition must sit immediately
+# before the number — "over the next 24 hours" is intentionally
+# missed (no number right after "over"); the v3 prompt teaches the
+# model to handle that phrasing itself. Better to under-recover than
+# over-guess — the user can always edit the horizon on the preview,
+# but a wrong auto-fill costs a "wait, that's not right" beat of
+# confusion.
+#
+# The duration body is intentionally loose (any digits / decimals or
+# the word-numbers ``a/an/one..twelve``, then any letters) — we
+# delegate the actual validation to ``parse_horizon_text`` rather
+# than re-encoding the unit table here. That keeps the canonical
+# parser (``merlin_core.contracts.horizons``) as the single source
+# of truth for what counts as a valid duration and what doesn't.
+_HORIZON_BACKSTOP_RE = re.compile(
+    r"\b(?:for|in|within|over)\s+"
+    r"((?:\d+(?:\.\d+)?|"
+    r"a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s*[A-Za-z]+)\b",
+    re.IGNORECASE,
+)
+
+
+def _horizon_backstop_from_text(text: str) -> int | None:
+    """Recover an explicit duration from the user text when the LLM punts.
+
+    Scans ``text`` for the strict ``<prep> <number> <unit>`` shape
+    (``"for 2 hours"``, ``"in 1.5 days"``, ``"within two weeks"``) and
+    returns the first match that the canonical horizon parser
+    accepts AND that falls inside the legal range. Used as a
+    deterministic safety net when the LLM extraction produced a None
+    horizon (low confidence + culled, null emission, out-of-range
+    value) despite the user clearly stating a duration.
+
+    Returns ``None`` when nothing matches. Callers then surface
+    ``horizon`` in ``missing_fields`` so the bot opens the picker.
+    """
+    for match in _HORIZON_BACKSTOP_RE.finditer(text):
+        candidate = match.group(1).strip()
+        try:
+            return parse_horizon_text(candidate)
+        except (HorizonParseError, ValueError):
+            # ``HorizonRangeError`` is a ``ValueError`` subclass — out-
+            # of-range candidates fall through to the next match
+            # rather than getting accepted with a clamp, since
+            # "for 6 months" almost always means the user wants a
+            # value the system can't yet resolve, not 90 days.
+            continue
+    return None
 
 
 def _value_to_seconds(value: object) -> int | None:

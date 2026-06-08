@@ -110,6 +110,10 @@ async def test_asset_query_below_confidence_floor_is_none(
 async def test_low_confidence_field_is_marked_missing(
     http_client: httpx.AsyncClient,
 ) -> None:
+    """When the LLM's horizon confidence is below the floor AND the
+    user text has no explicit duration to backstop from, ``horizon``
+    lands in ``missing_fields`` so the bot opens the picker.
+    """
     drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
     body = _completion_payload(
         {
@@ -127,8 +131,196 @@ async def test_low_confidence_field_is_marked_missing(
     )
     with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
         router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        # Deliberately no "for / in / within / over <N> <unit>" phrase
+        # in the user text so the backstop has nothing to recover.
         draft = await drafter.draft("ETH long sometime soon strong")
 
+    assert draft.horizon is None
+    assert "horizon" in draft.missing_fields
+
+
+async def test_low_floor_lets_well_calibrated_horizon_through(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """A 0.75 horizon confidence — the band where gpt-5-mini sits on
+    a hedged-but-explicit duration like "for 2 hours, must recover" —
+    must pass the floor. Pins the regression that prompted lowering
+    the floor from 0.85 to 0.70.
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "SOL",
+            "direction": "long",
+            "horizon_seconds": 7_200,
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.99,
+                "direction": 0.98,
+                "horizon_seconds": 0.75,
+                "conviction": 0.8,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("SOL long for 2 hours, it must recover from a huge drop")
+    assert draft.horizon == 7_200
+    assert "horizon" not in draft.missing_fields
+
+
+async def test_backstop_recovers_horizon_from_user_text_on_null_emission(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """When the LLM returns ``horizon_seconds: null`` despite an
+    unambiguous "for N <unit>" phrase in the user text, the
+    deterministic regex backstop recovers the value via the canonical
+    domain parser. Without the backstop, the user gets a "Set Horizon"
+    placeholder on an input that's as explicit as language gets.
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "SOL",
+            "direction": "long",
+            "horizon_seconds": None,
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.99,
+                "direction": 0.98,
+                "horizon_seconds": 0.0,  # model gave up on horizon
+                "conviction": 0.8,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("SOL long for 2 hours, it must recover from a huge drop")
+    assert draft.horizon == 7_200
+    assert "horizon" not in draft.missing_fields
+
+
+async def test_backstop_recovers_horizon_when_confidence_culled(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """When the LLM emits a horizon value but with confidence below
+    the floor, the gate culls it AND the backstop recovers a clean
+    duration from the user text. End-to-end, the user sees the right
+    horizon despite the model's hesitancy.
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon_seconds": 7_200,
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.99,
+                "direction": 0.98,
+                "horizon_seconds": 0.4,  # below 0.70 floor
+                "conviction": 0.8,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long within 2 hours, alt season starts")
+    assert draft.horizon == 7_200
+    assert "horizon" not in draft.missing_fields
+
+
+async def test_backstop_does_not_override_high_confidence_llm_value(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """When the LLM's horizon passes the floor, the backstop does NOT
+    run — the model's reading trumps a regex (it could disambiguate
+    things like "I want resolution within 24 hours after the 2-hour
+    recovery window" → 86400, not 7200).
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon_seconds": 86_400,  # 24h — model's reading
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.99,
+                "direction": 0.98,
+                "horizon_seconds": 0.95,
+                "conviction": 0.8,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        # Text contains "for 2 hours" — if the backstop ran, it would
+        # mis-overrule the model's 86400 with 7200.
+        draft = await drafter.draft(
+            "ETH long, I want resolution within 24 hours after the 2 hours recovery"
+        )
+    assert draft.horizon == 86_400
+
+
+async def test_backstop_skips_out_of_range_match_and_falls_through(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """``"for 6 months"`` is 180 days — outside the 90-day ceiling.
+    The backstop skips that match (rather than clamping) and falls
+    through to the next match. If there's no in-range fallback,
+    horizon stays missing and the bot opens the picker.
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon_seconds": None,
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.99,
+                "direction": 0.98,
+                "horizon_seconds": 0.0,
+                "conviction": 0.8,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long for 6 months, fundamentals story")
+    assert draft.horizon is None
+    assert "horizon" in draft.missing_fields
+
+
+async def test_backstop_ignores_referential_durations(
+    http_client: httpx.AsyncClient,
+) -> None:
+    """``"after"`` / ``"next"`` / ``"by"`` are excluded from the
+    backstop preposition set because they often introduce time
+    references that are NOT the user's horizon ("after 2 hours of
+    analysis"). The backstop must NOT mistake a referential phrase
+    for a horizon when the user didn't give an explicit "for / in /
+    within / over <N> <unit>".
+    """
+    drafter = OpenRouterClaimDrafter(api_key="sk-test", http_client=http_client)
+    body = _completion_payload(
+        {
+            "asset_query": "ETH",
+            "direction": "long",
+            "horizon_seconds": None,
+            "conviction": "strong",
+            "confidences": {
+                "asset_query": 0.99,
+                "direction": 0.98,
+                "horizon_seconds": 0.0,
+                "conviction": 0.8,
+            },
+        }
+    )
+    with respx.mock(base_url="https://openrouter.ai/api/v1") as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=body))
+        draft = await drafter.draft("ETH long, after 2 hours of analysis I think it pumps")
     assert draft.horizon is None
     assert "horizon" in draft.missing_fields
 
