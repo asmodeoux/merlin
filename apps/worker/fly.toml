@@ -15,7 +15,20 @@ kill_timeout = "60s"
   ENVIRONMENT = "prod"
   LOG_LEVEL   = "INFO"
 
+# Memory floor: 512mb. The 256mb start landed the worker on an OOM
+# kill at the FIRST live `resolve_outcome` job (2026-06-08 prod):
+# the work-horse fork doubled the RSS of a parent that was already
+# carrying the RQ worker + the `with_scheduler=True` subprocess +
+# the lazily-imported SQLAlchemy / asyncpg / httpx / Telegram-notify
+# stack, and the Firecracker VM tripped its 256mb ceiling
+# (`Out of memory: Killed process 636 (uv) ...`). RQ's retry policy
+# only fires on raised exceptions — an OOM-SIGKILL leaves the job
+# orphaned and the user without an outcome notification. Matching
+# the API's 512mb floor gives a comfortable headroom for the
+# fork+job memory spike; revisit (down) only after measuring RSS
+# under steady prod load. Pinned in
+# tests/preflight/test_fly_vm_memory_floor.py.
 [[vm]]
   cpu_kind = "shared"
   cpus     = 1
-  memory   = "256mb"
+  memory   = "512mb"
