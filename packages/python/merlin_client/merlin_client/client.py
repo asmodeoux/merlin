@@ -128,10 +128,13 @@ class MerlinClient:
         tg_user_id: int,
         expires_in_days: int = 14,
     ) -> dict[str, Any]:
-        """``POST /invites`` — admin-only invite issuance.
+        """``POST /invites`` — issue a new invite code.
 
-        Returns ``{code, expires_at}``. 403s if ``tg_user_id`` isn't in
-        the API's admin allowlist.
+        Open to any onboarded source — the only authorisation gate on
+        the server is "your ``tg_user_id`` must already resolve to a
+        ``sources`` row" (i.e. you've finished /start). Returns
+        ``{code, expires_at}``. 403s with ``not_a_source`` if the
+        caller hasn't completed onboarding yet.
         """
         return await self._post(
             "/invites",

@@ -1,12 +1,20 @@
-"""Unit tests for ``POST /invites/redeem`` + ``POST /invites``.
+"""Unit tests for ``POST /invites/redeem`` + ``POST /invites`` + ``POST /invites/revoke``.
 
 The route handlers were rewritten in Sprint 1 to talk to real
 repositories instead of returning a random UUID. These tests verify
 the new wiring without standing up Postgres — we override
 ``get_session`` to yield a tiny in-memory fake whose repositories are
 hand-written stand-ins. That keeps the test fast and pinned to the
-*route's* contract (admin check, idempotency, 404 handling, etc.)
+*route's* contract (auth gate, idempotency, 404 handling, etc.)
 rather than the SQL layer (which gets its own integration tests).
+
+Invite issuance was opened up to any onboarded source — the only
+authorisation gate on ``POST /invites`` is "the caller has a
+``sources`` row". The previously-pinned ``"not an admin"`` 403 case
+became ``"not_a_source"`` 403 in the same wire shape; the admin path
+is now indistinguishable from any other onboarded source's path (both
+require the same `sources` row to exist), which is the whole point.
+``POST /invites/revoke`` stayed admin-only.
 """
 
 from __future__ import annotations
@@ -23,10 +31,32 @@ from merlin_api.app import create_app
 from merlin_api.config import Settings
 from merlin_api.deps import get_session, get_settings
 from merlin_core.application.ports import InviteRecord, SourceRecord
+from merlin_core.domain.source_id import make_source_id
 
 TEST_TOKEN = "test-internal-token"
 ADMIN_ID = 151594111
 NON_ADMIN_ID = 999999
+
+
+def _seed_source(fake_session: Any, tg_user_id: int) -> str:
+    """Pre-create a ``sources`` row keyed on ``tg_user_id``.
+
+    Returns the resulting opaque source_id. Used by tests that need
+    the caller to look "already onboarded" so the new ``not_a_source``
+    gate on ``POST /invites`` lets them through.
+    """
+    source_id = make_source_id(tg_user_id)
+    fake_session.sources.sources[source_id] = SourceRecord(
+        source_id=source_id,
+        display_name="seeded",
+        kind="user",
+        reliability="F",
+        credibility=6,
+        consent_version="v0",
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+    return source_id
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +204,22 @@ class _FakeSession:
     async def rollback(self) -> None:
         self.rolled_back = True
 
-    async def get(self, *_args: Any, **_kw: Any) -> None:
+    async def get(self, model: Any, primary_key: Any, /, **_kw: Any) -> Any:
+        """Stand-in for ``AsyncSession.get(Model, pk)``.
+
+        Routes only call this against the ``Source`` model today (for
+        the ``_source_exists`` gate on ``POST /invites``). Look the
+        primary key up in our fake sources dict; everything else
+        returns ``None`` so a future route gaining a different
+        ``session.get`` call lands on a deterministic "row missing"
+        path until someone wires the fake.
+        """
+        # Lazy import — avoids dragging the ORM model into every test
+        # collection step that doesn't touch ``session.get``.
+        from merlin_infrastructure.db.models import Source
+
+        if model is Source:
+            return self.sources.sources.get(str(primary_key))
         return None
 
 
@@ -237,8 +282,38 @@ def auth_headers() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# POST /invites — admin issuance.
+# POST /invites — open issuance, gated on "caller is a known source".
 # ---------------------------------------------------------------------------
+
+
+async def test_create_invite_onboarded_non_admin_succeeds(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Any onboarded source can mint — the admin allowlist is gone.
+
+    Pins the headline behaviour of the open-invites rollout: a
+    non-admin caller with a ``sources`` row gets a 201 and a fresh
+    code, identical to the admin path. The previous version of this
+    test asserted 403 for the same input; that 403 was the bug.
+    """
+    seeded = _seed_source(fake_session, NON_ADMIN_ID)
+
+    response = await client.post(
+        "/invites",
+        json={"tg_user_id": NON_ADMIN_ID, "expires_in_days": 7},
+        headers=auth_headers,
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert len(body["code"]) >= 8
+    assert "expires_at" in body
+    assert fake_session.committed
+    assert len(fake_session.invites.invites) == 1
+    # The minted row records the caller as the issuer — auditability.
+    minted = next(iter(fake_session.invites.invites.values()))
+    assert minted.created_by_source_id == seeded
 
 
 async def test_create_invite_admin_succeeds(
@@ -246,6 +321,16 @@ async def test_create_invite_admin_succeeds(
     auth_headers: dict[str, str],
     fake_session: _FakeSession,
 ) -> None:
+    """Admins still mint successfully — they satisfy the same gate.
+
+    Under the open-invites policy admins aren't special; they go
+    through the SAME source-exists check as every other caller. This
+    test pre-seeds the admin's source row (matching what
+    ``admin_bootstrap`` does at first ``/start``) and asserts the
+    standard 201 path.
+    """
+    _seed_source(fake_session, ADMIN_ID)
+
     response = await client.post(
         "/invites",
         json={"tg_user_id": ADMIN_ID, "expires_in_days": 7},
@@ -259,18 +344,26 @@ async def test_create_invite_admin_succeeds(
     assert len(fake_session.invites.invites) == 1
 
 
-async def test_create_invite_non_admin_403s(
+async def test_create_invite_unknown_caller_403s_with_not_a_source(
     client: httpx.AsyncClient,
     auth_headers: dict[str, str],
     fake_session: _FakeSession,
 ) -> None:
+    """Callers without a ``sources`` row 403 — the only remaining gate.
+
+    Realistic paths: a user typed ``/invite`` before completing
+    ``/start``, or onboarding crashed mid-flow leaving them without
+    a source row. The detail is ``not_a_source`` (not the old
+    ``not an admin``); the bot maps this to a friendly "send /start
+    first" reply.
+    """
     response = await client.post(
         "/invites",
         json={"tg_user_id": NON_ADMIN_ID},
         headers=auth_headers,
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == "not an admin"
+    assert response.json()["detail"] == "not_a_source"
     assert not fake_session.invites.invites
 
 

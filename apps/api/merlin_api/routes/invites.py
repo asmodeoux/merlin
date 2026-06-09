@@ -1,4 +1,4 @@
-"""Invite routes — ``POST /invites/redeem`` + ``POST /invites``.
+"""Invite routes — ``POST /invites/redeem`` + ``POST /invites`` + ``POST /invites/revoke``.
 
 * ``POST /invites/redeem`` — user pastes a code; the API validates it
   against the ``invites`` table, INSERTs a fresh ``sources`` +
@@ -6,14 +6,34 @@
   thing is one transaction; two racing redeems for the same code can
   never both succeed (conditional UPDATE in the repository).
 
-* ``POST /invites`` — admin issues a new code. The route validates the
-  caller's Telegram ID against ``Settings.telegram_admin_chat_ids`` and
-  generates a URL-safe random token. Replaces the Sprint-0 stub that
-  accepted any non-``invalid`` code.
+* ``POST /invites`` — **any onboarded source** can mint a fresh code.
+  The only gate is "the caller must already exist as a ``sources``
+  row" — i.e. you can't mint an invite for yourself before you've
+  been let into the network. Admins satisfy this gate automatically
+  (the bot's ``admin_bootstrap`` flow runs on first ``/start``);
+  invited users satisfy it the moment they redeem their own invite.
+  Unknown callers 403 with a clear "join first" detail so the bot
+  can render the right onboarding nudge.
+
+* ``POST /invites/revoke`` — **admin-only**, kept gated on
+  ``Settings.telegram_admin_chat_ids``. Revocation is a moderation
+  tool (kill a leaked code) and there's no per-user ownership
+  semantic on ``invites.created_by_source_id`` that would let us
+  safely scope this to "you can only revoke codes you minted" — a
+  follow-up if that ever becomes a product need.
 
 The "random code accept" hole the user flagged is now closed: a code
 that doesn't exist in the ``invites`` table 404s, no matter how
 plausible the bytes look.
+
+Historical note: ``POST /invites`` was admin-only at v0. The gate
+was removed once invite-gated onboarding was robust enough that
+"only admins can mint codes" became a growth bottleneck rather than
+a safety property. The sybil-resistance argument for the original
+admin-only design now lives entirely in "you have to be invited to
+mint invites" (chain-of-trust) rather than in a server-side
+allowlist — see Q-030 [PROPOSED] in DECISIONS for the quota-based
+follow-up plan if the chain alone proves insufficient.
 """
 
 from __future__ import annotations
@@ -146,30 +166,41 @@ async def redeem_invite(
     "/invites",
     response_model=CreateInviteResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Issue a new invite code (admin-only).",
+    summary="Issue a new invite code (open to any onboarded source).",
     description=(
         "Generates a URL-safe ~11-character code and stores it with an "
-        "expiry. Caller must be a Telegram admin (configured via "
-        "``TELEGRAM_ADMIN_CHAT_IDS``); non-admin callers 403."
+        "expiry. Open to any caller whose ``tg_user_id`` resolves to "
+        "an existing ``sources`` row (i.e. they've completed onboarding "
+        "via ``/invites/redeem`` or ``admin_bootstrap``). Callers "
+        "without a source row 403 with ``not_a_source`` — the bot "
+        "renders a 'send /start first' nudge on that path."
     ),
 )
 async def create_invite(
     body: CreateInviteRequest,
     session: AsyncSession = Depends(get_session),
-    settings: Settings = Depends(get_settings),
 ) -> CreateInviteResponse:
-    """Mint a new invite, persist it, return the code."""
+    """Mint a new invite, persist it, return the code.
+
+    No ``Settings`` dep on the signature: the open-invites rollout
+    lifted the admin-allowlist check, which was the only consumer of
+    settings on this route. Re-add the dep here if a future gate needs
+    config (e.g. per-source rate limit, blocked-list, etc.).
+    """
     from merlin_infrastructure.db.repositories import InviteRepository
 
-    if body.tg_user_id not in settings.telegram_admin_chat_ids:
+    issuer_source_id = make_source_id(body.tg_user_id)
+    if not await _source_exists(session, issuer_source_id):
+        # Open to anyone WHO HAS JOINED. Calling /invite before /start
+        # is the only way to hit this in normal flow — the bot turns
+        # this 403 into a "send /start first" nudge so the user
+        # understands the remediation in one tap.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="not an admin",
+            detail="not_a_source",
         )
 
-    issuer_source_id = make_source_id(body.tg_user_id)
     expires_at = datetime.now(tz=UTC) + timedelta(days=body.expires_in_days)
-
     invite_repo = InviteRepository(session)
 
     # Retry on the (vanishingly unlikely) UNIQUE(code) collision. Three
@@ -179,9 +210,7 @@ async def create_invite(
         try:
             invite = await invite_repo.insert(
                 code=_generate_invite_code(),
-                created_by_source_id=(
-                    issuer_source_id if await _source_exists(session, issuer_source_id) else None
-                ),
+                created_by_source_id=issuer_source_id,
                 expires_at=expires_at,
             )
             await session.commit()
@@ -198,12 +227,12 @@ async def create_invite(
 
 
 async def _source_exists(session: AsyncSession, source_id: str) -> bool:
-    """Cheap presence check used by ``POST /invites``.
+    """Cheap presence check: does the caller already have a sources row?
 
-    Admins who haven't run ``admin_bootstrap`` yet won't have a
-    ``sources`` row; we still let them mint invites but record
-    ``created_by_source_id = NULL`` rather than violate the FK. This is
-    rare-ish in practice: the bot calls bootstrap on first ``/start``.
+    Used by ``POST /invites`` as the single authorisation gate. Under
+    the open-invites policy a missing source row is the ONLY reason
+    the route 403s — there's no admin allowlist short-circuit above
+    this check anymore (that gate is what we removed).
     """
     from merlin_infrastructure.db.models import Source
 

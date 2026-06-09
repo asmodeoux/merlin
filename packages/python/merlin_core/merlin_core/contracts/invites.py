@@ -39,20 +39,23 @@ class RedeemInviteResponse(BaseModel):
 
 
 class CreateInviteRequest(BaseModel):
-    """Body of ``POST /invites`` — admin issues a new code.
+    """Body of ``POST /invites`` — any onboarded source mints a new code.
 
-    Admin endpoints don't need ``created_by_source_id`` in the body;
-    the route resolves it server-side from the calling admin's TG id.
-    Empty body is allowed (the route defaults ``expires_in_days``).
+    Issuance is OPEN: the only authorisation gate is "the caller's
+    ``tg_user_id`` must resolve to an existing ``sources`` row".
+    Callers without a source row 403 (``not_a_source``) and the bot
+    turns that into a "send /start first" nudge. Once you're in,
+    you can mint unlimited codes — no quota at v0 — and every code
+    is single-use + revokable.
     """
 
     expires_in_days: int = Field(default=14, ge=1, le=365)
     tg_user_id: int = Field(
         ...,
         description=(
-            "Telegram ID of the admin issuing the invite. The route "
-            "checks this against the API's admin allowlist and resolves "
-            "it to the admin's opaque source_id."
+            "Telegram ID of the caller issuing the invite. The route "
+            "resolves it to an opaque source_id and checks that the "
+            "source exists. Unknown callers 403."
         ),
     )
 

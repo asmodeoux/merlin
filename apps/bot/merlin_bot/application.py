@@ -108,7 +108,7 @@ def build_application(settings: Settings) -> Application:
     # state because the inline "Show 30 more" button can be tapped
     # after a long lull. Onboarding and ``/alpha`` (ConversationHandlers)
     # follow.
-    from merlin_bot.handlers.admin import build_invite_handler, build_revoke_handler
+    from merlin_bot.handlers.admin import build_revoke_handler
     from merlin_bot.handlers.alpha import build_handler as build_alpha_handler
     from merlin_bot.handlers.board import (
         build_callback_handler as build_board_callback_handler,
@@ -119,6 +119,7 @@ def build_application(settings: Settings) -> Application:
         build_callback_handler as build_history_callback_handler,
     )
     from merlin_bot.handlers.history import build_handler as build_history_handler
+    from merlin_bot.handlers.invite_command import build_handler as build_invite_handler
     from merlin_bot.handlers.me import build_handler as build_me_handler
     from merlin_bot.handlers.start import build_handler as build_start_handler
     from merlin_bot.handlers.tickers import build_handler as build_tickers_handler

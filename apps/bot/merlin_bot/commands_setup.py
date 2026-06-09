@@ -31,6 +31,12 @@ _log = logging.getLogger("merlin.bot.commands_setup")
 
 # The public slash menu. Keep descriptions short — Telegram clips at
 # ~256 chars per line and most clients render only the first ~40.
+#
+# ``/invite`` lives here (not in ``ADMIN_EXTRA_COMMANDS``) since invite
+# issuance was opened up to every onboarded source. The API enforces
+# the only gate — "caller must be a known sources row" — so the
+# slash menu showing the command universally is correct: anyone in
+# the bot has already cleared that gate by definition.
 PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand("start", "Get started or redeem your invite"),
     BotCommand("alpha", "Log a new market call"),
@@ -38,6 +44,7 @@ PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand("board", "The leaderboard"),
     BotCommand("tickers", "Your stats per ticker"),
     BotCommand("history", "Your resolved calls newest-first"),
+    BotCommand("invite", "Share Merlin with a friend"),
     BotCommand("help", "How Merlin works"),
     BotCommand("cancel", "Drop the current draft"),
 )
@@ -45,9 +52,9 @@ PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
 
 # Admin-only additions — appended to PUBLIC_COMMANDS for the admin's
 # chat scope so admins see the full list, public users see the trimmed
-# list.
+# list. Currently just ``/revoke`` (the moderation tool for killing a
+# leaked code); ``/invite`` lives in ``PUBLIC_COMMANDS``.
 ADMIN_EXTRA_COMMANDS: tuple[BotCommand, ...] = (
-    BotCommand("invite", "Issue a new invite code"),
     BotCommand("revoke", "Revoke an un-redeemed invite"),
 )
 

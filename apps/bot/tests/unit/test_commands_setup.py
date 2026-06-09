@@ -50,7 +50,24 @@ class _FakeApplication:
 
 
 def test_public_commands_cover_every_user_facing_action() -> None:
-    expected = {"start", "alpha", "me", "board", "tickers", "history", "help", "cancel"}
+    """Every user-facing slash command is in the public menu.
+
+    ``/invite`` lives here (not in ``ADMIN_EXTRA_COMMANDS``) since
+    invite issuance was opened up to any onboarded source — the API
+    enforces the only gate ("caller must be a known source"), so
+    surfacing the command in the universal menu is correct.
+    """
+    expected = {
+        "start",
+        "alpha",
+        "me",
+        "board",
+        "tickers",
+        "history",
+        "invite",
+        "help",
+        "cancel",
+    }
     actual = {cmd.command for cmd in PUBLIC_COMMANDS}
     assert actual == expected
 
@@ -62,10 +79,20 @@ def test_public_command_descriptions_fit_telegram_limit() -> None:
         assert 1 <= len(cmd.description) <= 80
 
 
-def test_admin_extra_commands_includes_invite() -> None:
-    """``/invite`` lands in Sprint 1 — admins mint invite codes via it."""
+def test_admin_extra_commands_is_just_revoke() -> None:
+    """``/revoke`` is the only command still gated to admins.
+
+    Used to be ``{/invite, /revoke}``; ``/invite`` moved to
+    ``PUBLIC_COMMANDS`` when issuance was opened up. ``/revoke`` stays
+    here because it's a moderation tool (kill a leaked code) with no
+    per-user ownership semantic on ``invites.created_by_source_id``
+    that would let us safely scope it to "you can only revoke codes
+    you minted".
+    """
     cmds = {cmd.command for cmd in ADMIN_EXTRA_COMMANDS}
-    assert "invite" in cmds
+    assert cmds == {"revoke"}
+    # ``/invite`` must NOT be in admin extras — it's a public command.
+    assert "invite" not in cmds
     for cmd in ADMIN_EXTRA_COMMANDS:
         assert 1 <= len(cmd.description) <= 80
 
