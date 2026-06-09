@@ -192,6 +192,31 @@ clone:
 GH_REPO=org/repo ./scripts/bootstrap_github_settings.sh
 ```
 
+## 11.1. Fly deploys
+
+Always use the `make` targets — they pin the right `--config` +
+`--app` per service so you can't accidentally cross-wire a deploy
+(e.g. push the bot image to the API app):
+
+```bash
+make fly-deploy-api      # apps/api/fly.toml  → merlin-api
+make fly-deploy-worker   # apps/worker/fly.toml → merlin-worker
+make fly-deploy-bot      # apps/bot/fly.toml  → merlin-tg-bot
+make fly-deploy-all      # api → worker → bot, in that order
+```
+
+Order matters when the deploy carries an API contract change: deploy
+the API first (its `release_command` runs Alembic), then the worker
+(picks up the new contracts for resolution jobs), then the bot
+(which consumes the new routes via `merlin_client`). Never deploy
+the bot before the API on an OpenAPI-changing PR — the bot will
+404 against the old routes between the two deploys.
+
+Never invoke `fly deploy` directly. The Fly app slug for the bot is
+`merlin-tg-bot` (the global `merlin-bot` slug was taken); a raw
+`fly deploy --app merlin-bot` will silently target someone else's
+app.
+
 ## 12. Stack pins
 
 - Python **3.12** (`.python-version`).

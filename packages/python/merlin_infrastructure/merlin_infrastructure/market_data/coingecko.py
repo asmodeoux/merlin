@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import Any, Final
@@ -54,6 +55,23 @@ _PRICE_WINDOW = timedelta(minutes=5)
 # bets.
 _PRICE_WINDOW_WIDE = timedelta(minutes=30)
 _MAX_SEARCH_RESULTS = 5
+
+
+def _safe_float(value: Any) -> float | None:
+    """Coerce a CoinGecko-supplied numeric field to ``float | None``.
+
+    The ``/coins/markets`` endpoint legitimately returns ``null`` for
+    ``current_price`` / ``market_cap`` on long-tail rows (e.g. coins
+    that have stopped trading recently). Anything that can't be
+    coerced — ``None``, strings, etc. — falls through as ``None`` so
+    the picker renders "—" rather than crashing.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _looks_like_ticker(query: str) -> bool:
@@ -254,7 +272,104 @@ class CoinGeckoAdapter:
 
         seen_ids = {c.coingecko_id for c in exact}
         merged = exact + [c for c in fuzzy if c.coingecko_id not in seen_ids]
-        return _prioritise_exact_ticker(merged, query)[:_MAX_SEARCH_RESULTS]
+        top = _prioritise_exact_ticker(merged, query)[:_MAX_SEARCH_RESULTS]
+        return await self._enrich_with_market_data(top)
+
+    async def _enrich_with_market_data(
+        self,
+        candidates: list[AssetCandidate],
+    ) -> list[AssetCandidate]:
+        """Fill ``current_price_usd`` + ``market_cap_usd`` for the picker.
+
+        The exact-symbol path (``/coins/markets?symbols=``) already
+        produced enriched ``AssetCandidate`` rows. The fuzzy path
+        (``/search``) returns only ``id / symbol / name / rank`` — no
+        price or market cap — and that's the data the bot needs to
+        differentiate look-alike candidates (multiple distinct coins
+        sharing ``(symbol, name)``, e.g. three "STABLE — Stable"
+        rows).
+
+        One follow-up call to ``/coins/markets?ids=<id1,id2,...>``
+        enriches whatever's still missing. We only request the ids
+        we don't already have data for; if the helper raises, we
+        log + return the partially-enriched list rather than
+        knocking out the picker. The body renderer prints "—" for
+        any candidate the helper couldn't fill.
+        """
+        missing_ids = [
+            c.coingecko_id
+            for c in candidates
+            if c.current_price_usd is None and c.market_cap_usd is None
+        ]
+        if not missing_ids:
+            return candidates
+        try:
+            enrichments = await self._fetch_markets_by_ids(missing_ids)
+        except MarketDataError as e:
+            _log.warning(
+                "CoinGecko market-data enrichment for %d candidates failed; "
+                "rendering picker without price/cap. Error: %s",
+                len(missing_ids),
+                e,
+            )
+            return candidates
+        return [
+            (
+                replace(
+                    c,
+                    current_price_usd=enrichments[c.coingecko_id][0],
+                    market_cap_usd=enrichments[c.coingecko_id][1],
+                )
+                if c.coingecko_id in enrichments
+                and c.current_price_usd is None
+                and c.market_cap_usd is None
+                else c
+            )
+            for c in candidates
+        ]
+
+    async def _fetch_markets_by_ids(
+        self,
+        ids: list[str],
+    ) -> dict[str, tuple[float | None, float | None]]:
+        """``GET /coins/markets?ids=<csv>`` → ``{id: (price_usd, market_cap_usd)}``.
+
+        Used by :meth:`_enrich_with_market_data` to fill the missing
+        ``current_price_usd`` + ``market_cap_usd`` columns on
+        candidates that came from the fuzzy ``/search`` path. Same
+        endpoint shape as :meth:`_search_exact_symbol` (just keyed by
+        ``ids`` instead of ``symbols``), so the same defensive parse
+        rules apply: a 2xx body of an unexpected shape returns an
+        empty mapping rather than crashing.
+        """
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "ids": ",".join(ids),
+                    "order": "market_cap_desc",
+                    "per_page": len(ids),
+                    "page": 1,
+                },
+                headers=self._headers(),
+            )
+        except httpx.HTTPError as e:
+            raise MarketDataError(f"CoinGecko transport error: {e}") from e
+        self._check_status(response, "/coins/markets")
+        payload = self._parse_json(response, "/coins/markets")
+        if not isinstance(payload, list):
+            return {}
+        result: dict[str, tuple[float | None, float | None]] = {}
+        for entry in payload:
+            cg_id = entry.get("id")
+            if not isinstance(cg_id, str):
+                continue
+            result[cg_id] = (
+                _safe_float(entry.get("current_price")),
+                _safe_float(entry.get("market_cap")),
+            )
+        return result
 
     async def _search_fuzzy(self, query: str) -> list[AssetCandidate]:
         """``GET /search`` — fuzzy substring matching, ranked by market cap.
@@ -325,6 +440,8 @@ class CoinGeckoAdapter:
                 symbol=str(c["symbol"]).upper(),
                 name=str(c["name"]),
                 market_cap_rank=c.get("market_cap_rank"),
+                current_price_usd=_safe_float(c.get("current_price")),
+                market_cap_usd=_safe_float(c.get("market_cap")),
             )
             for c in payload
         ]

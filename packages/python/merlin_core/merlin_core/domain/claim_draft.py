@@ -29,12 +29,21 @@ class AssetCandidate:
 
     Surfaced to the user as a button when the LLM's asset confidence is
     below the auto-pick threshold, or when the user clicks "Edit asset".
+
+    ``current_price_usd`` and ``market_cap_usd`` carry the data the bot
+    needs to disambiguate look-alike candidates (multiple distinct
+    ``coingecko_id`` values can share a ``(symbol, name)`` pair —
+    e.g. three legitimate "STABLE — Stable" coins). Both are nullable
+    because long-tail CoinGecko rows lack market data and we still
+    want to show them rather than drop the row.
     """
 
     coingecko_id: str
     symbol: str
     name: str
     market_cap_rank: int | None = None
+    current_price_usd: float | None = None
+    market_cap_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

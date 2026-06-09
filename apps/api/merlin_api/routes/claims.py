@@ -107,6 +107,8 @@ async def draft_claim(
                     symbol=c.symbol,
                     name=c.name,
                     market_cap_rank=c.market_cap_rank,
+                    current_price_usd=c.current_price_usd,
+                    market_cap_usd=c.market_cap_usd,
                 )
                 for c in candidates_domain
             ]

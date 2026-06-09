@@ -128,6 +128,15 @@ def build_handler() -> ConversationHandler:
             ],
             AlphaState.PICK_ASSET: [
                 CallbackQueryHandler(step_asset.on_pick, pattern=r"^alpha:asset:"),
+                # Mid-pick text reply: pasted CoinGecko URL → resolve
+                # directly; otherwise re-render the picker as a fresh
+                # message below the live one (mirrors the free-form
+                # horizon-text pattern in step_horizon). Lets users
+                # refine without having to abandon the conversation.
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    step_asset.on_text_during_pick,
+                ),
             ],
         },
         # Late import — ``merlin_bot.handlers.cancel`` imports from

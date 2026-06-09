@@ -240,9 +240,12 @@ async def test_search_assets_skips_markets_probe_when_query_has_whitespace() -> 
     a pure waste of the Demo-tier CoinGecko quota. The heuristic in
     :func:`_looks_like_ticker` short-circuits to ``/search``-only.
 
-    Pinned by asserting the markets route has zero calls — a
-    regression that started calling the endpoint for names would
-    silently double quota usage across every name-shaped search.
+    Pinned by asserting the markets route is never called with
+    ``symbols=`` (the exact-symbol probe shape). The follow-up
+    enrichment pass keyed by ``ids=`` is a different code path and
+    legitimately fires for any candidate the fuzzy ``/search`` hop
+    surfaces without price / market cap — that's covered separately
+    by :func:`test_search_assets_enriches_fuzzy_path_with_market_data`.
     """
     respx.get(f"{_BASE_URL}/search").mock(
         return_value=httpx.Response(
@@ -262,7 +265,12 @@ async def test_search_assets_skips_markets_probe_when_query_has_whitespace() -> 
     markets_route = _stub_markets()
     out = await _adapter().search_assets("bitcoin cash")
     assert [c.coingecko_id for c in out] == ["bitcoin-cash"]
-    assert markets_route.call_count == 0
+    for call in markets_route.calls:
+        params = call.request.url.params
+        assert "symbols" not in params, (
+            "the exact-symbol probe must not fire for multi-word queries — "
+            f"got params={dict(params)}"
+        )
 
 
 @respx.mock
@@ -588,3 +596,215 @@ async def test_get_price_at_twap_handles_non_uniform_spacing() -> None:
     )
     pp = await _adapter().get_price_at("bitcoin", when)
     assert pp.price_usd == pytest.approx(100.25)
+
+
+# ---------------------------------------------------------------------------
+# Picker enrichment — price + market cap propagated to AssetCandidate
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_search_assets_extracts_price_and_cap_from_exact_probe() -> None:
+    """``/coins/markets?symbols=`` already returns price + market cap.
+
+    The exact-symbol path was a single endpoint already; the picker
+    just needs us to pull two more fields out of the payload. Zero
+    additional CoinGecko calls — this is the cheap branch.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    _stub_markets(
+        {
+            "id": "bitcoin",
+            "symbol": "btc",
+            "name": "Bitcoin",
+            "market_cap_rank": 1,
+            "current_price": 64500.12,
+            "market_cap": 1_270_000_000_000,
+        },
+    )
+    out = await _adapter().search_assets("btc")
+    assert len(out) == 1
+    assert out[0].current_price_usd == pytest.approx(64500.12)
+    assert out[0].market_cap_usd == pytest.approx(1_270_000_000_000)
+
+
+@respx.mock
+async def test_search_assets_enriches_fuzzy_path_with_market_data() -> None:
+    """Fuzzy ``/search`` lacks price/cap — enrichment fills them in.
+
+    Live UX bug: three distinct ``coingecko_id``s for "STABLE — Stable"
+    that look identical in the picker. The dedup-by-coingecko_id
+    correctly keeps all three (they ARE different coins). The fix
+    differentiates them by surfacing ``current_price_usd`` +
+    ``market_cap_usd``, which the fuzzy endpoint doesn't include.
+
+    The adapter follows up with a single
+    ``/coins/markets?ids=<id1,id2,...>`` enrichment call to fill the
+    gap. Pinned here: the call happens with the expected ids and the
+    returned market data lands on the matching candidates.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "stable", "symbol": "stable", "name": "Stable", "market_cap_rank": 800},
+                    {
+                        "id": "stable-2",
+                        "symbol": "stable",
+                        "name": "Stable",
+                        "market_cap_rank": 1500,
+                    },
+                    {
+                        "id": "stable-3",
+                        "symbol": "stable",
+                        "name": "STABLE",
+                        "market_cap_rank": None,
+                    },
+                ]
+            },
+        )
+    )
+    markets_route = respx.get(f"{_BASE_URL}/coins/markets").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            json=(
+                # The exact-symbol probe (symbols=stable) returns
+                # nothing — the picker is entirely fed by the fuzzy
+                # path here, which is the scenario that needs
+                # enrichment.
+                []
+                if "symbols" in request.url.params
+                else [
+                    {
+                        "id": "stable",
+                        "symbol": "stable",
+                        "name": "Stable",
+                        "current_price": 0.87,
+                        "market_cap": 5_200_000,
+                    },
+                    {
+                        "id": "stable-2",
+                        "symbol": "stable",
+                        "name": "Stable",
+                        "current_price": 0.21,
+                        "market_cap": 200_000,
+                    },
+                    {
+                        "id": "stable-3",
+                        "symbol": "stable",
+                        "name": "STABLE",
+                        "current_price": None,
+                        "market_cap": None,
+                    },
+                ]
+            ),
+        )
+    )
+    out = await _adapter().search_assets("stable")
+    coingecko_ids = [c.coingecko_id for c in out]
+    assert coingecko_ids == ["stable", "stable-2", "stable-3"], (
+        "distinct coingecko_ids that share (symbol, name) must all "
+        "survive the merge — dedup is by coingecko_id, not by display string"
+    )
+    by_id = {c.coingecko_id: c for c in out}
+    assert by_id["stable"].current_price_usd == pytest.approx(0.87)
+    assert by_id["stable"].market_cap_usd == pytest.approx(5_200_000)
+    assert by_id["stable-2"].current_price_usd == pytest.approx(0.21)
+    assert by_id["stable-2"].market_cap_usd == pytest.approx(200_000)
+    # Long-tail coin with null market data — surfaces as ``None`` on the
+    # candidate so the bot renders the row without crashing.
+    assert by_id["stable-3"].current_price_usd is None
+    assert by_id["stable-3"].market_cap_usd is None
+    # One probe call (symbols=stable) + one enrichment call (ids=...).
+    assert markets_route.call_count == 2
+    enrichment_calls = [call for call in markets_route.calls if "ids" in call.request.url.params]
+    assert len(enrichment_calls) == 1
+    ids_param = enrichment_calls[0].request.url.params["ids"]
+    assert set(ids_param.split(",")) == {"stable", "stable-2", "stable-3"}
+
+
+@respx.mock
+async def test_search_assets_enrichment_failure_degrades_gracefully() -> None:
+    """A 503 on the enrichment call must NOT take out the picker.
+
+    The picker still renders without price/cap (the bot shows ``—``
+    in those columns). Knocking the whole search out because the
+    secondary endpoint is down would be a regression on the same
+    "graceful degradation" principle that motivated the exact-probe
+    failure handling.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
+                ]
+            },
+        )
+    )
+
+    def _markets_handler(request: httpx.Request) -> httpx.Response:
+        if "symbols" in request.url.params:
+            # Probe returns empty so the fuzzy path is the only source.
+            return httpx.Response(200, json=[])
+        # Enrichment call (ids=...) fails — must not propagate.
+        return httpx.Response(503, text="enrichment down")
+
+    respx.get(f"{_BASE_URL}/coins/markets").mock(side_effect=_markets_handler)
+    out = await _adapter().search_assets("ethereum")
+    assert [c.coingecko_id for c in out] == ["ethereum"]
+    assert out[0].current_price_usd is None
+    assert out[0].market_cap_usd is None
+
+
+@respx.mock
+async def test_search_assets_keeps_distinct_lookalike_coins() -> None:
+    """Live "STABLE x3" regression: dedup is by coingecko_id, not display.
+
+    Three rows with the same ``(symbol, name)`` but distinct
+    ``coingecko_id`` are three separate coins on CoinGecko. The
+    picker must surface all three so the user can disambiguate (via
+    the price + market cap the enrichment pass populates).
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "stable", "symbol": "stable", "name": "Stable"},
+                    {"id": "stable-2", "symbol": "stable", "name": "Stable"},
+                    {"id": "stable-3", "symbol": "stable", "name": "Stable"},
+                ]
+            },
+        )
+    )
+    respx.get(f"{_BASE_URL}/coins/markets").mock(return_value=httpx.Response(200, json=[]))
+    out = await _adapter().search_assets("stable")
+    assert [c.coingecko_id for c in out] == ["stable", "stable-2", "stable-3"]
+
+
+@respx.mock
+async def test_search_assets_handles_null_price_in_markets_probe() -> None:
+    """A null ``current_price`` / ``market_cap`` must coerce to ``None``.
+
+    CoinGecko legitimately emits ``null`` for these on delisted /
+    halted coins. The parser must not crash; the bot renders ``—``
+    for those cells.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    _stub_markets(
+        {
+            "id": "halted-coin",
+            "symbol": "hlt",
+            "name": "Halted",
+            "market_cap_rank": None,
+            "current_price": None,
+            "market_cap": None,
+        },
+    )
+    out = await _adapter().search_assets("hlt")
+    assert len(out) == 1
+    assert out[0].current_price_usd is None
+    assert out[0].market_cap_usd is None

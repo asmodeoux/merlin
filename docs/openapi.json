@@ -61,11 +61,22 @@
         "type": "object"
       },
       "AssetCandidateDTO": {
-        "description": "One row in the response to ``GET /assets/search``.\n\nMirrors the domain ``AssetCandidate`` shape but lives in\n``contracts`` because Pydantic is forbidden in ``domain``.",
+        "description": "One row in the response to ``GET /assets/search``.\n\nMirrors the domain ``AssetCandidate`` shape but lives in\n``contracts`` because Pydantic is forbidden in ``domain``.\n\n``current_price_usd`` and ``market_cap_usd`` let the bot\ndifferentiate look-alike candidates (distinct ``coingecko_id``s\nthat share ``(symbol, name)``) by surfacing price + market cap in\nthe picker body. Both nullable so long-tail rows without market\ndata still render.",
         "properties": {
           "coingecko_id": {
             "title": "Coingecko Id",
             "type": "string"
+          },
+          "current_price_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Price Usd"
           },
           "market_cap_rank": {
             "anyOf": [
@@ -77,6 +88,17 @@
               }
             ],
             "title": "Market Cap Rank"
+          },
+          "market_cap_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Cap Usd"
           },
           "name": {
             "title": "Name",

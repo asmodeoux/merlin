@@ -17,12 +17,20 @@ class AssetCandidateDTO(BaseModel):
 
     Mirrors the domain ``AssetCandidate`` shape but lives in
     ``contracts`` because Pydantic is forbidden in ``domain``.
+
+    ``current_price_usd`` and ``market_cap_usd`` let the bot
+    differentiate look-alike candidates (distinct ``coingecko_id``s
+    that share ``(symbol, name)``) by surfacing price + market cap in
+    the picker body. Both nullable so long-tail rows without market
+    data still render.
     """
 
     coingecko_id: str
     symbol: str
     name: str
     market_cap_rank: int | None = None
+    current_price_usd: float | None = None
+    market_cap_usd: float | None = None
 
 
 class AssetSearchResponse(BaseModel):

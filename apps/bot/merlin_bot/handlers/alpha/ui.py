@@ -33,8 +33,9 @@ this contract obvious to anyone reading the step files.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from telegram import InlineKeyboardMarkup, Message, Update
+from telegram import InlineKeyboardMarkup, LinkPreviewOptions, Message, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
@@ -54,6 +55,8 @@ async def render(
     *,
     text: str,
     reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
+    disable_link_preview: bool = False,
 ) -> Message | None:
     """Edit the click-originating message in place, or send a fresh one.
 
@@ -64,6 +67,14 @@ async def render(
 
     Set ``reply_markup=None`` to strip a keyboard while keeping the
     text (used for terminal screens like Cancel and Confirm receipts).
+
+    ``parse_mode`` opts the message into a specific Telegram parser
+    (``"MarkdownV2"``, ``"HTML"``). Defaults to ``None`` because the
+    bot's global ``Defaults`` is parse-mode-free — handlers opt in
+    per-message. ``disable_link_preview=True`` suppresses Telegram's
+    automatic preview card for the first URL in the body (used by the
+    asset picker so the chat doesn't grow a CoinGecko thumbnail under
+    every disambiguation).
 
     Side effect: every successful render also updates the
     ``USER_KEY_PREVIEW_*`` slots in ``context.user_data`` to point at
@@ -78,11 +89,20 @@ async def render(
     when known; ``None`` if PTB returned ``True`` from an edit (which
     means "edited but I'm not giving you the object").
     """
+    link_preview = LinkPreviewOptions(is_disabled=True) if disable_link_preview else None
     query = update.callback_query
     result_msg: Message | None = None
     if query is not None:
         try:
-            edited = await query.edit_message_text(text=text, reply_markup=reply_markup)
+            edit_kwargs: dict[str, Any] = {
+                "text": text,
+                "reply_markup": reply_markup,
+            }
+            if parse_mode is not None:
+                edit_kwargs["parse_mode"] = parse_mode
+            if link_preview is not None:
+                edit_kwargs["link_preview_options"] = link_preview
+            edited = await query.edit_message_text(**edit_kwargs)
             # ``edit_message_text`` returns ``Message | bool`` and
             # ``query.message`` is typed as ``MaybeInaccessibleMessage``
             # (PTB v21). For messages we sent ourselves — always the
@@ -106,11 +126,16 @@ async def render(
     if result_msg is None:
         if update.effective_chat is None:
             return None
-        result_msg = await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=text,
-            reply_markup=reply_markup,
-        )
+        send_kwargs: dict[str, Any] = {
+            "chat_id": update.effective_chat.id,
+            "text": text,
+            "reply_markup": reply_markup,
+        }
+        if parse_mode is not None:
+            send_kwargs["parse_mode"] = parse_mode
+        if link_preview is not None:
+            send_kwargs["link_preview_options"] = link_preview
+        result_msg = await context.bot.send_message(**send_kwargs)
 
     _remember_live_card(context, result_msg, has_keyboard=reply_markup is not None)
     return result_msg
