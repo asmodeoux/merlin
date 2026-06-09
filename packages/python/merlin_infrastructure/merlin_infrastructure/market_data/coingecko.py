@@ -8,6 +8,7 @@ tiers — only the base URL discriminates the tier.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -55,6 +56,23 @@ _PRICE_WINDOW_WIDE = timedelta(minutes=30)
 _MAX_SEARCH_RESULTS = 5
 
 
+def _looks_like_ticker(query: str) -> bool:
+    """Decide whether to issue the exact-symbol probe alongside ``/search``.
+
+    Tickers are never multi-word, so a query containing whitespace
+    ("bitcoin cash", "ethereum classic") is a name and the exact-
+    symbol probe is guaranteed to return empty. Skipping it for those
+    saves a CoinGecko call on the Demo tier with zero loss of
+    coverage. Single-word queries always probe — including names
+    like "ethereum" — because the cost of one wasted call is far
+    smaller than the cost of missing a legitimate low-cap exact-
+    ticker hit (this is the bug that motivated the second endpoint
+    in the first place).
+    """
+    q = query.strip()
+    return bool(q) and not any(ch.isspace() for ch in q)
+
+
 def _prioritise_exact_ticker(candidates: list[AssetCandidate], query: str) -> list[AssetCandidate]:
     """Float exact-ticker matches to the top, sorted by market-cap rank.
 
@@ -65,6 +83,11 @@ def _prioritise_exact_ticker(candidates: list[AssetCandidate], query: str) -> li
     their original relative order. This handles the "many low-cap
     scam tokens share a popular ticker" case by surfacing the most
     reputable exact match first without flooding the picker.
+
+    Defensive belt-and-suspenders on top of the ``/coins/markets``
+    exact-symbol probe in :meth:`search_assets`: if that probe is
+    unavailable but an exact match happens to surface in the fuzzy
+    ``/search`` results, this helper still floats it to the top.
     """
     if not candidates:
         return candidates
@@ -165,22 +188,81 @@ class CoinGeckoAdapter:
         return {}
 
     async def search_assets(self, query: str) -> list[AssetCandidate]:
-        """``GET /search?query=...`` → top-5 ``AssetCandidate``.
+        """Fan out to ``/search`` + ``/coins/markets?symbols=`` and merge → top-5.
 
-        Ordering: exact-ticker matches (case-insensitive on ``symbol``)
-        are floated to the top, sorted by market-cap rank; the remaining
-        slots are filled with CoinGecko's natural market-cap-ordered
-        results in their original order.
+        Two endpoints because each one alone is wrong:
 
-        Why prioritise exact-ticker matches: CoinGecko's ``/search``
-        sorts by market-cap rank across the full fuzzy-match pool, so a
-        low-cap coin whose ticker IS the literal query (e.g. "H" →
-        Humanity Protocol) can be displaced out of the top-5 by much
-        higher-cap coins whose ticker / name merely *contains* the
-        query as a substring ("ETH", "HYPE", "FIGR_HELOC", "ZEC", ...).
-        Users typing a short ticker almost always mean the exact match;
-        if there is one anywhere in the response, the picker must
-        surface it.
+        * **``/search?query=<q>``** does substring fuzzy matching across
+          every coin's name + symbol, ranked by market cap. For 1-2
+          letter queries this fans out across the entire 17k+ coin
+          universe and a legitimate low-cap exact-symbol coin gets
+          buried below the first 25 returned results. Live regression
+          motivating the rewrite: querying ``H`` returned
+          ``[ETH, USDT, FIGR_HELOC, HYPE, ZEC, ...]`` — every entry
+          merely *contains* the letter "h" — and Humanity Protocol
+          (``id=humanity``, ``symbol=H``, rank ~161) never surfaced.
+        * **``/coins/markets?vs_currency=usd&symbols=<q>&order=market_cap_desc``**
+          does exact (case-insensitive) ticker matching against listed
+          coins, market-cap ordered. Returns Humanity directly for
+          ``symbols=h`` but doesn't do any fuzzy / prefix matching, so
+          on its own it'd kill the "type 'bitc' to find Bitcoin"
+          discovery affordance.
+
+        Strategy: issue both concurrently. Prepend the exact-symbol
+        hits (CoinGecko already orders them market-cap-desc) to the
+        fuzzy hits, dedupe by ``coingecko_id`` (a popular ticker like
+        ``BTC`` appears in both responses), apply the defensive
+        :func:`_prioritise_exact_ticker` pass for the corner case
+        where the exact endpoint is unreachable but the fuzzy results
+        happened to include the exact match, and truncate to top-5.
+
+        Failure semantics:
+
+        * **Fuzzy ``/search`` failure** surfaces — the picker has
+          nothing to show without it.
+        * **Exact ``/coins/markets`` failure** is logged and swallowed.
+          The fix is a quality-of-life upgrade on the rare short-ticker
+          case; a transient outage on the secondary endpoint must not
+          knock out the primary picker.
+
+        Queries with whitespace (``"bitcoin cash"``) skip the exact
+        probe entirely — no coin has a multi-word ticker so it'd burn
+        quota for a guaranteed-empty response.
+        """
+        if _looks_like_ticker(query):
+            fuzzy_result, exact_result = await asyncio.gather(
+                self._search_fuzzy(query),
+                self._search_exact_symbol(query),
+                return_exceptions=True,
+            )
+            if isinstance(fuzzy_result, BaseException):
+                raise fuzzy_result
+            if isinstance(exact_result, BaseException):
+                _log.warning(
+                    "CoinGecko exact-symbol lookup for %r failed; "
+                    "returning fuzzy-only results. Error: %s",
+                    query,
+                    exact_result,
+                )
+                exact: list[AssetCandidate] = []
+            else:
+                exact = exact_result
+            fuzzy: list[AssetCandidate] = fuzzy_result
+        else:
+            fuzzy = await self._search_fuzzy(query)
+            exact = []
+
+        seen_ids = {c.coingecko_id for c in exact}
+        merged = exact + [c for c in fuzzy if c.coingecko_id not in seen_ids]
+        return _prioritise_exact_ticker(merged, query)[:_MAX_SEARCH_RESULTS]
+
+    async def _search_fuzzy(self, query: str) -> list[AssetCandidate]:
+        """``GET /search`` — fuzzy substring matching, ranked by market cap.
+
+        Extracted so :meth:`search_assets` can run it concurrently
+        with the exact-symbol probe via ``asyncio.gather``. Returns
+        ALL coins from the response (caller decides on truncation
+        after merging).
         """
         try:
             response = await self._client.get(
@@ -193,7 +275,7 @@ class CoinGeckoAdapter:
         self._check_status(response, "/search")
         payload = self._parse_json(response, "/search")
         coins = payload.get("coins", [])
-        candidates = [
+        return [
             AssetCandidate(
                 coingecko_id=str(c["id"]),
                 symbol=str(c["symbol"]).upper(),
@@ -202,7 +284,50 @@ class CoinGeckoAdapter:
             )
             for c in coins
         ]
-        return _prioritise_exact_ticker(candidates, query)[:_MAX_SEARCH_RESULTS]
+
+    async def _search_exact_symbol(self, query: str) -> list[AssetCandidate]:
+        """``GET /coins/markets?symbols=<q>`` — exact ticker match, market-cap ordered.
+
+        Returns at most ``_MAX_SEARCH_RESULTS`` listed coins whose
+        symbol equals ``query`` (case-insensitive). CoinGecko handles
+        the canonical-coin selection for popular tickers (e.g.
+        ``symbols=btc`` returns only Bitcoin, not the dozens of
+        unlisted scam BTC forks), so the merge logic in
+        :meth:`search_assets` can prepend these directly without
+        de-spam filtering.
+
+        Defensive: a 2xx response with a non-list body shape is
+        treated as "no exact matches" rather than crashing — keeps
+        the picker working through any unannounced CoinGecko schema
+        drift on this endpoint.
+        """
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "symbols": query.strip().lower(),
+                    "order": "market_cap_desc",
+                    "per_page": _MAX_SEARCH_RESULTS,
+                    "page": 1,
+                },
+                headers=self._headers(),
+            )
+        except httpx.HTTPError as e:
+            raise MarketDataError(f"CoinGecko transport error: {e}") from e
+        self._check_status(response, "/coins/markets")
+        payload = self._parse_json(response, "/coins/markets")
+        if not isinstance(payload, list):
+            return []
+        return [
+            AssetCandidate(
+                coingecko_id=str(c["id"]),
+                symbol=str(c["symbol"]).upper(),
+                name=str(c["name"]),
+                market_cap_rank=c.get("market_cap_rank"),
+            )
+            for c in payload
+        ]
 
     async def get_asset_metadata(self, coingecko_id: str) -> AssetMetadata:
         """``GET /coins/{id}`` → canonical ``(symbol, name)``."""

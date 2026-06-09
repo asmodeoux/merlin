@@ -38,9 +38,32 @@ def _adapter() -> CoinGeckoAdapter:
     return CoinGeckoAdapter(base_url=_BASE_URL, http_client=httpx.AsyncClient(timeout=5.0))
 
 
+def _stub_markets(*coins: dict[str, object]) -> respx.Route:
+    """Mock the ``/coins/markets`` endpoint (the exact-symbol probe).
+
+    ``search_assets`` fans out to BOTH ``/search`` and
+    ``/coins/markets?symbols=<q>`` in parallel; ``respx.mock`` asserts
+    on unmocked routes, so every search test that exercises the
+    ticker-shaped happy path must stub this endpoint too. Pass an
+    empty arg list for "no exact-symbol matches" (the common case in
+    failure-mode tests where the test only cares about ``/search``
+    blowing up).
+    """
+    return respx.get(f"{_BASE_URL}/coins/markets").mock(
+        return_value=httpx.Response(200, json=list(coins))
+    )
+
+
 @respx.mock
 async def test_search_assets_success_returns_top_candidates() -> None:
-    """Happy path locks the parse logic + market-cap ordering."""
+    """Happy path locks the parse logic + market-cap ordering.
+
+    Also pins the dedup contract: a popular ticker like ``BTC``
+    surfaces in both ``/search`` (as the top fuzzy hit) and
+    ``/coins/markets?symbols=btc`` (as the only exact-symbol hit).
+    The merge prepends the exact match and skips the duplicate in
+    the fuzzy results — Bitcoin must appear exactly once.
+    """
     respx.get(f"{_BASE_URL}/search").mock(
         return_value=httpx.Response(
             200,
@@ -52,29 +75,35 @@ async def test_search_assets_success_returns_top_candidates() -> None:
             },
         )
     )
+    _stub_markets(
+        {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+    )
     out = await _adapter().search_assets("btc")
     assert [c.coingecko_id for c in out] == ["bitcoin", "ethereum"]
     assert [c.symbol for c in out] == ["BTC", "ETH"]
 
 
 @respx.mock
-async def test_search_assets_floats_exact_ticker_match_to_top() -> None:
-    """An exact-ticker match buried below market-cap noise must be surfaced.
+async def test_search_assets_surfaces_exact_match_only_in_markets_endpoint() -> None:
+    """The live "H → Humanity" regression: ``/search`` doesn't include it.
 
-    Live regression: a user typed ``H`` looking for Humanity Protocol
-    (low-cap, ticker exactly "H"). CoinGecko's ``/search`` is ordered
-    by market-cap rank across the full fuzzy-match pool, so the
-    response came back as ``[ETH, USDT, FIGR_HELOC, HYPE, ZEC, ..., H,
-    ...]``. The previous ``coins[:5]`` slice dropped Humanity off the
-    keyboard entirely, leaving the user with five wrong-asset buttons
-    and no way to bet on the coin they actually meant.
+    Reproducing the actual CoinGecko behaviour observed in production:
+    ``/search?query=H`` returns 25 coins whose names / symbols merely
+    *contain* the letter "h" (ETH, USDT, FIGR_HELOC, HYPE, ZEC, ...).
+    The legitimate ``symbol=H`` coin (Humanity Protocol, rank ~161)
+    never appears in that response at all because single-letter
+    queries fan out against the entire 17k+ coin universe and
+    CoinGecko caps the result list.
 
-    Contract this pins: the adapter scans the full response, lifts
-    every candidate whose symbol equals the query (case-insensitive)
-    to the top, and only then truncates to the top-5. Order among the
-    floated exact matches is market-cap-rank ascending so the most
-    reputable exact match wins; non-exact candidates keep CoinGecko's
-    native ordering for the remaining slots.
+    The exact-symbol endpoint (``/coins/markets?symbols=h``) returns
+    Humanity directly. ``search_assets`` must call both endpoints,
+    prepend the exact match, and serve a top-5 with Humanity at
+    index 0 — the user's intent (typing the exact ticker) is
+    respected even though it'd be invisible to ``/search`` alone.
+
+    This is the test that would have caught the bug in the first
+    place — the previous fix only re-ordered ``/search`` results and
+    couldn't help when ``/search`` didn't surface Humanity at all.
     """
     respx.get(f"{_BASE_URL}/search").mock(
         return_value=httpx.Response(
@@ -87,24 +116,21 @@ async def test_search_assets_floats_exact_ticker_match_to_top() -> None:
                         "id": "figure-heloc",
                         "symbol": "figr_heloc",
                         "name": "Figure Heloc",
-                        "market_cap_rank": 250,
+                        "market_cap_rank": 9,
                     },
                     {
                         "id": "hyperliquid",
                         "symbol": "hype",
                         "name": "Hyperliquid",
-                        "market_cap_rank": 25,
+                        "market_cap_rank": 10,
                     },
-                    {"id": "zcash", "symbol": "zec", "name": "Zcash", "market_cap_rank": 60},
-                    {
-                        "id": "humanity",
-                        "symbol": "h",
-                        "name": "Humanity Protocol",
-                        "market_cap_rank": 800,
-                    },
+                    {"id": "zcash", "symbol": "zec", "name": "Zcash", "market_cap_rank": 15},
                 ]
             },
         )
+    )
+    _stub_markets(
+        {"id": "humanity", "symbol": "h", "name": "Humanity", "market_cap_rank": 161},
     )
     out = await _adapter().search_assets("H")
     assert out[0].coingecko_id == "humanity"
@@ -118,13 +144,12 @@ async def test_search_assets_floats_exact_ticker_match_to_top() -> None:
 
 
 @respx.mock
-async def test_search_assets_exact_ticker_match_lowercase_query_still_promoted() -> None:
-    """The exact-ticker promotion is case-insensitive on the query side.
+async def test_search_assets_exact_match_lowercase_query_still_surfaced() -> None:
+    """Case-insensitive on both endpoints — users type ``h`` and ``H`` interchangeably.
 
-    Users type ``h`` and ``H`` interchangeably. CoinGecko reports
-    symbols as lowercase; we normalise to uppercase. The promotion
-    must compare on normalised symbols so neither side's casing
-    breaks the match.
+    The adapter lowercases the query when sending ``?symbols=`` and
+    uppercases all returned symbols at parse time, so the merge / dedup
+    works whichever casing the user typed.
     """
     respx.get(f"{_BASE_URL}/search").mock(
         return_value=httpx.Response(
@@ -132,30 +157,92 @@ async def test_search_assets_exact_ticker_match_lowercase_query_still_promoted()
             json={
                 "coins": [
                     {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
-                    {
-                        "id": "humanity",
-                        "symbol": "h",
-                        "name": "Humanity Protocol",
-                        "market_cap_rank": 800,
-                    },
                 ]
             },
         )
+    )
+    _stub_markets(
+        {"id": "humanity", "symbol": "h", "name": "Humanity", "market_cap_rank": 161},
     )
     out = await _adapter().search_assets("h")
     assert out[0].coingecko_id == "humanity"
 
 
 @respx.mock
-async def test_search_assets_multiple_exact_matches_ordered_by_market_cap() -> None:
-    """When several coins share the exact ticker, the highest-cap one wins.
+async def test_search_assets_dedupes_exact_match_already_in_fuzzy() -> None:
+    """When the exact match also appears in ``/search`` results, no duplicate.
 
-    Many low-cap / scam tokens reuse popular tickers (``BTC``,
-    ``ETH``, etc.). The picker has only 5 slots — flooding it with
-    rank-less copycats would degrade the original problem the fix
-    is supposed to solve. The promotion sorts exact matches by
-    ``market_cap_rank`` ascending (rank-1 first), tie-breaking
-    unranked tokens to the end of the exact-match group.
+    Popular tickers like ``BTC`` surface in both endpoints — ``/search``
+    returns Bitcoin as its top fuzzy hit, and
+    ``/coins/markets?symbols=btc`` returns Bitcoin as its only exact
+    hit. The merge dedupes by ``coingecko_id``: Bitcoin appears
+    exactly once and the remaining 4 slots fill from the fuzzy
+    results.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
+                    {
+                        "id": "bitcoin-cash",
+                        "symbol": "bch",
+                        "name": "Bitcoin Cash",
+                        "market_cap_rank": 26,
+                    },
+                ]
+            },
+        )
+    )
+    _stub_markets(
+        {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+    )
+    out = await _adapter().search_assets("BTC")
+    coin_ids = [c.coingecko_id for c in out]
+    assert coin_ids.count("bitcoin") == 1
+    assert coin_ids == ["bitcoin", "ethereum", "bitcoin-cash"]
+
+
+@respx.mock
+async def test_search_assets_no_exact_match_preserves_fuzzy_order() -> None:
+    """No exact-symbol hits → result is the fuzzy list in CoinGecko's native order.
+
+    A name-shaped query like ``"bitcoin"`` triggers both endpoints
+    (no whitespace so :func:`_looks_like_ticker` is True), but
+    ``/coins/markets?symbols=bitcoin`` returns ``[]`` because no coin
+    has the symbol "bitcoin". The merge falls through to fuzzy
+    results unchanged.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
+                ]
+            },
+        )
+    )
+    _stub_markets()
+    out = await _adapter().search_assets("bitcoin")
+    assert [c.coingecko_id for c in out] == ["bitcoin", "ethereum"]
+
+
+@respx.mock
+async def test_search_assets_skips_markets_probe_when_query_has_whitespace() -> None:
+    """Multi-word queries skip the exact-symbol probe entirely.
+
+    No coin has a multi-word ticker, so calling
+    ``/coins/markets?symbols=bitcoin%20cash`` is guaranteed-empty and
+    a pure waste of the Demo-tier CoinGecko quota. The heuristic in
+    :func:`_looks_like_ticker` short-circuits to ``/search``-only.
+
+    Pinned by asserting the markets route has zero calls — a
+    regression that started calling the endpoint for names would
+    silently double quota usage across every name-shaped search.
     """
     respx.get(f"{_BASE_URL}/search").mock(
         return_value=httpx.Response(
@@ -163,43 +250,51 @@ async def test_search_assets_multiple_exact_matches_ordered_by_market_cap() -> N
             json={
                 "coins": [
                     {
-                        "id": "scam-btc-fork",
-                        "symbol": "btc",
-                        "name": "Scam BTC Fork",
-                        "market_cap_rank": None,
+                        "id": "bitcoin-cash",
+                        "symbol": "bch",
+                        "name": "Bitcoin Cash",
+                        "market_cap_rank": 26,
                     },
-                    {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
-                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
                 ]
             },
         )
     )
-    out = await _adapter().search_assets("BTC")
-    assert [c.coingecko_id for c in out] == ["bitcoin", "scam-btc-fork", "ethereum"]
+    markets_route = _stub_markets()
+    out = await _adapter().search_assets("bitcoin cash")
+    assert [c.coingecko_id for c in out] == ["bitcoin-cash"]
+    assert markets_route.call_count == 0
 
 
 @respx.mock
-async def test_search_assets_no_exact_match_preserves_market_cap_order() -> None:
-    """When no candidate matches the exact ticker, the native order is preserved.
+async def test_search_assets_markets_endpoint_failure_falls_back_to_fuzzy() -> None:
+    """A ``/coins/markets`` outage must not knock out the picker.
 
-    Typing a name like ``"bitcoin"`` must not reshuffle the response —
-    CoinGecko's market-cap ordering is already the right answer in
-    the no-exact-match case. Regression guard: the promotion helper
-    must be a no-op when ``query`` doesn't match any returned symbol.
+    The exact-symbol probe is a quality-of-life addition; ``/search``
+    remains the primary endpoint. If ``/coins/markets`` returns 503
+    (or any other ``MarketDataError``), the adapter logs and returns
+    fuzzy-only results — the user still gets a usable picker even
+    if low-cap exact-symbol hits are temporarily invisible.
+
+    The defensive :func:`_prioritise_exact_ticker` pass also kicks
+    in here: if the fuzzy results happen to contain an exact symbol
+    match for the query, it's still floated to the top even though
+    the markets endpoint failed.
     """
     respx.get(f"{_BASE_URL}/search").mock(
         return_value=httpx.Response(
             200,
             json={
                 "coins": [
-                    {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
                     {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
                 ]
             },
         )
     )
-    out = await _adapter().search_assets("bitcoin")
-    assert [c.coingecko_id for c in out] == ["bitcoin", "ethereum"]
+    respx.get(f"{_BASE_URL}/coins/markets").mock(
+        return_value=httpx.Response(503, text="markets endpoint down")
+    )
+    out = await _adapter().search_assets("ETH")
+    assert [c.coingecko_id for c in out] == ["ethereum"]
 
 
 @respx.mock
@@ -214,6 +309,7 @@ async def test_search_assets_redirect_raises_market_data_error_with_env_hint() -
     respx.get(f"{_BASE_URL}/search").mock(
         return_value=httpx.Response(301, headers={"location": "https://example.invalid/en/"})
     )
+    _stub_markets()
     with pytest.raises(MarketDataError) as exc:
         await _adapter().search_assets("btc")
     msg = str(exc.value)
@@ -230,6 +326,7 @@ async def test_search_assets_non_json_2xx_raises_with_body_preview() -> None:
             200, text="<html>Just a moment...</html>", headers={"content-type": "text/html"}
         )
     )
+    _stub_markets()
     with pytest.raises(MarketDataError) as exc:
         await _adapter().search_assets("btc")
     msg = str(exc.value)
@@ -241,6 +338,7 @@ async def test_search_assets_non_json_2xx_raises_with_body_preview() -> None:
 @respx.mock
 async def test_search_assets_5xx_raises_market_data_error() -> None:
     respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(503, text="upstream down"))
+    _stub_markets()
     with pytest.raises(MarketDataError) as exc:
         await _adapter().search_assets("btc")
     assert "503" in str(exc.value)
