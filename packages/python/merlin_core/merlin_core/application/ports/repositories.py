@@ -417,6 +417,25 @@ class ClaimRepositoryPort(Protocol):
         """
         ...
 
+    async def count_open_global(self) -> tuple[int, int]:
+        """Platform-wide open-claims aggregate: ``(open_calls, distinct_sources)``.
+
+        Filters ``WHERE resolves_at > now()`` (claims whose horizon is
+        still in the future) across ALL sources — there is no
+        ``source_id`` argument by design. Returns the pair
+        ``(count(*), count(distinct source_id))`` in a single
+        round-trip so the ``/board`` route can render the
+        "X open calls by Y users are in progress" footer without a
+        second query.
+
+        Both counts are ``0`` when no rows match. ``distinct_sources``
+        is always ``<= open_calls`` (one source may have several open
+        claims). Not horizon-filtered — the bot surfaces this as a
+        platform-wide activity heartbeat regardless of the active
+        /board slice.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # OutcomeRepositoryPort — append-only outcome events.

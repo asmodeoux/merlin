@@ -213,7 +213,7 @@
         "type": "object"
       },
       "BoardResponse": {
-        "description": "``GET /board`` response.\n\n``horizon`` echoes the requested filter so the bot can render the\nactive filter in the message header (``\"Day Traders (\u226424h)\"`` /\n``\"Swing Traders (1d-3wk)\"`` / ``\"Position Traders (>3wk)\"``) and\ndecide which three of the four inline buttons to surface (the\nactive one is hidden \u2014 it's already implicit in the header text).",
+        "description": "``GET /board`` response.\n\n``horizon`` echoes the requested filter so the bot can render the\nactive filter in the message header (``\"Day Traders (\u226424h)\"`` /\n``\"Swing Traders (1d-3wk)\"`` / ``\"Position Traders (>3wk)\"``) and\ndecide which three of the four inline buttons to surface (the\nactive one is hidden \u2014 it's already implicit in the header text).\n\n``open_calls_total`` / ``open_callers_total`` are platform-wide\nactivity counts (NOT horizon-filtered) \u2014 every claim whose\n``resolves_at`` is still in the future, and the number of\ndistinct sources behind those open calls. The bot renders them\non the footer line (\"22 open calls by 4 users are in progress.\")\nso the leaderboard always carries a heartbeat even when the\nvisible top-N is short. Both default to ``0`` so a stale client\nor empty cold-start payload renders sensibly.",
         "properties": {
           "entries": {
             "items": {
@@ -232,6 +232,20 @@
             ],
             "title": "Horizon",
             "type": "string"
+          },
+          "open_callers_total": {
+            "default": 0,
+            "description": "Count of distinct sources behind ``open_calls_total``. Always ``<= open_calls_total`` (one source can have many open calls). ``0`` iff ``open_calls_total == 0``.",
+            "minimum": 0.0,
+            "title": "Open Callers Total",
+            "type": "integer"
+          },
+          "open_calls_total": {
+            "default": 0,
+            "description": "Count of claims whose horizon is still in the future (``resolves_at > now()``), across all sources. Not horizon-filtered \u2014 the bot surfaces it as a platform activity stat regardless of the active /board slice.",
+            "minimum": 0.0,
+            "title": "Open Calls Total",
+            "type": "integer"
           },
           "window": {
             "default": "all_time",

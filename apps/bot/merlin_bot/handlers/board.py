@@ -429,9 +429,49 @@ def _render_board(
     )
 
     lines.append("")
-    lines.append("<i>Ranked by recent PnL, weighted by track record.</i>")
+    lines.append(_footer_ranking_line(payload))
     lines.append("/alpha to add a call, /me for your own.")
     return "\n".join(lines)
+
+
+def _footer_ranking_line(payload: dict[str, Any]) -> str:
+    """Italic footer: ranking explainer + platform activity heartbeat.
+
+    Two sentences in one italic line:
+
+    1. The ranking explainer ("Ranked by recent PnL, weighted by
+       track record.") — unchanged from the original copy.
+    2. Platform activity ("X open calls by Y users are in progress.")
+       — pulled from ``open_calls_total`` + ``open_callers_total`` on
+       the wire payload. Pluralised independently: ``1 call`` /
+       ``2 calls``, ``1 user`` / ``2 users``, ``1 call is`` /
+       ``2 calls are``.
+
+    The activity sentence is OMITTED when ``open_calls_total == 0``:
+    "0 open calls by 0 users are in progress" reads as a downtime
+    signal even though the leaderboard above may be populated, and
+    on a green-field deploy it would inadvertently leak that the
+    platform is empty. Cold-start should look quiet, not broken.
+
+    Defensive int-coercion: ``BoardResponse`` defaults both counts
+    to ``0`` on the contract, but a mid-deploy stale schema or a
+    non-numeric value (``None`` / str) shouldn't crash /board.
+    """
+    open_calls = _safe_int(payload.get("open_calls_total"))
+    open_callers = _safe_int(payload.get("open_callers_total"))
+
+    base = "<i>Ranked by recent PnL, weighted by track record."
+    if open_calls <= 0 or open_callers <= 0:
+        return base + "</i>"
+
+    call_word = "call" if open_calls == 1 else "calls"
+    user_word = "user" if open_callers == 1 else "users"
+    verb = "is" if open_calls == 1 else "are"
+    return (
+        f"{base} "
+        f"{open_calls} open {call_word} by {open_callers} {user_word} "
+        f"{verb} in progress.</i>"
+    )
 
 
 def _self_appendage_lines(

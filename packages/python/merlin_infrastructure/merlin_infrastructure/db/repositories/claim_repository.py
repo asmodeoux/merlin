@@ -142,3 +142,36 @@ class ClaimRepository(ClaimRepositoryPort):
         )
         scalar = result.scalar()
         return int(scalar) if scalar is not None else 0
+
+    async def count_open_global(self) -> tuple[int, int]:
+        """Platform-wide ``(open_calls, distinct_sources)`` over ``resolves_at > now()``.
+
+        Single SELECT returning both counts so the ``/board`` route
+        doesn't pay two round-trips for the footer heartbeat:
+
+        .. code-block:: sql
+
+            SELECT COUNT(*), COUNT(DISTINCT source_id)
+            FROM claims
+            WHERE resolves_at > now()
+
+        Both columns are non-NULL by construction (``COUNT`` always
+        returns a number; ``0`` on an empty match). The defensive
+        ``None`` fallback is here so a future query rewrite that
+        replaces ``COUNT(*)`` with a subquery / window function can't
+        silently NULL one of the values into a ``TypeError`` on
+        ``int(None)``.
+        """
+        now = datetime.now(tz=UTC)
+        result = await self._session.execute(
+            select(
+                func.count(),
+                func.count(func.distinct(Claim.source_id)),
+            )
+            .select_from(Claim)
+            .where(Claim.resolves_at > now),
+        )
+        row = result.one()
+        open_calls = int(row[0]) if row[0] is not None else 0
+        open_callers = int(row[1]) if row[1] is not None else 0
+        return open_calls, open_callers

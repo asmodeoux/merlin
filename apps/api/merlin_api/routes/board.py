@@ -53,11 +53,23 @@ async def get_board(
     ``LeaderboardEntry`` records to ``BoardEntry`` wire DTOs 1:1 and
     echoes ``horizon`` back so the bot can render the active filter
     in the message header.
+
+    Also runs ``ClaimRepository.count_open_global`` to populate the
+    platform-wide ``open_calls_total`` / ``open_callers_total``
+    activity counts on the response — used by the bot footer
+    ("X open calls by Y users are in progress.") to keep a heartbeat
+    visible even when the visible top-N is short. The counts are
+    NOT horizon-filtered: a Day Traders board still shows the
+    overall platform activity.
     """
-    from merlin_infrastructure.db.repositories import SourceReputationRepository
+    from merlin_infrastructure.db.repositories import (
+        ClaimRepository,
+        SourceReputationRepository,
+    )
 
     repo = SourceReputationRepository(session)
     rows = await repo.leaderboard(window, horizon=horizon)
+    open_calls_total, open_callers_total = await ClaimRepository(session).count_open_global()
     # FastAPI's regex ``pattern`` narrows ``horizon`` at runtime to
     # the three valid literals; mypy can't see that constraint, so
     # the cast pins the type at the wire boundary.
@@ -76,4 +88,6 @@ async def get_board(
             )
             for row in rows
         ],
+        open_calls_total=open_calls_total,
+        open_callers_total=open_callers_total,
     )

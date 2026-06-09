@@ -45,8 +45,22 @@ class _FakeReputationRepo:
 
 
 @dataclass
+class _FakeClaimRepo:
+    """Just the surface ``/board`` touches: ``count_open_global``."""
+
+    open_calls_total: int = 0
+    open_callers_total: int = 0
+    count_open_global_calls: int = 0
+
+    async def count_open_global(self) -> tuple[int, int]:
+        self.count_open_global_calls += 1
+        return self.open_calls_total, self.open_callers_total
+
+
+@dataclass
 class _FakeSession:
     reputation: _FakeReputationRepo = field(default_factory=_FakeReputationRepo)
+    claims: _FakeClaimRepo = field(default_factory=_FakeClaimRepo)
 
     async def commit(self) -> None: ...
 
@@ -82,6 +96,11 @@ async def client(
         _repos_mod,
         "SourceReputationRepository",
         lambda _s: fake_session.reputation,
+    )
+    monkeypatch.setattr(
+        _repos_mod,
+        "ClaimRepository",
+        lambda _s: fake_session.claims,
     )
 
     async def _fake_get_session() -> AsyncIterator[_FakeSession]:
@@ -272,3 +291,76 @@ async def test_get_board_renders_populated_entries(
     assert body["entries"][0]["weighted_pnl_pct"] == 4.2
     assert body["entries"][1]["weighted_pnl_pct"] == -1.5
     assert body["entries"][1]["last_call_at"] is None
+
+
+async def test_get_board_returns_open_activity_counts(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """``open_calls_total`` / ``open_callers_total`` come straight off
+    ``ClaimRepository.count_open_global`` and arrive on the wire.
+
+    Pinned because the bot footer ("X open calls by Y users are in
+    progress.") reads exactly these two fields — a regression that
+    drops either one would silently revert the leaderboard heartbeat
+    to the old "Ranked by ..." sentence on its own.
+    """
+    fake_session.claims.open_calls_total = 22
+    fake_session.claims.open_callers_total = 4
+    response = await client.get("/board", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["open_calls_total"] == 22
+    assert body["open_callers_total"] == 4
+    # The route MUST run the count exactly once per /board hit so a
+    # busy leaderboard doesn't fan out into N extra queries.
+    assert fake_session.claims.count_open_global_calls == 1
+
+
+async def test_get_board_open_activity_defaults_to_zero_on_cold_start(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+) -> None:
+    """Cold-start DB (no open claims) → both counts are 0.
+
+    The bot omits the activity sentence entirely when ``open_calls_total``
+    is 0 (a "0 open calls by 0 users" footer reads as a downtime
+    signal); pinning the zero echo here keeps the wire contract honest
+    so the bot's omission branch fires deterministically.
+    """
+    # _FakeClaimRepo defaults both totals to 0; no setup needed.
+    response = await client.get("/board", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["open_calls_total"] == 0
+    assert body["open_callers_total"] == 0
+
+
+@pytest.mark.parametrize("horizon", ["all", "day", "swing", "position"])
+async def test_get_board_open_activity_not_horizon_filtered(
+    client: httpx.AsyncClient,
+    auth_headers: dict[str, str],
+    fake_session: _FakeSession,
+    horizon: str,
+) -> None:
+    """Open-activity counts are platform-wide regardless of ``horizon``.
+
+    The bot surfaces them as a heartbeat that's invariant across
+    filter taps — a Day Traders board still shows the overall
+    platform activity. ``count_open_global`` takes no horizon arg
+    by design; this test pins that the route doesn't accidentally
+    start filtering them downstream.
+    """
+    fake_session.claims.open_calls_total = 17
+    fake_session.claims.open_callers_total = 3
+    response = await client.get(
+        "/board",
+        params={"horizon": horizon},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["open_calls_total"] == 17
+    assert body["open_callers_total"] == 3

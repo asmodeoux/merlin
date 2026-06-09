@@ -101,3 +101,44 @@ def test_horizon_filter_literal_lists_exactly_four_values() -> None:
     assert values == {"all", "day", "swing", "position"}
     assert "short" not in values
     assert "long" not in values
+
+
+def test_board_response_defaults_open_activity_counts_to_zero() -> None:
+    """``open_calls_total`` / ``open_callers_total`` default to ``0``.
+
+    Pre-existing API clients (older bot deploys, third-party hooks)
+    that never set these fields must parse the response cleanly —
+    the cold-start payload is the realistic shape for the first
+    minutes after deploy.
+    """
+    response = BoardResponse()
+    assert response.open_calls_total == 0
+    assert response.open_callers_total == 0
+
+
+def test_board_response_accepts_open_activity_counts() -> None:
+    """Both activity counts round-trip — the route writes them, the
+    bot reads them. Pins the JSON field names exactly so a future
+    renaming refactor (camelCase, etc.) fails here before reaching
+    the cross-service wire.
+    """
+    response = BoardResponse(open_calls_total=22, open_callers_total=4)
+    assert response.open_calls_total == 22
+    assert response.open_callers_total == 4
+    dumped = response.model_dump()
+    assert dumped["open_calls_total"] == 22
+    assert dumped["open_callers_total"] == 4
+
+
+@pytest.mark.parametrize("field_name", ["open_calls_total", "open_callers_total"])
+def test_board_response_rejects_negative_open_activity_counts(field_name: str) -> None:
+    """Both counts are ``ge=0`` — a negative value is a server bug,
+    not a wire shape.
+
+    ``COUNT`` can never return negative, but the constraint also
+    pins forward-compat: a future query rewrite that subtracts (e.g.
+    "open minus soft-deleted") and underflows would surface here
+    rather than silently rendering "-3 open calls" to users.
+    """
+    with pytest.raises(ValidationError):
+        BoardResponse(**{field_name: -1})

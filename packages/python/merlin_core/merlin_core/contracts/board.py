@@ -59,11 +59,39 @@ class BoardResponse(BaseModel):
     ``"Swing Traders (1d-3wk)"`` / ``"Position Traders (>3wk)"``) and
     decide which three of the four inline buttons to surface (the
     active one is hidden — it's already implicit in the header text).
+
+    ``open_calls_total`` / ``open_callers_total`` are platform-wide
+    activity counts (NOT horizon-filtered) — every claim whose
+    ``resolves_at`` is still in the future, and the number of
+    distinct sources behind those open calls. The bot renders them
+    on the footer line ("22 open calls by 4 users are in progress.")
+    so the leaderboard always carries a heartbeat even when the
+    visible top-N is short. Both default to ``0`` so a stale client
+    or empty cold-start payload renders sensibly.
     """
 
     entries: list[BoardEntry] = Field(default_factory=list)
     window: str = "all_time"
     horizon: HorizonFilter = "all"
+    open_calls_total: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Count of claims whose horizon is still in the future "
+            "(``resolves_at > now()``), across all sources. Not "
+            "horizon-filtered — the bot surfaces it as a platform "
+            "activity stat regardless of the active /board slice."
+        ),
+    )
+    open_callers_total: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Count of distinct sources behind ``open_calls_total``. "
+            "Always ``<= open_calls_total`` (one source can have "
+            "many open calls). ``0`` iff ``open_calls_total == 0``."
+        ),
+    )
 
 
 class OpenCallEntry(BaseModel):

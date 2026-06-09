@@ -292,6 +292,114 @@ def test_render_board_with_rows_renders_medal_lines_and_footer() -> None:
     assert "/me" in text
 
 
+# ---------------------------------------------------------------------------
+# Footer — platform activity heartbeat ("X open calls by Y users…")
+# ---------------------------------------------------------------------------
+
+
+def test_render_board_footer_omits_open_activity_when_zero() -> None:
+    """``open_calls_total == 0`` → footer is the ranking line ALONE.
+
+    "0 open calls by 0 users are in progress" reads as a downtime
+    signal even though the leaderboard above may be populated; on
+    a green-field deploy it would leak that the platform is empty.
+    Cold-start should look quiet, not broken — so we omit the
+    activity sentence entirely below the zero threshold.
+    """
+    payload = {
+        "window": "all_time",
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "open_calls_total": 0,
+        "open_callers_total": 0,
+    }
+    text = _render_board(payload)
+    assert "<i>Ranked by recent PnL, weighted by track record.</i>" in text
+    assert "in progress" not in text
+    assert "open call" not in text
+
+
+def test_render_board_footer_omits_open_activity_when_field_missing() -> None:
+    """No ``open_calls_total`` on the payload (stale schema) → footer is
+    the ranking line ALONE. Same omission branch as the zero case;
+    pinned separately so a future "treat missing as -1" rewrite stays
+    loud."""
+    payload = {
+        "window": "all_time",
+        "entries": [_row_entry(rank=1, name="Alice")],
+    }
+    text = _render_board(payload)
+    assert "<i>Ranked by recent PnL, weighted by track record.</i>" in text
+    assert "in progress" not in text
+
+
+def test_render_board_footer_renders_open_activity_plural() -> None:
+    """Pluralised activity sentence: ``22 open calls by 4 users are in progress.``"""
+    payload = {
+        "window": "all_time",
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "open_calls_total": 22,
+        "open_callers_total": 4,
+    }
+    text = _render_board(payload)
+    assert (
+        "<i>Ranked by recent PnL, weighted by track record. "
+        "22 open calls by 4 users are in progress.</i>"
+    ) in text
+
+
+def test_render_board_footer_activity_singular_one_call_one_user() -> None:
+    """1 call, 1 user → singular nouns + ``is`` (not ``are``).
+
+    Anything else reads wrong: "1 open calls by 1 users is in
+    progress" or "1 open call by 1 user are in progress" both
+    grate. Pinning all three pluralisation axes (call/calls,
+    user/users, is/are) on the singular boundary.
+    """
+    payload = {
+        "window": "all_time",
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "open_calls_total": 1,
+        "open_callers_total": 1,
+    }
+    text = _render_board(payload)
+    assert "1 open call by 1 user is in progress" in text
+    assert "1 calls" not in text
+    assert "1 users" not in text
+    assert "are in progress" not in text
+
+
+def test_render_board_footer_activity_mixed_singular_user_plural_calls() -> None:
+    """``5 open calls by 1 user`` — calls plural, user singular.
+
+    Common shape early on (one prolific caller). The verb still
+    keys off ``open_calls_total`` so it stays ``are``, not ``is``.
+    """
+    payload = {
+        "window": "all_time",
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "open_calls_total": 5,
+        "open_callers_total": 1,
+    }
+    text = _render_board(payload)
+    assert "5 open calls by 1 user are in progress" in text
+
+
+def test_render_board_footer_activity_handles_non_numeric_gracefully() -> None:
+    """Defensive: ``open_calls_total = "not-a-number"`` hits the
+    ``_safe_int`` fallback and the activity sentence is omitted
+    rather than crashing the whole /board reply on a malformed
+    wire field."""
+    payload = {
+        "window": "all_time",
+        "entries": [_row_entry(rank=1, name="Alice")],
+        "open_calls_total": "not-a-number",
+        "open_callers_total": "also-not",
+    }
+    text = _render_board(payload)
+    assert "<i>Ranked by recent PnL, weighted by track record.</i>" in text
+    assert "in progress" not in text
+
+
 def test_render_board_bolds_only_self_row() -> None:
     """``self_display_name=Yuri`` bolds the Yuri row only, leaves
     other rows plain."""
@@ -482,6 +590,38 @@ def test_render_board_footer_always_renders_last() -> None:
         self_resolved_total=0,
     )
     assert _last_two_nonempty(text_cs) == expected_tail
+
+
+def test_render_board_footer_with_open_activity_is_last() -> None:
+    """The activity sentence is part of the SAME italic line as the
+    ranking explainer — together they're still the second-to-last
+    line, with the ``/alpha`` CTA below.
+
+    Pins the layout when ``open_calls_total > 0``: a future refactor
+    that splits the activity sentence onto its own line would push
+    the CTA further down (a regression — the CTA must stay one
+    blank-separated line below the italic block).
+    """
+
+    def _last_two_nonempty(text: str) -> list[str]:
+        nonempty = [line for line in text.splitlines() if line.strip()]
+        return nonempty[-2:]
+
+    text = _render_board(
+        {
+            "entries": [_row_entry(rank=1, name="Alice")],
+            "window": "all_time",
+            "open_calls_total": 22,
+            "open_callers_total": 4,
+        },
+    )
+    assert _last_two_nonempty(text) == [
+        (
+            "<i>Ranked by recent PnL, weighted by track record. "
+            "22 open calls by 4 users are in progress.</i>"
+        ),
+        "/alpha to add a call, /me for your own.",
+    ]
 
 
 # ---------------------------------------------------------------------------

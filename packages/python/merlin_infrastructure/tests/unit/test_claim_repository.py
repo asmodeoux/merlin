@@ -313,6 +313,81 @@ async def test_count_resolved_by_source_returns_int() -> None:
     assert await repo.count_resolved_by_source("tg:somebody") == 3
 
 
+async def test_count_open_global_returns_calls_and_distinct_callers() -> None:
+    """``count_open_global`` projects ``(COUNT(*), COUNT(DISTINCT source_id))``
+    to two ints in a single round-trip.
+
+    Pins the wire contract the ``/board`` route reads: the first
+    int is open calls, the second is distinct sources. Order
+    matters — flipping them would put ``"4 open calls by 22 users"``
+    on the bot footer, which is nonsense (callers ≤ calls always).
+    """
+    sess = _fake_session()
+    row = MagicMock()
+    row.one.return_value = (22, 4)
+    sess.execute.return_value = row
+
+    repo = ClaimRepository(sess)
+    open_calls, open_callers = await repo.count_open_global()
+
+    assert open_calls == 22
+    assert open_callers == 4
+
+    # Compile the statement and inspect for the must-have shape.
+    # Two COUNTs in the projection, no ``source_id`` predicate in
+    # the WHERE (this is the platform-wide path), and the
+    # ``resolves_at > :now`` future-only filter.
+    stmt = sess.execute.call_args[0][0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+    assert "claims" in compiled.lower()
+    assert "resolves_at" in compiled
+    # Two COUNT() expressions in the SELECT list (the second one is
+    # the distinct one); the literal "distinct" appears in compiled SQL.
+    assert compiled.lower().count("count(") >= 2
+    assert "distinct" in compiled.lower()
+    # No per-source filter: the platform-wide path must not narrow on
+    # source_id. A regression that adds one would silently turn the
+    # bot footer into "X open calls by 1 user" for every caller.
+    assert "source_id =" not in compiled.replace(" ", "")
+
+
+async def test_count_open_global_returns_zero_on_cold_start() -> None:
+    """Empty ``claims`` table → ``(0, 0)``.
+
+    ``COUNT`` never returns NULL on a non-grouped query, but the
+    repo's defensive ``int(... or 0)`` makes a future query rewrite
+    that lets a NULL through still produce a safe zero rather than
+    crashing on ``int(None)``.
+    """
+    sess = _fake_session()
+    row = MagicMock()
+    row.one.return_value = (0, 0)
+    sess.execute.return_value = row
+
+    repo = ClaimRepository(sess)
+    assert await repo.count_open_global() == (0, 0)
+
+
+async def test_count_open_global_defends_against_null_columns() -> None:
+    """Defensive: if a future query rewrite lets a NULL leak into
+    either column, the helper coerces to 0 rather than raising
+    ``TypeError: int() argument must be a string... not NoneType``.
+
+    Realistic trigger would be a subquery / window function rewrite
+    where the outer projection NULLs the per-group count. The
+    failure mode is silent on every cold-start day and explodes on
+    the day the rewrite ships — pinning the fallback keeps the
+    leaderboard rendering even then.
+    """
+    sess = _fake_session()
+    row = MagicMock()
+    row.one.return_value = (None, None)
+    sess.execute.return_value = row
+
+    repo = ClaimRepository(sess)
+    assert await repo.count_open_global() == (0, 0)
+
+
 async def test_claim_repository_has_no_leaderboard_method() -> None:
     """The leaderboard read moved to ``SourceReputationRepository``.
 
