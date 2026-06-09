@@ -205,7 +205,7 @@
       "name": "🚀 Deploy API (merlin-api)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "make fly-deploy-api",
+      "command": "make fly-deploy-api && exit 0",
       "cwd": "${workspaceFolder}",
       "presentation": {
         "group": "4_deploy",
@@ -216,7 +216,7 @@
       "name": "🚀 Deploy Bot (merlin-tg-bot)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "make fly-deploy-bot",
+      "command": "make fly-deploy-bot && exit 0",
       "cwd": "${workspaceFolder}",
       "presentation": {
         "group": "4_deploy",
@@ -227,7 +227,7 @@
       "name": "🚀 Deploy Worker (merlin-worker)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "make fly-deploy-worker",
+      "command": "make fly-deploy-worker && exit 0",
       "cwd": "${workspaceFolder}",
       "presentation": {
         "group": "4_deploy",
