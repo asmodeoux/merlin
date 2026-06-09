@@ -58,6 +58,151 @@ async def test_search_assets_success_returns_top_candidates() -> None:
 
 
 @respx.mock
+async def test_search_assets_floats_exact_ticker_match_to_top() -> None:
+    """An exact-ticker match buried below market-cap noise must be surfaced.
+
+    Live regression: a user typed ``H`` looking for Humanity Protocol
+    (low-cap, ticker exactly "H"). CoinGecko's ``/search`` is ordered
+    by market-cap rank across the full fuzzy-match pool, so the
+    response came back as ``[ETH, USDT, FIGR_HELOC, HYPE, ZEC, ..., H,
+    ...]``. The previous ``coins[:5]`` slice dropped Humanity off the
+    keyboard entirely, leaving the user with five wrong-asset buttons
+    and no way to bet on the coin they actually meant.
+
+    Contract this pins: the adapter scans the full response, lifts
+    every candidate whose symbol equals the query (case-insensitive)
+    to the top, and only then truncates to the top-5. Order among the
+    floated exact matches is market-cap-rank ascending so the most
+    reputable exact match wins; non-exact candidates keep CoinGecko's
+    native ordering for the remaining slots.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
+                    {"id": "tether", "symbol": "usdt", "name": "Tether", "market_cap_rank": 3},
+                    {
+                        "id": "figure-heloc",
+                        "symbol": "figr_heloc",
+                        "name": "Figure Heloc",
+                        "market_cap_rank": 250,
+                    },
+                    {
+                        "id": "hyperliquid",
+                        "symbol": "hype",
+                        "name": "Hyperliquid",
+                        "market_cap_rank": 25,
+                    },
+                    {"id": "zcash", "symbol": "zec", "name": "Zcash", "market_cap_rank": 60},
+                    {
+                        "id": "humanity",
+                        "symbol": "h",
+                        "name": "Humanity Protocol",
+                        "market_cap_rank": 800,
+                    },
+                ]
+            },
+        )
+    )
+    out = await _adapter().search_assets("H")
+    assert out[0].coingecko_id == "humanity"
+    assert out[0].symbol == "H"
+    assert [c.coingecko_id for c in out[1:]] == [
+        "ethereum",
+        "tether",
+        "figure-heloc",
+        "hyperliquid",
+    ]
+
+
+@respx.mock
+async def test_search_assets_exact_ticker_match_lowercase_query_still_promoted() -> None:
+    """The exact-ticker promotion is case-insensitive on the query side.
+
+    Users type ``h`` and ``H`` interchangeably. CoinGecko reports
+    symbols as lowercase; we normalise to uppercase. The promotion
+    must compare on normalised symbols so neither side's casing
+    breaks the match.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
+                    {
+                        "id": "humanity",
+                        "symbol": "h",
+                        "name": "Humanity Protocol",
+                        "market_cap_rank": 800,
+                    },
+                ]
+            },
+        )
+    )
+    out = await _adapter().search_assets("h")
+    assert out[0].coingecko_id == "humanity"
+
+
+@respx.mock
+async def test_search_assets_multiple_exact_matches_ordered_by_market_cap() -> None:
+    """When several coins share the exact ticker, the highest-cap one wins.
+
+    Many low-cap / scam tokens reuse popular tickers (``BTC``,
+    ``ETH``, etc.). The picker has only 5 slots — flooding it with
+    rank-less copycats would degrade the original problem the fix
+    is supposed to solve. The promotion sorts exact matches by
+    ``market_cap_rank`` ascending (rank-1 first), tie-breaking
+    unranked tokens to the end of the exact-match group.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {
+                        "id": "scam-btc-fork",
+                        "symbol": "btc",
+                        "name": "Scam BTC Fork",
+                        "market_cap_rank": None,
+                    },
+                    {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
+                ]
+            },
+        )
+    )
+    out = await _adapter().search_assets("BTC")
+    assert [c.coingecko_id for c in out] == ["bitcoin", "scam-btc-fork", "ethereum"]
+
+
+@respx.mock
+async def test_search_assets_no_exact_match_preserves_market_cap_order() -> None:
+    """When no candidate matches the exact ticker, the native order is preserved.
+
+    Typing a name like ``"bitcoin"`` must not reshuffle the response —
+    CoinGecko's market-cap ordering is already the right answer in
+    the no-exact-match case. Regression guard: the promotion helper
+    must be a no-op when ``query`` doesn't match any returned symbol.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+                    {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2},
+                ]
+            },
+        )
+    )
+    out = await _adapter().search_assets("bitcoin")
+    assert [c.coingecko_id for c in out] == ["bitcoin", "ethereum"]
+
+
+@respx.mock
 async def test_search_assets_redirect_raises_market_data_error_with_env_hint() -> None:
     """A 301 is always a config bug — never silently fall through to JSON parse.
 

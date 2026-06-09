@@ -55,6 +55,28 @@ _PRICE_WINDOW_WIDE = timedelta(minutes=30)
 _MAX_SEARCH_RESULTS = 5
 
 
+def _prioritise_exact_ticker(candidates: list[AssetCandidate], query: str) -> list[AssetCandidate]:
+    """Float exact-ticker matches to the top, sorted by market-cap rank.
+
+    Stable on non-matching candidates: their CoinGecko-native order is
+    preserved. Among the exact matches, candidates with a known
+    ``market_cap_rank`` come first (ascending — rank 1 is the most
+    legitimate); candidates with ``None`` rank are kept after, in
+    their original relative order. This handles the "many low-cap
+    scam tokens share a popular ticker" case by surfacing the most
+    reputable exact match first without flooding the picker.
+    """
+    if not candidates:
+        return candidates
+    query_upper = query.strip().upper()
+    if not query_upper:
+        return candidates
+    exact = [c for c in candidates if c.symbol == query_upper]
+    other = [c for c in candidates if c.symbol != query_upper]
+    exact.sort(key=lambda c: (c.market_cap_rank is None, c.market_cap_rank or 0))
+    return exact + other
+
+
 class CoinGeckoAdapter:
     """Concrete ``MarketDataPort`` against CoinGecko's REST API."""
 
@@ -143,7 +165,23 @@ class CoinGeckoAdapter:
         return {}
 
     async def search_assets(self, query: str) -> list[AssetCandidate]:
-        """``GET /search?query=...`` → top-5 ``AssetCandidate`` ordered by market-cap rank."""
+        """``GET /search?query=...`` → top-5 ``AssetCandidate``.
+
+        Ordering: exact-ticker matches (case-insensitive on ``symbol``)
+        are floated to the top, sorted by market-cap rank; the remaining
+        slots are filled with CoinGecko's natural market-cap-ordered
+        results in their original order.
+
+        Why prioritise exact-ticker matches: CoinGecko's ``/search``
+        sorts by market-cap rank across the full fuzzy-match pool, so a
+        low-cap coin whose ticker IS the literal query (e.g. "H" →
+        Humanity Protocol) can be displaced out of the top-5 by much
+        higher-cap coins whose ticker / name merely *contains* the
+        query as a substring ("ETH", "HYPE", "FIGR_HELOC", "ZEC", ...).
+        Users typing a short ticker almost always mean the exact match;
+        if there is one anywhere in the response, the picker must
+        surface it.
+        """
         try:
             response = await self._client.get(
                 f"{self._base_url}/search",
@@ -155,15 +193,16 @@ class CoinGeckoAdapter:
         self._check_status(response, "/search")
         payload = self._parse_json(response, "/search")
         coins = payload.get("coins", [])
-        return [
+        candidates = [
             AssetCandidate(
                 coingecko_id=str(c["id"]),
                 symbol=str(c["symbol"]).upper(),
                 name=str(c["name"]),
                 market_cap_rank=c.get("market_cap_rank"),
             )
-            for c in coins[:_MAX_SEARCH_RESULTS]
+            for c in coins
         ]
+        return _prioritise_exact_ticker(candidates, query)[:_MAX_SEARCH_RESULTS]
 
     async def get_asset_metadata(self, coingecko_id: str) -> AssetMetadata:
         """``GET /coins/{id}`` → canonical ``(symbol, name)``."""
