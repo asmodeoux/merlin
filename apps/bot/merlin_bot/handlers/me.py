@@ -252,21 +252,13 @@ def _horizon_human(value: object) -> str:
 def _utc_datetime(iso: str) -> str:
     """Format an ISO timestamp as ``June 12 @ 21:43 UTC``.
 
-    Human shape, not computerish — full month name, day without
-    leading zero, ``@`` separator before the wall-clock time, UTC
-    suffix. Same format as the /alpha receipt so the user sees
-    identical timestamps in both places. Minute precision (no
-    seconds — the resolver's window is ±5 minutes; seconds would
-    be false precision).
+    Thin wrapper around ``merlin_bot.formatting.format_utc_datetime``
+    so the /me lines share one shape with the /alpha receipt and the
+    /invite expiry.
     """
-    if not iso:
-        return "soon"
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    except ValueError:
-        return "soon"
-    dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
-    return f"{dt:%B} {dt.day} @ {dt:%H:%M} UTC"
+    from merlin_bot.formatting import format_utc_datetime
+
+    return format_utc_datetime(iso)
 
 
 # A bet expiring within this many seconds renders as a relative

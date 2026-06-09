@@ -99,6 +99,40 @@ async def test_invite_onboarded_caller_mints_code_and_replies() -> None:
     assert "admin" not in lower
 
 
+async def test_invite_renders_expiry_as_human_utc_not_raw_iso() -> None:
+    """The expiry must be ``"June 22 @ 12:00 UTC"`` shape, NOT raw ISO.
+
+    AGENTS.md bot-voice rule: "No ISO timestamps in user-visible
+    text. Calendar dates only." The previous template spliced the
+    raw ``expires_at`` field straight in, so users saw
+    ``"Expires 2026-06-22T12:00:00+00:00."``. This pins the human
+    shape so a future template tweak can't silently regress.
+
+    Both the ``T`` separator and the ``+00:00`` offset would only
+    appear in the raw ISO — their absence is the contract.
+    """
+    client = AsyncMock()
+    client.create_invite.return_value = {
+        "code": "expiryShape",
+        "expires_at": "2026-06-22T12:00:00+00:00",
+    }
+
+    update, ctx = _build_update_and_context(client=client)
+    await invite_command(update, ctx)  # type: ignore[arg-type]
+
+    assert update.message is not None
+    body, _ = update.message.replies[0]
+    # Human shape — month spelt out, day without leading zero, UTC
+    # suffix. Periods are MarkdownV2-escaped (``\.``); we strip the
+    # escape before substring-matching so the assertion focuses on
+    # the rendered shape, not the markdown plumbing.
+    plain = body.replace("\\", "")
+    assert "June 22 @ 12:00 UTC" in plain
+    # Raw ISO leftovers — none of these may appear in user-facing text.
+    assert "2026-06-22T12:00:00" not in plain
+    assert "+00:00" not in plain
+
+
 async def test_invite_no_longer_reads_admin_allowlist() -> None:
     """The handler must not require ``BOT_DATA_ADMIN_KEY`` in bot_data.
 

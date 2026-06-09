@@ -27,6 +27,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from merlin_bot.api_dependency import BOT_DATA_KEY
+from merlin_bot.formatting import format_utc_datetime
 
 _log = logging.getLogger("merlin.bot.handlers.invite")
 
@@ -77,13 +78,13 @@ def _invite_created_text(*, code: str, expires_at: str) -> str:
     """Format the response a freshly minted invite is pasted into.
 
     MarkdownV2-escaped code block — the code is the only thing the
-    user needs to copy out. The expiry timestamp is kept in ISO form
-    on purpose: it's the precise wall-clock moment the code dies,
-    not a rounded "in 2 weeks" approximation. The accompanying copy
-    keeps it from feeling like internal jargon ("Good for 14 days
-    after you copy it. One use. Don't share it twice.").
+    user needs to copy out. The expiry timestamp is rendered through
+    ``format_utc_datetime`` (``"June 22 @ 02:17 UTC"``) so we keep
+    the exact moment the code dies but in a human-readable shape —
+    matching the /alpha receipt + /me open-call lines per AGENTS.md's
+    "no ISO timestamps in user-visible text" rule.
     """
-    safe_expiry = _md2_escape(expires_at)
+    safe_expiry = _md2_escape(format_utc_datetime(expires_at))
     safe_code = _md2_escape(code)
     return (
         f"Here's a fresh invite to share\\.\n\n"

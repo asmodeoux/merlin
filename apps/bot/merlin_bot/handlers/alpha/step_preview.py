@@ -507,22 +507,12 @@ def _calendar_date(iso: str) -> str:
 def _utc_datetime(iso: str) -> str:
     """Format an ISO timestamp as an unambiguous UTC date+time string.
 
-    Output shape: ``June 12 @ 16:32 UTC`` — human-readable, full
-    month name, day without leading zero, ``@`` separator,
-    minute-precision (the resolver's window is ±5 minutes anyway, so
-    seconds convey false precision). Always normalised to UTC; if
-    the timestamp comes in with an offset, we convert.
-
-    Falls back to ``"soon"`` on a missing / unparseable value so the
-    receipt never crashes the bot on a malformed server response.
+    Thin wrapper around ``merlin_bot.formatting.format_utc_datetime``
+    kept here so the module-local imports inside this handler stay
+    short. The shape lives in ``formatting.py`` so the /alpha
+    receipt, the /me open-call lines, and the /invite expiry all
+    share one source of truth.
     """
-    from datetime import UTC, datetime
+    from merlin_bot.formatting import format_utc_datetime
 
-    if not iso:
-        return "soon"
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    except ValueError:
-        return "soon"
-    dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
-    return f"{dt:%B} {dt.day} @ {dt:%H:%M} UTC"
+    return format_utc_datetime(iso)
