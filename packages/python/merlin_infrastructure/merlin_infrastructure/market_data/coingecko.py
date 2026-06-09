@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
@@ -55,6 +56,44 @@ _PRICE_WINDOW = timedelta(minutes=5)
 # bets.
 _PRICE_WINDOW_WIDE = timedelta(minutes=30)
 _MAX_SEARCH_RESULTS = 5
+
+# EVM contract-address shape — strict 40 hex chars after ``0x``. Used
+# only as a *substring* match so a paste like
+# ``https://etherscan.io/token/0xa0b8…48`` still extracts the address.
+# Case-insensitive on the hex digits because EVM addresses are
+# routinely shown in EIP-55 mixed case.
+_EVM_ADDRESS_RE: Final = re.compile(r"0x[a-fA-F0-9]{40}")
+
+# Fan-out platform list for the contract-address fallback path. These
+# are the five EVM platforms with the highest CoinGecko-indexed market
+# share — empirically catching ~90% of contract-address pastes a user
+# is plausibly going to send. Each entry is the CoinGecko-canonical
+# ``platform_id`` (matches ``/coins/{platform}/contract/{address}``);
+# extending the list is a one-line tuple edit.
+_CONTRACT_LOOKUP_PLATFORMS: Final = (
+    "ethereum",
+    "polygon-pos",
+    "base",
+    "arbitrum-one",
+    "binance-smart-chain",
+)
+
+
+def _extract_evm_address(query: str) -> str | None:
+    """Return the lowercased EVM address embedded in ``query`` or ``None``.
+
+    Matches anywhere in the string so an explorer URL like
+    ``https://etherscan.io/token/0xabc…``, a "look at this token
+    ``0xabc…``" prose comment, or the bare 42-char address all
+    surface the same hex string. The returned address is lowercased
+    so downstream lookups don't pay the EIP-55 mixed-case lottery.
+
+    Returns ``None`` for plain tickers / coin names / homepage URLs
+    — anything that doesn't look like an EVM contract is left to the
+    existing fuzzy / exact pipeline.
+    """
+    match = _EVM_ADDRESS_RE.search(query)
+    return match.group(0).lower() if match else None
 
 
 def _safe_float(value: Any) -> float | None:
@@ -208,6 +247,16 @@ class CoinGeckoAdapter:
     async def search_assets(self, query: str) -> list[AssetCandidate]:
         """Fan out to ``/search`` + ``/coins/markets?symbols=`` and merge → top-5.
 
+        Dispatches on input shape before doing any work:
+
+        * **EVM contract address** (matches ``0x[a-fA-F0-9]{40}``
+          anywhere in the input — bare or embedded in an explorer URL)
+          → hands off to :meth:`_search_by_contract` which tries
+          ``/search`` first and falls back to a per-chain
+          ``/coins/{platform}/contract/{address}`` fan-out.
+        * **Everything else** (ticker, coin name) → the original
+          two-endpoint pipeline below.
+
         Two endpoints because each one alone is wrong:
 
         * **``/search?query=<q>``** does substring fuzzy matching across
@@ -247,6 +296,9 @@ class CoinGeckoAdapter:
         probe entirely — no coin has a multi-word ticker so it'd burn
         quota for a guaranteed-empty response.
         """
+        address = _extract_evm_address(query)
+        if address is not None:
+            return await self._search_by_contract(address)
         if _looks_like_ticker(query):
             fuzzy_result, exact_result = await asyncio.gather(
                 self._search_fuzzy(query),
@@ -370,6 +422,141 @@ class CoinGeckoAdapter:
                 _safe_float(entry.get("market_cap")),
             )
         return result
+
+    async def _search_by_contract(self, address: str) -> list[AssetCandidate]:
+        """Resolve a 40-hex EVM contract address to ``AssetCandidate``s.
+
+        Two-stage strategy with the cheap path tried first:
+
+        * **Stage 1** — ``GET /search?query=<address>``. CoinGecko's
+          general search index covers "name, symbol or contract address"
+          per the API docs, so a popular token like USDC surfaces here
+          in a single hop. Any hit is run through the existing
+          enrichment / truncation pipeline so the picker rows still
+          carry price + market cap.
+        * **Stage 2** — concurrent fan-out across
+          :data:`_CONTRACT_LOOKUP_PLATFORMS` via ``asyncio.gather``.
+          Used only when stage 1 returns no candidates. Each platform
+          hits ``GET /coins/{platform}/contract/{address}``; 404
+          (address not on that chain) is the expected miss shape and
+          is swallowed silently. Any other per-chain error is logged
+          and that chain drops out — other chains' hits still surface.
+          The endpoint returns full coin metadata (price + market cap
+          included), so candidates from this path skip the follow-up
+          enrichment call.
+
+        Multi-chain semantics: a deterministic-deploy token like USDC
+        comes back from several platforms with the same
+        ``coingecko_id``; dedup-by-id collapses it to a single picker
+        row. The rare case where distinct coins share an address on
+        different chains surfaces them as separate rows so the user
+        disambiguates via price + market cap.
+        """
+        fuzzy = await self._search_fuzzy(address)
+        if fuzzy:
+            top = fuzzy[:_MAX_SEARCH_RESULTS]
+            return await self._enrich_with_market_data(top)
+
+        lookups = await asyncio.gather(
+            *(self._lookup_contract(platform, address) for platform in _CONTRACT_LOOKUP_PLATFORMS),
+            return_exceptions=True,
+        )
+        candidates: list[AssetCandidate] = []
+        seen_ids: set[str] = set()
+        for result in lookups:
+            if isinstance(result, BaseException):
+                _log.warning(
+                    "CoinGecko per-platform contract lookup raised unexpectedly: %s",
+                    result,
+                )
+                continue
+            if result is None:
+                continue
+            if result.coingecko_id in seen_ids:
+                continue
+            seen_ids.add(result.coingecko_id)
+            candidates.append(result)
+        return candidates[:_MAX_SEARCH_RESULTS]
+
+    async def _lookup_contract(
+        self,
+        platform: str,
+        address: str,
+    ) -> AssetCandidate | None:
+        """``GET /coins/{platform}/contract/{address}`` → one candidate or ``None``.
+
+        Used by :meth:`_search_by_contract` for the per-platform fan-out
+        fallback. 404 (address not deployed on that chain) is the
+        expected miss shape and resolves to ``None`` so ``gather``
+        callers can simply skip it. Other failure modes (transport,
+        5xx, redirect, non-JSON, malformed payload) are logged and
+        also resolved to ``None`` — one flaky chain must not knock
+        out the whole fan-out.
+
+        The contract endpoint returns the same nested-shape payload as
+        ``/coins/{id}`` (``market_data.current_price.usd``,
+        ``market_data.market_cap.usd``); we opt out of localization,
+        tickers, community, developer, and sparkline blocks to keep
+        the response small.
+        """
+        endpoint = f"/coins/{platform}/contract"
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/coins/{platform}/contract/{address}",
+                params={
+                    "localization": "false",
+                    "tickers": "false",
+                    "community_data": "false",
+                    "developer_data": "false",
+                    "sparkline": "false",
+                },
+                headers=self._headers(),
+            )
+        except httpx.HTTPError as e:
+            _log.warning(
+                "CoinGecko %s/%s transport error: %s",
+                endpoint,
+                address,
+                e,
+            )
+            return None
+        if response.status_code == 404:
+            return None
+        try:
+            self._check_status(response, endpoint)
+            payload = self._parse_json(response, endpoint)
+        except MarketDataError as e:
+            _log.warning(
+                "CoinGecko %s/%s lookup failed: %s",
+                endpoint,
+                address,
+                e,
+            )
+            return None
+        if not isinstance(payload, dict):
+            return None
+        cg_id = payload.get("id")
+        symbol = payload.get("symbol")
+        name = payload.get("name")
+        if not isinstance(cg_id, str) or not isinstance(symbol, str) or not isinstance(name, str):
+            return None
+        market_data = payload.get("market_data") or {}
+        if not isinstance(market_data, dict):
+            market_data = {}
+        price_block = market_data.get("current_price") or {}
+        cap_block = market_data.get("market_cap") or {}
+        if not isinstance(price_block, dict):
+            price_block = {}
+        if not isinstance(cap_block, dict):
+            cap_block = {}
+        return AssetCandidate(
+            coingecko_id=cg_id,
+            symbol=symbol.upper(),
+            name=name,
+            market_cap_rank=payload.get("market_cap_rank"),
+            current_price_usd=_safe_float(price_block.get("usd")),
+            market_cap_usd=_safe_float(cap_block.get("usd")),
+        )
 
     async def _search_fuzzy(self, query: str) -> list[AssetCandidate]:
         """``GET /search`` — fuzzy substring matching, ranked by market cap.

@@ -62,7 +62,10 @@ _MAX_CANDIDATES = 5
 
 _COINGECKO_URL_TEMPLATE = "https://www.coingecko.com/en/coins/{slug}"
 
-_PICKER_FOOTER = "Tap an option, send another ticker, or paste a CoinGecko token URL."
+_PICKER_FOOTER = (
+    "Tap an option below, send another ticker / name, "
+    "paste a CoinGecko URL, or paste a contract address."
+)
 
 # Format-hint reply for URL-shaped text that fails to parse or resolve.
 # Three concrete examples covering the shapes we accept: with scheme,
@@ -76,7 +79,7 @@ _URL_FORMAT_HINT = (
     "www.coingecko.com/coins/bitcoin\n"
     "coingecko.com/en/coins/bitcoin\n"
     "\n"
-    "Or send a ticker / name to search again."
+    "Or send a ticker / name / contract address to search again."
 )
 
 _SLUG_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -103,7 +106,10 @@ async def prompt_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await ui_render(
         update,
         context,
-        text="Which asset? Type a name or ticker (BTC, ETH, RNDR, …).",
+        text=(
+            "Which asset? Send a name, ticker (BTC, ETH, RNDR, …), "
+            "CoinGecko token URL, or contract address."
+        ),
         reply_markup=None,
     )
     return AlphaState.EDIT_ASSET
@@ -122,7 +128,10 @@ async def receive_asset_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     if candidates is None:
         return AlphaState.EDIT_ASSET
     if not candidates:
-        await update.message.reply_text("No matches. Try a ticker like BTC or ETH, or a coin name.")
+        await update.message.reply_text(
+            "No matches. Try a ticker (BTC, ETH), a coin name, "
+            "a contract address, or a CoinGecko link."
+        )
         return AlphaState.EDIT_ASSET
 
     if context.user_data is not None:
@@ -267,7 +276,8 @@ def _render_candidates_text(candidates: list[dict[str, Any]]) -> str:
         1️⃣ [SYMBOL](url) — Name · $price · $cap cap
         2️⃣ ...
 
-        Tap an option, send another ticker, or paste a CoinGecko token URL.
+        Tap an option below, send another ticker / name, paste a CoinGecko URL,
+        or paste a contract address.
 
     Every dynamic substring is escaped via ``escape_md_v2`` because
     symbols / names from CoinGecko can carry any MarkdownV2-reserved

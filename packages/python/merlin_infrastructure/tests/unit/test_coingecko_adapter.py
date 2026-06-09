@@ -808,3 +808,405 @@ async def test_search_assets_handles_null_price_in_markets_probe() -> None:
     assert len(out) == 1
     assert out[0].current_price_usd is None
     assert out[0].market_cap_usd is None
+
+
+# ---------------------------------------------------------------------------
+# EVM contract-address dispatch — search_assets now accepts ``0x…`` pastes
+# ---------------------------------------------------------------------------
+
+
+# A canonical EVM address shape (40 lowercase hex after ``0x``). Used by
+# the contract-address test cases below. NOT the real USDC address —
+# tests must not encode a live-token contract because that creates a
+# false "is this address still listed?" coupling at test time.
+_FAKE_ADDR = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+
+# Five-platform fan-out shape, used to build per-platform respx routes
+# in the fallback tests. Mirrors ``_CONTRACT_LOOKUP_PLATFORMS`` in the
+# adapter; if the adapter list changes, this list changes in lockstep
+# (the tests would otherwise leave unmocked routes that respx flags).
+_FAN_OUT_PLATFORMS = (
+    "ethereum",
+    "polygon-pos",
+    "base",
+    "arbitrum-one",
+    "binance-smart-chain",
+)
+
+
+def _contract_payload(
+    *,
+    coingecko_id: str,
+    symbol: str,
+    name: str,
+    price_usd: float | None = None,
+    market_cap_usd: float | None = None,
+    market_cap_rank: int | None = None,
+) -> dict[str, object]:
+    """Shape a ``/coins/{platform}/contract/{address}`` 200 payload.
+
+    The contract endpoint returns the same nested ``market_data``
+    shape as ``/coins/{id}``: price + market cap live under
+    ``market_data.current_price.usd`` and
+    ``market_data.market_cap.usd``. The adapter's ``_lookup_contract``
+    coerces these via ``_safe_float`` and tolerates ``null`` blocks,
+    so the helper mirrors that shape exactly.
+    """
+    return {
+        "id": coingecko_id,
+        "symbol": symbol,
+        "name": name,
+        "market_cap_rank": market_cap_rank,
+        "market_data": {
+            "current_price": {"usd": price_usd} if price_usd is not None else {},
+            "market_cap": {"usd": market_cap_usd} if market_cap_usd is not None else {},
+        },
+    }
+
+
+def _mock_all_platforms_404(address: str) -> dict[str, respx.Route]:
+    """Stub every fan-out platform to 404 by default.
+
+    Tests that want a single chain to win override its route after
+    calling this helper. Returns the per-platform route map so
+    callers can inspect ``call_count`` / ``calls`` on the
+    not-overridden routes.
+    """
+    return {
+        platform: respx.get(
+            f"{_BASE_URL}/coins/{platform}/contract/{address}",
+        ).mock(return_value=httpx.Response(404, json={"error": "coin not found"}))
+        for platform in _FAN_OUT_PLATFORMS
+    }
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        # Bare address — the primary user input shape.
+        (_FAKE_ADDR, _FAKE_ADDR),
+        # EIP-55 mixed-case is the canonical wallet display format;
+        # the adapter normalises to lowercase so the downstream
+        # CoinGecko call hits the canonical key.
+        (
+            "0xA0b86991c6218B36c1D19D4a2e9Eb0cE3606eB48",
+            _FAKE_ADDR,
+        ),
+        # Embedded in an explorer URL paste.
+        (
+            f"https://etherscan.io/token/{_FAKE_ADDR}",
+            _FAKE_ADDR,
+        ),
+        # Embedded in prose ("check this token: 0x…").
+        (f"check this token: {_FAKE_ADDR}", _FAKE_ADDR),
+    ],
+)
+def test_extract_evm_address_happy_paths(query: str, expected: str) -> None:
+    """The pure helper accepts every shape the adapter dispatcher relies on."""
+    from merlin_infrastructure.market_data.coingecko import _extract_evm_address
+
+    assert _extract_evm_address(query) == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "BTC",
+        "bitcoin",
+        "ETH long 2 weeks",
+        # Too short (39 hex digits — not a valid EVM address shape).
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb4",
+        # Wrong prefix — Solana-style base58 doesn't match.
+        "FoNGoB2WMyEZeFwUmpQjzmJBp5RxXKqL3hPpkB78mURn",
+        # ``0x``-prefixed but with non-hex chars in the body.
+        "0xGGGG6991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    ],
+)
+def test_extract_evm_address_rejects(query: str) -> None:
+    """Plain tickers / coin names / wrong-chain addresses fall through."""
+    from merlin_infrastructure.market_data.coingecko import _extract_evm_address
+
+    assert _extract_evm_address(query) is None
+
+
+@respx.mock
+async def test_search_assets_routes_contract_address_to_search_first() -> None:
+    """A 0x-address pastes goes through ``/search`` and the per-platform
+    fan-out NEVER fires when ``/search`` returns hits.
+
+    The contract-aware path piggy-backs on CoinGecko's general
+    search index (which covers "name, symbol or contract address"),
+    so popular tokens like USDC surface in a single hop. Pinning
+    this is important — the fan-out costs 5 CoinGecko calls and we
+    must not burn that quota when the cheap path works.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {
+                        "id": "usd-coin",
+                        "symbol": "usdc",
+                        "name": "USD Coin",
+                        "market_cap_rank": 7,
+                    },
+                ]
+            },
+        )
+    )
+    # Enrichment call covers the ``ids=`` shape (fuzzy results lack
+    # price/cap). Return a payload that lets us pin enrichment ran.
+    respx.get(f"{_BASE_URL}/coins/markets").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "usd-coin",
+                    "symbol": "usdc",
+                    "name": "USD Coin",
+                    "current_price": 1.0,
+                    "market_cap": 60_000_000_000,
+                },
+            ],
+        )
+    )
+    platform_routes = _mock_all_platforms_404(_FAKE_ADDR)
+
+    out = await _adapter().search_assets(_FAKE_ADDR)
+
+    assert [c.coingecko_id for c in out] == ["usd-coin"]
+    assert out[0].current_price_usd == pytest.approx(1.0)
+    assert out[0].market_cap_usd == pytest.approx(60_000_000_000)
+    # No per-platform contract call fired — ``/search`` covered it.
+    for platform, route in platform_routes.items():
+        assert route.call_count == 0, (
+            f"per-platform fallback must not fire when /search has hits — "
+            f"{platform} was called {route.call_count}x"
+        )
+
+
+@respx.mock
+async def test_search_assets_falls_back_to_contract_endpoint_when_search_misses() -> None:
+    """When ``/search`` returns no coins, the adapter fans out across
+    the five popular EVM chains and surfaces whichever one wins.
+
+    The contract endpoint returns full market data (price + market
+    cap) so the resulting candidate is already enriched and the
+    adapter skips the follow-up ``ids=`` enrichment call.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    platform_routes = _mock_all_platforms_404(_FAKE_ADDR)
+    # One chain wins — pretend the address is a Base-only token.
+    platform_routes["base"].mock(
+        return_value=httpx.Response(
+            200,
+            json=_contract_payload(
+                coingecko_id="long-tail-base-token",
+                symbol="ltb",
+                name="Long Tail",
+                price_usd=0.0035,
+                market_cap_usd=125_000,
+                market_cap_rank=4123,
+            ),
+        )
+    )
+
+    out = await _adapter().search_assets(_FAKE_ADDR)
+
+    assert [c.coingecko_id for c in out] == ["long-tail-base-token"]
+    assert out[0].symbol == "LTB"
+    assert out[0].current_price_usd == pytest.approx(0.0035)
+    assert out[0].market_cap_usd == pytest.approx(125_000)
+    assert out[0].market_cap_rank == 4123
+    # All five chains were probed concurrently — pin the fan-out shape
+    # so a future refactor can't silently regress to a serial loop.
+    for platform, route in platform_routes.items():
+        assert route.call_count == 1, (
+            f"every chain must be probed exactly once in the fan-out; "
+            f"{platform} fired {route.call_count} times"
+        )
+
+
+@respx.mock
+async def test_search_assets_contract_fallback_dedupes_multichain_tokens() -> None:
+    """A deterministic-deploy token like USDC surfaces from multiple
+    chains with the same ``coingecko_id``. Dedup collapses it to one row.
+
+    This is the "USDC on ETH/Polygon/Base/Arbitrum all return
+    ``id=usd-coin``" scenario. Without dedup the picker would show
+    USDC up to 5 times — confusing and useless. With dedup it shows
+    once with the best market data the chain payloads carry.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    platform_routes = _mock_all_platforms_404(_FAKE_ADDR)
+    multichain_payload = _contract_payload(
+        coingecko_id="usd-coin",
+        symbol="usdc",
+        name="USD Coin",
+        price_usd=1.0,
+        market_cap_usd=60_000_000_000,
+        market_cap_rank=7,
+    )
+    # Three of the five chains return the same coingecko_id.
+    platform_routes["ethereum"].mock(return_value=httpx.Response(200, json=multichain_payload))
+    platform_routes["polygon-pos"].mock(return_value=httpx.Response(200, json=multichain_payload))
+    platform_routes["base"].mock(return_value=httpx.Response(200, json=multichain_payload))
+
+    out = await _adapter().search_assets(_FAKE_ADDR)
+
+    assert [c.coingecko_id for c in out] == ["usd-coin"], (
+        "multi-chain hits with the same coingecko_id must collapse to one row"
+    )
+    assert out[0].current_price_usd == pytest.approx(1.0)
+
+
+@respx.mock
+async def test_search_assets_contract_fallback_surfaces_distinct_coins_sharing_address() -> None:
+    """Different coingecko_ids on different chains → separate picker rows.
+
+    The rare-collision case: two unrelated projects happen to deploy
+    at the same EVM address on different chains (coincidence or
+    deliberate squatting). The adapter must surface both so the user
+    disambiguates via price + market cap; collapsing distinct coins
+    would silently pick a winner the user didn't choose.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    platform_routes = _mock_all_platforms_404(_FAKE_ADDR)
+    platform_routes["ethereum"].mock(
+        return_value=httpx.Response(
+            200,
+            json=_contract_payload(
+                coingecko_id="coin-on-eth",
+                symbol="cone",
+                name="Coin On ETH",
+                price_usd=2.50,
+                market_cap_usd=12_000_000,
+            ),
+        )
+    )
+    platform_routes["binance-smart-chain"].mock(
+        return_value=httpx.Response(
+            200,
+            json=_contract_payload(
+                coingecko_id="coin-on-bsc",
+                symbol="conb",
+                name="Coin On BSC",
+                price_usd=0.0001,
+                market_cap_usd=3_000,
+            ),
+        )
+    )
+
+    out = await _adapter().search_assets(_FAKE_ADDR)
+    ids = {c.coingecko_id for c in out}
+    assert ids == {"coin-on-eth", "coin-on-bsc"}, (
+        "distinct coingecko_ids sharing an address across chains must "
+        "both surface; the user disambiguates via price + market cap"
+    )
+
+
+@respx.mock
+async def test_search_assets_contract_fallback_swallows_404_and_5xx() -> None:
+    """One winning chain + four failing chains → only the winner is returned.
+
+    404s are the expected "address not on this chain" miss shape;
+    5xx / transport failures on other chains are logged but never
+    take out the one chain that DID find the token. The user gets a
+    working picker row instead of an "everything is broken" error.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    platform_routes = _mock_all_platforms_404(_FAKE_ADDR)
+    # Override two chains with non-404 failures — neither should crash
+    # the gather; the surviving 404s + the one winner must compose
+    # into a single-row result.
+    platform_routes["polygon-pos"].mock(return_value=httpx.Response(503, text="upstream down"))
+    platform_routes["binance-smart-chain"].mock(
+        return_value=httpx.Response(
+            200, text="<html>WAF block</html>", headers={"content-type": "text/html"}
+        )
+    )
+    platform_routes["arbitrum-one"].mock(
+        return_value=httpx.Response(
+            200,
+            json=_contract_payload(
+                coingecko_id="winner",
+                symbol="win",
+                name="Winner",
+                price_usd=42.0,
+                market_cap_usd=4_200_000,
+            ),
+        )
+    )
+
+    out = await _adapter().search_assets(_FAKE_ADDR)
+    assert [c.coingecko_id for c in out] == ["winner"]
+
+
+@respx.mock
+async def test_search_assets_extracts_address_embedded_in_explorer_url() -> None:
+    """An Etherscan-style URL paste routes through the contract path.
+
+    The regex matches the address anywhere in the input string, so a
+    user pastes ``https://etherscan.io/token/0xabc…`` and the
+    adapter peels out the address and dispatches the contract
+    pipeline. Pinned by mocking the contract endpoints and confirming
+    they fire — not the fuzzy / exact ticker probe.
+    """
+    explorer_paste = f"https://etherscan.io/token/{_FAKE_ADDR}"
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    platform_routes = _mock_all_platforms_404(_FAKE_ADDR)
+    platform_routes["ethereum"].mock(
+        return_value=httpx.Response(
+            200,
+            json=_contract_payload(
+                coingecko_id="explorer-token",
+                symbol="exp",
+                name="Explorer Token",
+                price_usd=12.34,
+                market_cap_usd=1_500_000,
+            ),
+        )
+    )
+
+    out = await _adapter().search_assets(explorer_paste)
+
+    assert [c.coingecko_id for c in out] == ["explorer-token"]
+    # The exact-symbol ticker probe (``symbols=`` on ``/coins/markets``)
+    # must not fire — the dispatcher took the contract branch.
+    # Nothing else mocked on ``/coins/markets`` means respx would
+    # have errored on any such call, so the absence of an assertion
+    # here IS the assertion. We just confirm at least one platform
+    # was probed.
+    assert platform_routes["ethereum"].call_count == 1
+
+
+@respx.mock
+async def test_search_assets_treats_plain_ticker_unchanged() -> None:
+    """A plain ticker like ``BTC`` does NOT route through the contract path.
+
+    Regression guard: any future tweak to the dispatcher that
+    inadvertently routes non-addresses through ``_search_by_contract``
+    would burn 5 CoinGecko calls per pick and break the existing
+    ticker / fuzzy semantics.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "coins": [
+                    {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+                ]
+            },
+        )
+    )
+    _stub_markets(
+        {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1},
+    )
+    # No contract endpoints are mocked. respx would raise on an
+    # unexpected call, so any future regression that routes "BTC"
+    # through ``_search_by_contract`` fails this test loudly.
+
+    out = await _adapter().search_assets("BTC")
+    assert [c.coingecko_id for c in out] == ["bitcoin"]

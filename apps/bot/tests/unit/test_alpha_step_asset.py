@@ -241,11 +241,16 @@ def test_render_candidates_text_has_one_numbered_line_per_candidate() -> None:
     assert "$5\\.2M cap" in lines[1]
     assert "$0\\.21" in lines[2]
     assert "$200k cap" in lines[2]
-    # Footer advertises all three input affordances.
+    # Footer advertises every supported input affordance — tap, type a
+    # ticker / name, paste a CoinGecko URL, or paste a contract address.
     footer = lines[-1]
     assert "Tap" in footer
     assert "ticker" in footer
     assert "URL" in footer
+    assert "contract" in footer.lower(), (
+        "footer must advertise contract-address support so users discover "
+        f"the input shape; got footer={footer!r}"
+    )
 
 
 def test_render_candidates_text_escapes_markdown_v2_reserved_in_name() -> None:
@@ -461,6 +466,11 @@ async def test_on_text_during_pick_plain_text_triggers_new_search(
 async def test_on_text_during_pick_plain_text_empty_results_warns_user() -> None:
     """If the new search returns zero candidates, the user gets the
     'No matches' message — the picker doesn't render an empty list.
+
+    The no-match copy must also advertise every supported input shape
+    (ticker, coin name, contract address, CoinGecko link) so a user
+    who landed here with the wrong shape can pivot without re-reading
+    the prompt.
     """
     client = MagicMock()
     client.search_assets = AsyncMock(return_value={"candidates": []})
@@ -470,7 +480,114 @@ async def test_on_text_during_pick_plain_text_empty_results_warns_user() -> None
     result = await step_asset.on_text_during_pick(update, ctx)
 
     update.message.reply_text.assert_awaited_once()
-    assert "No matches" in update.message.reply_text.call_args.args[0]
+    reply = update.message.reply_text.call_args.args[0]
+    assert "No matches" in reply
+    # The no-match copy must advertise every supported input shape.
+    assert "contract address" in reply.lower(), reply
+    assert "coingecko" in reply.lower(), reply
     # State falls back to EDIT_ASSET since ``receive_asset_query`` is
     # the underlying handler — matches its existing contract.
     assert result == AlphaState.EDIT_ASSET
+
+
+# ---------------------------------------------------------------------------
+# prompt_asset — first ask copy advertises every input shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prompt_asset_text_advertises_every_input_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The empty-state prompt (no cached candidates) must mention
+    name, ticker, CoinGecko URL, and contract address.
+
+    Pinned because the prompt is the only place a first-time user
+    sees what shapes the picker accepts — if the copy regresses to
+    "ticker only", users won't discover URL / address paste support
+    even though the adapter handles it.
+    """
+    update = MagicMock()
+    update.callback_query = None
+    ctx = _context(user_data={})
+
+    rendered: list[tuple[Any, ...]] = []
+
+    async def _fake_render(*args: Any, **kwargs: Any) -> Any:
+        rendered.append((args, kwargs))
+        return _fake_message()
+
+    monkeypatch.setattr(step_asset, "ui_render", _fake_render)
+
+    state = await step_asset.prompt_asset(update, ctx)
+
+    assert state == AlphaState.EDIT_ASSET
+    assert len(rendered) == 1
+    text = rendered[0][1].get("text", "")
+    assert isinstance(text, str)
+    # Every supported input shape must be advertised.
+    assert "ticker" in text.lower(), text
+    assert "name" in text.lower(), text
+    assert "coingecko" in text.lower(), text
+    assert "contract address" in text.lower(), text
+
+
+# ---------------------------------------------------------------------------
+# on_text_during_pick — contract-address smoke
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_text_during_pick_contract_address_routes_to_fresh_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare ``0x…`` address mid-pick flows to ``receive_asset_query``,
+    NOT the CoinGecko URL-format hint.
+
+    The bot doesn't classify addresses itself — the adapter takes
+    care of dispatching ``0x…`` to the contract pipeline. The bot's
+    job is just to make sure the URL short-circuit doesn't fire on
+    address-shaped text (because ``coingecko.com`` is the URL gate
+    and an address doesn't contain it). Pinned here so a future
+    tweak to the URL detector can't accidentally swallow address
+    inputs and emit the format hint instead of searching.
+    """
+    address = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    client = MagicMock()
+    client.search_assets = AsyncMock(
+        return_value={
+            "candidates": [
+                {
+                    "coingecko_id": "usd-coin",
+                    "symbol": "USDC",
+                    "name": "USD Coin",
+                    "current_price_usd": 1.0,
+                    "market_cap_usd": 60_000_000_000,
+                },
+            ]
+        }
+    )
+    client.resolve_asset = AsyncMock()
+    update = _text_update(text=address)
+    ctx = _context(client=client)
+
+    rendered: list[tuple[Any, ...]] = []
+
+    async def _fake_render(*args: Any, **kwargs: Any) -> Any:
+        rendered.append((args, kwargs))
+        return _fake_message()
+
+    monkeypatch.setattr(step_asset, "ui_render", _fake_render)
+
+    result = await step_asset.on_text_during_pick(update, ctx)
+
+    # The address landed in ``client.search_assets`` verbatim — the
+    # adapter is responsible for extracting it.
+    client.search_assets.assert_awaited_once_with(query=address)
+    # The URL-format hint never fired.
+    update.message.reply_text.assert_not_called()
+    # The picker re-rendered with the resulting candidate.
+    assert len(rendered) == 1
+    assert result == AlphaState.PICK_ASSET
+    # No resolve called — the user must still tap a row to confirm.
+    client.resolve_asset.assert_not_called()
