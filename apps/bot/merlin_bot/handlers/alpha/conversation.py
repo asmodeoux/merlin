@@ -28,12 +28,18 @@ from merlin_bot.handlers.alpha import (
 from merlin_bot.handlers.alpha.states import AlphaState
 
 # Seconds of inactivity before an abandoned ``/alpha`` conversation
-# auto-ends. Two minutes is generous for a user picking through the
-# preview/edit flow; it's also short enough that the freeform
-# catch-all entry-point starts firing again on the user's next
-# message (instead of the AWAIT_TEXT handler intercepting whatever
-# they type — which would fire the LLM extractor on stale context).
-ALPHA_CONVERSATION_TIMEOUT_SECONDS = 120
+# auto-ends. Ten minutes is calibrated against the realistic
+# asset-picker flow: a user mid-pick may legitimately need to look
+# up a contract address, copy from an explorer, or research a long-
+# tail ticker before sending the next message. The previous 120s
+# floor was too tight — users routinely crossed it while pasting a
+# fresh address, and the next message they sent then bypassed the
+# in-conversation EDIT_ASSET handler and got intercepted by the
+# freeform-text entry-point, firing the LLM extractor on what the
+# user thought was a follow-up search. ``/cancel`` remains available
+# at any point if the user really did abandon the draft, so a
+# longer ceiling has no downside.
+ALPHA_CONVERSATION_TIMEOUT_SECONDS = 600
 
 
 def _resolve_cancel_command() -> Any:

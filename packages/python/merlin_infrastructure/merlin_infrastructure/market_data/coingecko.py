@@ -64,19 +64,47 @@ _MAX_SEARCH_RESULTS = 5
 # routinely shown in EIP-55 mixed case.
 _EVM_ADDRESS_RE: Final = re.compile(r"0x[a-fA-F0-9]{40}")
 
-# Fan-out platform list for the contract-address fallback path. These
-# are the five EVM platforms with the highest CoinGecko-indexed market
-# share — empirically catching ~90% of contract-address pastes a user
-# is plausibly going to send. Each entry is the CoinGecko-canonical
-# ``platform_id`` (matches ``/coins/{platform}/contract/{address}``);
-# extending the list is a one-line tuple edit.
-_CONTRACT_LOOKUP_PLATFORMS: Final = (
+# Solana base58 address shape — Ed25519 public keys, typically 43-44
+# chars, occasionally 32+ for program-derived addresses. Base58
+# alphabet excludes ``0`` (zero), ``O``, ``I``, and ``l`` to dodge
+# visual ambiguity. Used as a *substring* match so an explorer paste
+# like ``https://solscan.io/token/<addr>`` still extracts the
+# address. Crucially, the dispatcher checks the EVM regex *first*
+# (which has the distinctive ``0x`` prefix and ``0`` digits the
+# base58 alphabet forbids), so an EVM address paste can never be
+# misclassified as Solana. Case-sensitive — Solana addresses don't
+# survive lowercasing.
+_SOLANA_ADDRESS_RE: Final = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
+
+# Fan-out platform list for the EVM contract-address fallback path.
+# Four chains by 2026 TVL ranking that aren't already covered by
+# CoinGecko's own URL-paste affordance — Ethereum (mainstream
+# institutional), BNB Smart Chain (largest memecoin ecosystem),
+# Base (fastest-growing L2), Arbitrum One (top L2 by TVL). Each
+# entry is the CoinGecko-canonical ``platform_id``; extending the
+# list is a one-line tuple edit but trades off Demo-tier quota
+# (10k calls/month — at four calls per address paste we can absorb
+# ~2.5k pastes/month before brushing budget).
+#
+# Polygon-pos was dropped in favour of Solana when adding non-EVM
+# support — Polygon's share has been losing ground to Base + Arbitrum
+# while Solana indexes the bulk of 2026 memecoin issuance, and the
+# user's expected paste mix skews heavily toward Solana addresses
+# now. Polygon-listed tokens are still reachable via the CoinGecko
+# URL-paste path.
+_EVM_LOOKUP_PLATFORMS: Final = (
     "ethereum",
-    "polygon-pos",
+    "binance-smart-chain",
     "base",
     "arbitrum-one",
-    "binance-smart-chain",
 )
+
+# Solana lookup — single platform; the base58 address shape isn't
+# valid on any other CoinGecko platform, so there's nothing to fan
+# out to. Kept as a tuple for shape-parity with
+# :data:`_EVM_LOOKUP_PLATFORMS` (the same ``_search_by_contract``
+# pipeline handles both paths).
+_SOLANA_LOOKUP_PLATFORMS: Final = ("solana",)
 
 
 def _extract_evm_address(query: str) -> str | None:
@@ -94,6 +122,31 @@ def _extract_evm_address(query: str) -> str | None:
     """
     match = _EVM_ADDRESS_RE.search(query)
     return match.group(0).lower() if match else None
+
+
+def _extract_solana_address(query: str) -> str | None:
+    """Return a base58 Solana address embedded in ``query`` or ``None``.
+
+    Matches anywhere in the string (so a Solscan URL paste still
+    yields the address) but case-sensitively — Solana addresses are
+    Ed25519 public keys whose base58 encoding is case-significant.
+
+    Dispatch order matters: the caller MUST check
+    :func:`_extract_evm_address` first. An EVM address always
+    contains the digit ``0`` (in the ``0x`` prefix at minimum, and
+    almost always in the hex body) which is forbidden in the base58
+    alphabet, so this regex correctly refuses EVM pastes. But the
+    contrapositive doesn't hold — a Solana-shaped substring inside
+    an EVM-shaped one would be ambiguous, and the EVM-first check
+    resolves that cleanly.
+
+    Plain tickers (3-6 chars) and coin names (rarely >25 chars)
+    are well below the 32-char floor and never match. CoinGecko
+    URLs are broken into sub-32 chunks by ``/``, ``.``, and ``:``,
+    none of which are in the base58 alphabet.
+    """
+    match = _SOLANA_ADDRESS_RE.search(query)
+    return match.group(0) if match else None
 
 
 def _safe_float(value: Any) -> float | None:
@@ -251,9 +304,16 @@ class CoinGeckoAdapter:
 
         * **EVM contract address** (matches ``0x[a-fA-F0-9]{40}``
           anywhere in the input — bare or embedded in an explorer URL)
-          → hands off to :meth:`_search_by_contract` which tries
-          ``/search`` first and falls back to a per-chain
-          ``/coins/{platform}/contract/{address}`` fan-out.
+          → hands off to :meth:`_search_by_contract` with the EVM
+          platform tuple. Tries ``/search`` first and falls back to
+          a per-chain ``/coins/{platform}/contract/{address}``
+          fan-out.
+        * **Solana base58 address** (32-44 chars from the base58
+          alphabet — bare or embedded in a Solscan URL) → same
+          ``_search_by_contract`` pipeline against the Solana
+          platform. Only one chain, so the fallback is a single
+          call. EVM check fires *first* so a base58-looking
+          substring inside an EVM address can never be misrouted.
         * **Everything else** (ticker, coin name) → the original
           two-endpoint pipeline below.
 
@@ -296,9 +356,12 @@ class CoinGeckoAdapter:
         probe entirely — no coin has a multi-word ticker so it'd burn
         quota for a guaranteed-empty response.
         """
-        address = _extract_evm_address(query)
-        if address is not None:
-            return await self._search_by_contract(address)
+        evm_address = _extract_evm_address(query)
+        if evm_address is not None:
+            return await self._search_by_contract(evm_address, _EVM_LOOKUP_PLATFORMS)
+        solana_address = _extract_solana_address(query)
+        if solana_address is not None:
+            return await self._search_by_contract(solana_address, _SOLANA_LOOKUP_PLATFORMS)
         if _looks_like_ticker(query):
             fuzzy_result, exact_result = await asyncio.gather(
                 self._search_fuzzy(query),
@@ -423,33 +486,46 @@ class CoinGeckoAdapter:
             )
         return result
 
-    async def _search_by_contract(self, address: str) -> list[AssetCandidate]:
-        """Resolve a 40-hex EVM contract address to ``AssetCandidate``s.
+    async def _search_by_contract(
+        self,
+        address: str,
+        platforms: tuple[str, ...],
+    ) -> list[AssetCandidate]:
+        """Resolve a contract address to ``AssetCandidate``s.
 
         Two-stage strategy with the cheap path tried first:
 
-        * **Stage 1** — ``GET /search?query=<address>``. CoinGecko's
-          general search index covers "name, symbol or contract address"
-          per the API docs, so a popular token like USDC surfaces here
-          in a single hop. Any hit is run through the existing
-          enrichment / truncation pipeline so the picker rows still
-          carry price + market cap.
-        * **Stage 2** — concurrent fan-out across
-          :data:`_CONTRACT_LOOKUP_PLATFORMS` via ``asyncio.gather``.
-          Used only when stage 1 returns no candidates. Each platform
-          hits ``GET /coins/{platform}/contract/{address}``; 404
-          (address not on that chain) is the expected miss shape and
+        * **Stage 1** — ``GET /search?query=<address>``. Empirically
+          the public Demo-tier ``/search`` endpoint does NOT actually
+          index contract addresses (verified live: USDC / SHIB / PEPE
+          / USDT all return zero ``/search`` hits against their
+          canonical Ethereum addresses), but the call is essentially
+          free thanks to the API-layer Redis cache, and any future
+          CoinGecko coverage improvement we'd pick up for free. Any
+          stage-1 hits go through the existing enrichment / truncation
+          pipeline so picker rows carry price + market cap.
+        * **Stage 2** — concurrent fan-out across ``platforms`` via
+          ``asyncio.gather``. Each entry hits
+          ``GET /coins/{platform}/contract/{address}``; 404 (address
+          not deployed on that chain) is the expected miss shape and
           is swallowed silently. Any other per-chain error is logged
           and that chain drops out — other chains' hits still surface.
           The endpoint returns full coin metadata (price + market cap
           included), so candidates from this path skip the follow-up
           enrichment call.
 
+        The ``platforms`` tuple is dispatched on input shape upstream:
+        EVM addresses fan out across :data:`_EVM_LOOKUP_PLATFORMS`,
+        Solana base58 addresses across :data:`_SOLANA_LOOKUP_PLATFORMS`
+        (just ``solana`` — the address shape isn't valid on any other
+        platform so there's nothing to fan out to).
+
         Multi-chain semantics: a deterministic-deploy token like USDC
-        comes back from several platforms with the same
+        comes back from several EVM platforms with the same
         ``coingecko_id``; dedup-by-id collapses it to a single picker
         row. The rare case where distinct coins share an address on
-        different chains surfaces them as separate rows so the user
+        different chains (e.g. USDC's BSC-bridged variant has its own
+        ``coingecko_id``) surfaces them as separate rows so the user
         disambiguates via price + market cap.
         """
         fuzzy = await self._search_fuzzy(address)
@@ -458,7 +534,7 @@ class CoinGeckoAdapter:
             return await self._enrich_with_market_data(top)
 
         lookups = await asyncio.gather(
-            *(self._lookup_contract(platform, address) for platform in _CONTRACT_LOOKUP_PLATFORMS),
+            *(self._lookup_contract(platform, address) for platform in platforms),
             return_exceptions=True,
         )
         candidates: list[AssetCandidate] = []

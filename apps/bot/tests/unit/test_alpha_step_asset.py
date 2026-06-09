@@ -485,9 +485,110 @@ async def test_on_text_during_pick_plain_text_empty_results_warns_user() -> None
     # The no-match copy must advertise every supported input shape.
     assert "contract address" in reply.lower(), reply
     assert "coingecko" in reply.lower(), reply
+    # A non-address query gets the generic "No matches." preamble
+    # WITHOUT the "on supported chains" qualifier — that wording
+    # would be misleading for a ticker / name search.
+    assert "supported chains" not in reply.lower(), reply
     # State falls back to EDIT_ASSET since ``receive_asset_query`` is
     # the underlying handler — matches its existing contract.
     assert result == AlphaState.EDIT_ASSET
+
+
+# ---------------------------------------------------------------------------
+# No-match copy branches on address vs. ticker shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        # EVM address — bare.
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        # EVM address — embedded in explorer URL paste.
+        "https://etherscan.io/token/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        # Solana base58 address — bare.
+        "DF12JV9hFJbMWFuG7ff1wqaydj6HSkvwyt6mJnNVuGiR",
+    ],
+)
+@pytest.mark.asyncio
+async def test_no_match_copy_acknowledges_chain_coverage_for_address_pastes(
+    address: str,
+) -> None:
+    """A contract-address paste that misses gets a *scoped* "on
+    supported chains" qualifier so the user knows the failure mode
+    is *we only probe a subset of chains for ADDRESS LOOKUPS*, not
+    *those other chains are unsupported wholesale*.
+
+    The exact wording ("No contract address matches on supported
+    chains …") matters: an earlier draft said "No matches on
+    supported chains" which a user could misread as "Polygon /
+    Tron / Avalanche aren't supported at all". They are — just not
+    for the address-search path. They can still claim those tokens
+    via a CoinGecko URL paste or by typing the ticker / name.
+
+    Pinned for all three legitimate address shapes (bare EVM, EVM
+    embedded in an explorer URL, bare Solana). Each must surface
+    the chain list so a user pasting from outside the list knows
+    their next move is the CoinGecko URL paste.
+    """
+    client = MagicMock()
+    client.search_assets = AsyncMock(return_value={"candidates": []})
+    update = _text_update(text=address)
+    ctx = _context(client=client)
+
+    state = await step_asset.receive_asset_query(update, ctx)
+
+    update.message.reply_text.assert_awaited_once()
+    reply = update.message.reply_text.call_args.args[0]
+    assert "no contract address matches on supported chains" in reply.lower(), (
+        f"address-shape paste must scope the failure mode to the "
+        f"contract-address search, not the feature wholesale; "
+        f"got reply={reply!r}"
+    )
+    # The chain list is named explicitly so the user can decide
+    # whether to pivot to a CoinGecko URL paste. Order pinned —
+    # Solana sits at #2 by expected paste mix (largest 2026
+    # memecoin issuance), not at the tail as an afterthought.
+    assert "Ethereum, Solana, BSC, Base, Arbitrum" in reply, (
+        f"chain list must appear in the pinned order "
+        f"(Ethereum first, Solana second, EVM L1/L2s after); "
+        f"got reply={reply!r}"
+    )
+    # We still stay in EDIT_ASSET so the user can keep iterating
+    # without restarting the alpha conversation.
+    assert state == AlphaState.EDIT_ASSET
+
+
+@pytest.mark.parametrize(
+    "address_like",
+    [
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "DF12JV9hFJbMWFuG7ff1wqaydj6HSkvwyt6mJnNVuGiR",
+        "https://etherscan.io/token/0xdac17f958d2ee523a2206206994597c13d831ec7",
+    ],
+)
+def test_looks_like_contract_address_accepts_address_shapes(address_like: str) -> None:
+    """``_looks_like_contract_address`` is the no-match branch gate."""
+    assert step_asset._looks_like_contract_address(address_like) is True
+
+
+@pytest.mark.parametrize(
+    "non_address",
+    [
+        "",
+        "BTC",
+        "Bitcoin",
+        "ETH long 2 weeks",
+        # CoinGecko URL — distinct user intent, NOT contract paste.
+        "https://www.coingecko.com/en/coins/bitcoin",
+        # Slugs and ticker-ish single words.
+        "stable",
+        "dogecoin",
+    ],
+)
+def test_looks_like_contract_address_rejects_non_address(non_address: str) -> None:
+    """Plain tickers / names / CoinGecko URLs fall to the generic copy."""
+    assert step_asset._looks_like_contract_address(non_address) is False
 
 
 # ---------------------------------------------------------------------------

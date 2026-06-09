@@ -821,16 +821,15 @@ async def test_search_assets_handles_null_price_in_markets_probe() -> None:
 # false "is this address still listed?" coupling at test time.
 _FAKE_ADDR = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 
-# Five-platform fan-out shape, used to build per-platform respx routes
-# in the fallback tests. Mirrors ``_CONTRACT_LOOKUP_PLATFORMS`` in the
-# adapter; if the adapter list changes, this list changes in lockstep
-# (the tests would otherwise leave unmocked routes that respx flags).
+# EVM fan-out shape, used to build per-platform respx routes in the
+# fallback tests. Mirrors ``_EVM_LOOKUP_PLATFORMS`` in the adapter;
+# if the adapter list changes, this list changes in lockstep (the
+# tests would otherwise leave unmocked routes that respx flags).
 _FAN_OUT_PLATFORMS = (
     "ethereum",
-    "polygon-pos",
+    "binance-smart-chain",
     "base",
     "arbitrum-one",
-    "binance-smart-chain",
 )
 
 
@@ -990,7 +989,7 @@ async def test_search_assets_routes_contract_address_to_search_first() -> None:
 @respx.mock
 async def test_search_assets_falls_back_to_contract_endpoint_when_search_misses() -> None:
     """When ``/search`` returns no coins, the adapter fans out across
-    the five popular EVM chains and surfaces whichever one wins.
+    the four popular EVM chains and surfaces whichever one wins.
 
     The contract endpoint returns full market data (price + market
     cap) so the resulting candidate is already enriched and the
@@ -1020,8 +1019,9 @@ async def test_search_assets_falls_back_to_contract_endpoint_when_search_misses(
     assert out[0].current_price_usd == pytest.approx(0.0035)
     assert out[0].market_cap_usd == pytest.approx(125_000)
     assert out[0].market_cap_rank == 4123
-    # All five chains were probed concurrently — pin the fan-out shape
-    # so a future refactor can't silently regress to a serial loop.
+    # All four EVM chains were probed concurrently — pin the fan-out
+    # shape so a future refactor can't silently regress to a serial
+    # loop.
     for platform, route in platform_routes.items():
         assert route.call_count == 1, (
             f"every chain must be probed exactly once in the fan-out; "
@@ -1049,10 +1049,10 @@ async def test_search_assets_contract_fallback_dedupes_multichain_tokens() -> No
         market_cap_usd=60_000_000_000,
         market_cap_rank=7,
     )
-    # Three of the five chains return the same coingecko_id.
+    # Three of the four EVM chains return the same coingecko_id.
     platform_routes["ethereum"].mock(return_value=httpx.Response(200, json=multichain_payload))
-    platform_routes["polygon-pos"].mock(return_value=httpx.Response(200, json=multichain_payload))
     platform_routes["base"].mock(return_value=httpx.Response(200, json=multichain_payload))
+    platform_routes["arbitrum-one"].mock(return_value=httpx.Response(200, json=multichain_payload))
 
     out = await _adapter().search_assets(_FAKE_ADDR)
 
@@ -1109,7 +1109,7 @@ async def test_search_assets_contract_fallback_surfaces_distinct_coins_sharing_a
 
 @respx.mock
 async def test_search_assets_contract_fallback_swallows_404_and_5xx() -> None:
-    """One winning chain + four failing chains → only the winner is returned.
+    """One winning chain + three failing chains → only the winner is returned.
 
     404s are the expected "address not on this chain" miss shape;
     5xx / transport failures on other chains are logged but never
@@ -1119,9 +1119,9 @@ async def test_search_assets_contract_fallback_swallows_404_and_5xx() -> None:
     respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
     platform_routes = _mock_all_platforms_404(_FAKE_ADDR)
     # Override two chains with non-404 failures — neither should crash
-    # the gather; the surviving 404s + the one winner must compose
+    # the gather; the surviving 404 + the one winner must compose
     # into a single-row result.
-    platform_routes["polygon-pos"].mock(return_value=httpx.Response(503, text="upstream down"))
+    platform_routes["base"].mock(return_value=httpx.Response(503, text="upstream down"))
     platform_routes["binance-smart-chain"].mock(
         return_value=httpx.Response(
             200, text="<html>WAF block</html>", headers={"content-type": "text/html"}
@@ -1188,7 +1188,7 @@ async def test_search_assets_treats_plain_ticker_unchanged() -> None:
 
     Regression guard: any future tweak to the dispatcher that
     inadvertently routes non-addresses through ``_search_by_contract``
-    would burn 5 CoinGecko calls per pick and break the existing
+    would burn 4 CoinGecko calls per pick and break the existing
     ticker / fuzzy semantics.
     """
     respx.get(f"{_BASE_URL}/search").mock(
@@ -1210,3 +1210,183 @@ async def test_search_assets_treats_plain_ticker_unchanged() -> None:
 
     out = await _adapter().search_assets("BTC")
     assert [c.coingecko_id for c in out] == ["bitcoin"]
+
+
+# ---------------------------------------------------------------------------
+# Solana base58 contract-address dispatch
+# ---------------------------------------------------------------------------
+
+
+# A canonical Solana address shape (43 base58 chars, no zero / O / I / l).
+# Doesn't correspond to any real token — tests must not encode a live
+# token's address.
+_FAKE_SOLANA_ADDR = "DF12JV9hFJbMWFuG7ff1wqaydj6HSkvwyt6mJnNVuGiR"
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        # Bare base58 address.
+        (_FAKE_SOLANA_ADDR, _FAKE_SOLANA_ADDR),
+        # Embedded in a Solscan-style URL paste.
+        (f"https://solscan.io/token/{_FAKE_SOLANA_ADDR}", _FAKE_SOLANA_ADDR),
+        # 32-char program-derived addresses also count.
+        ("11111111111111111111111111111112", "11111111111111111111111111111112"),
+    ],
+)
+def test_extract_solana_address_happy_paths(query: str, expected: str) -> None:
+    """The pure helper accepts every shape the adapter dispatcher relies on."""
+    from merlin_infrastructure.market_data.coingecko import _extract_solana_address
+
+    assert _extract_solana_address(query) == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # Plain tickers and coin names — far below the 32-char floor.
+        "",
+        "BTC",
+        "ETH",
+        "Bitcoin",
+        "Solana",
+        # CoinGecko URL — broken into sub-32 chunks by '/', '.', ':'
+        "https://www.coingecko.com/en/coins/bitcoin",
+    ],
+)
+def test_extract_solana_address_rejects_non_address_shapes(query: str) -> None:
+    """Tickers, coin names, and CoinGecko URLs fall through.
+
+    NB: this helper does NOT guarantee rejection of EVM addresses
+    in isolation — some EVM addresses (e.g. PEPE,
+    ``0x6982…1933``) carry a 32+ char zero-free hex window that
+    satisfies the base58 alphabet, so the regex would happily
+    match. EVM safety is enforced upstream by the dispatcher
+    checking :func:`_extract_evm_address` *first*; see
+    :func:`test_evm_address_with_solana_shaped_hex_body_still_routes_to_evm`
+    which pins that ordering.
+    """
+    from merlin_infrastructure.market_data.coingecko import _extract_solana_address
+
+    assert _extract_solana_address(query) is None
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "evm_address",
+    [
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "0xdac17f958d2ee523a2206206994597c13d831ec7",
+        # PEPE — its hex body has a 34-char zero-free substring that
+        # the base58 regex would happily match in isolation. The
+        # EVM-first dispatch is what saves us; this test pins that
+        # ordering rather than the regex's standalone behaviour.
+        "0x6982508145454ce325ddbe47a25d4ec3d2311933",
+    ],
+)
+async def test_evm_address_with_solana_shaped_hex_body_still_routes_to_evm(
+    evm_address: str,
+) -> None:
+    """EVM dispatch must fire BEFORE Solana dispatch.
+
+    Empirically, the PEPE contract has a 34-char zero-free substring
+    in its hex body that matches the Solana base58 regex. Routing
+    that to ``/coins/solana/contract/{partial-hex}`` would burn an
+    API call and surface a misleading "no Solana token at this
+    address" result. The dispatcher's EVM-first ordering means the
+    Solana regex never sees the input — pinned here by mounting the
+    EVM fan-out (which must fire) and watching for any Solana route
+    hit (which must NOT fire — respx would error on the unmocked
+    call).
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    _mock_all_platforms_404(evm_address.lower())
+    # NB: no ``/coins/solana/contract/...`` route is mounted. If the
+    # dispatcher ever routes an EVM address through the Solana path,
+    # respx raises on the unmocked call and this test fails loudly.
+
+    out = await _adapter().search_assets(evm_address)
+    assert out == [], (
+        "Stub fan-out returns 404 across all EVM chains; result must "
+        "be an empty picker, NOT a Solana misroute"
+    )
+
+
+@respx.mock
+async def test_search_assets_routes_solana_address_to_solana_platform() -> None:
+    """A base58 Solana address dispatches to ``/coins/solana/contract``.
+
+    Pins the Solana-only fan-out shape: exactly ONE contract call
+    against the ``solana`` platform, no probes against any EVM
+    chain. The Solana address shape isn't valid on any other
+    CoinGecko platform, so there's nothing else to try.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    solana_route = respx.get(
+        f"{_BASE_URL}/coins/solana/contract/{_FAKE_SOLANA_ADDR}",
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json=_contract_payload(
+                coingecko_id="long-tail-solana-token",
+                symbol="lts",
+                name="Long Tail Solana",
+                price_usd=0.0123,
+                market_cap_usd=450_000,
+            ),
+        )
+    )
+
+    out = await _adapter().search_assets(_FAKE_SOLANA_ADDR)
+
+    assert [c.coingecko_id for c in out] == ["long-tail-solana-token"]
+    assert out[0].symbol == "LTS"
+    assert out[0].current_price_usd == pytest.approx(0.0123)
+    assert solana_route.call_count == 1, (
+        "Solana dispatch must fire exactly one contract call against the solana platform"
+    )
+
+
+@respx.mock
+async def test_search_assets_solana_dispatch_skips_evm_fan_out() -> None:
+    """Solana dispatch must NOT touch any EVM contract endpoint.
+
+    Regression guard: an earlier refactor accidentally fanned the
+    Solana path out across every platform tuple. Fix kept the two
+    dispatches isolated; this test pins that by mounting EVM-chain
+    routes that respx would raise on if hit.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    # The Solana platform endpoint returns a 404 so the whole call
+    # surfaces an empty picker — but the EVM routes must NEVER fire,
+    # regardless of whether Solana resolved.
+    respx.get(f"{_BASE_URL}/coins/solana/contract/{_FAKE_SOLANA_ADDR}").mock(
+        return_value=httpx.Response(404, json={"error": "coin not found"})
+    )
+
+    out = await _adapter().search_assets(_FAKE_SOLANA_ADDR)
+    assert out == []
+    # No EVM route was mocked; respx would have errored on any such
+    # call. The empty result is itself the assertion that no EVM
+    # platforms were probed.
+
+
+@respx.mock
+async def test_search_assets_evm_fan_out_excludes_polygon_pos() -> None:
+    """Polygon-pos was dropped from the EVM fan-out tuple.
+
+    Regression guard: this test mounts the four current EVM
+    platforms with 404 responses and confirms the polygon-pos
+    route is never called (it'd otherwise raise unmocked under
+    respx). Catches accidental reintroduction.
+    """
+    respx.get(f"{_BASE_URL}/search").mock(return_value=httpx.Response(200, json={"coins": []}))
+    polygon_route = respx.get(
+        f"{_BASE_URL}/coins/polygon-pos/contract/{_FAKE_ADDR}",
+    ).mock(return_value=httpx.Response(404))
+    _mock_all_platforms_404(_FAKE_ADDR)
+
+    await _adapter().search_assets(_FAKE_ADDR)
+    assert polygon_route.call_count == 0, (
+        "polygon-pos must NOT be in the EVM fan-out — was dropped in favour of Solana support"
+    )

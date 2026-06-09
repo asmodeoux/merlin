@@ -56,13 +56,21 @@ def test_alpha_handler_has_conversation_timeout() -> None:
     must auto-end after a bounded period. Without this, the
     AWAIT_TEXT slot intercepts the user's next message — whatever
     they type — and fires the LLM extractor on stale, out-of-context
-    input. This burns the OpenRouter budget for no UX benefit."""
+    input. This burns the OpenRouter budget for no UX benefit.
+
+    Lower bound is generous enough for a realistic asset-picker
+    flow (paste address → see no-match → look up correct ticker →
+    retry) without the conversation auto-ending mid-research. Upper
+    bound caps how long a forgotten draft holds its state slot.
+    """
     handler = build_handler()
     assert handler.conversation_timeout is not None, (
         "/alpha ConversationHandler must set conversation_timeout so "
         "abandoned AWAIT_TEXT slots release on their own. See "
         "ALPHA_CONVERSATION_TIMEOUT_SECONDS in conversation.py."
     )
-    # 2 min ± reasonable slack — pin the order of magnitude, not the
-    # exact value, so we can tune it without rewriting the test.
-    assert 60 <= handler.conversation_timeout <= 600
+    # Bounds pinned to "5-30 min" — anything shorter risks the
+    # mid-picker retry bug (next text intercepted by the freeform
+    # entry-point as a fresh /alpha); anything longer holds stale
+    # state too aggressively. Tune within without rewriting the test.
+    assert 300 <= handler.conversation_timeout <= 1800

@@ -84,6 +84,41 @@ _URL_FORMAT_HINT = (
 
 _SLUG_RE = re.compile(r"^[a-z0-9_-]+$")
 
+# Lightweight contract-address detectors used ONLY by the no-match
+# copy branch — the bot needs to tailor the failure message ("on
+# supported chains") for address-shaped pastes vs. generic ticker /
+# name misses. Mirrors the adapter's regex shapes (EVM = ``0x`` +
+# 40 hex; Solana = 32-44 base58) intentionally; duplicating the
+# pattern is the cheap price of not importing from
+# ``merlin_infrastructure`` (forbidden by the bot's layer rule —
+# see AGENTS.md §3). The adapter remains the single source of truth
+# for the dispatch logic itself.
+_EVM_ADDRESS_RE_UI = re.compile(r"0x[a-fA-F0-9]{40}")
+_SOLANA_ADDRESS_RE_UI = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
+
+# Human-readable list of chains we actually probe by contract
+# address. Surfaced in the no-match copy so a user pasting an
+# address from an unsupported chain (e.g. Polygon, Optimism,
+# Avalanche, Tron) knows why their paste came up empty and what
+# their next move is (try the CoinGecko URL paste instead). Order
+# reflects expected paste mix: Ethereum (institutional / DeFi
+# default), Solana (largest 2026 memecoin issuance), then the
+# remaining EVM L1/L2s by share.
+_SUPPORTED_CONTRACT_CHAINS = "Ethereum, Solana, BSC, Base, Arbitrum"
+
+
+def _looks_like_contract_address(text: str) -> bool:
+    """True if ``text`` carries an EVM-shape or Solana-shape address.
+
+    Used only to tailor the no-match copy. False positives are
+    benign (worst case: a 32+ char base58 ticker like a never-
+    existed token nudges the "on supported chains" suffix) so
+    we keep the check intentionally loose.
+    """
+    if _EVM_ADDRESS_RE_UI.search(text):
+        return True
+    return bool(_SOLANA_ADDRESS_RE_UI.search(text))
+
 
 async def prompt_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Morph the preview card into the asset picker or text prompt.
@@ -128,8 +163,20 @@ async def receive_asset_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     if candidates is None:
         return AlphaState.EDIT_ASSET
     if not candidates:
+        if _looks_like_contract_address(query):
+            # Scope the "no matches" failure mode to the
+            # contract-address search specifically — a user pasting an
+            # address from Polygon / Tron / Avalanche should NOT walk
+            # away thinking those chains are unsupported wholesale;
+            # they can still claim those tokens via a CoinGecko URL
+            # paste or by typing the ticker / name.
+            preamble = (
+                f"No contract address matches on supported chains ({_SUPPORTED_CONTRACT_CHAINS})."
+            )
+        else:
+            preamble = "No matches."
         await update.message.reply_text(
-            "No matches. Try a ticker (BTC, ETH), a coin name, "
+            f"{preamble} Try a ticker (BTC, ETH), a coin name, "
             "a contract address, or a CoinGecko link."
         )
         return AlphaState.EDIT_ASSET
