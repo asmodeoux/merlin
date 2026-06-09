@@ -189,6 +189,50 @@
         "group": "3_tests",
         "order": 7
       }
+    },
+
+    // ===================================================================
+    // 4) Fly.io deploys
+    //
+    // node-terminal launches a single shell command in the integrated
+    // terminal — no debugger attached, no Node runtime touched (the
+    // name is historical; VS Code's built-in launcher just shells out).
+    // Each one delegates to the same `make fly-deploy-*` target that
+    // tasks.json wires, so the "right --app slug per service" rule
+    // from AGENTS.md §11.1 stays in one place (the Makefile).
+    // ===================================================================
+    {
+      "name": "🚀 Deploy API (merlin-api)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "make fly-deploy-api",
+      "cwd": "${workspaceFolder}",
+      "presentation": {
+        "group": "4_deploy",
+        "order": 1
+      }
+    },
+    {
+      "name": "🚀 Deploy Bot (merlin-tg-bot)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "make fly-deploy-bot",
+      "cwd": "${workspaceFolder}",
+      "presentation": {
+        "group": "4_deploy",
+        "order": 2
+      }
+    },
+    {
+      "name": "🚀 Deploy Worker (merlin-worker)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "make fly-deploy-worker",
+      "cwd": "${workspaceFolder}",
+      "presentation": {
+        "group": "4_deploy",
+        "order": 3
+      }
     }
   ],
   "compounds": [
