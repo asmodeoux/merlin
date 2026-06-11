@@ -15,6 +15,12 @@ Sprint 1 use cases:
   reactive per-outcome recompute.
 """
 
+from merlin_core.application.use_cases.board_diff import (
+    BoardChangeScenario,
+    BoardNotification,
+    classify,
+    rank_board,
+)
 from merlin_core.application.use_cases.submit_claim import (
     ClaimWriterPort,
     MarketDataUnavailableError,
@@ -30,6 +36,8 @@ from merlin_core.application.use_cases.tickers import (
 )
 
 __all__ = [
+    "BoardChangeScenario",
+    "BoardNotification",
     "ClaimWriterPort",
     "MarketDataUnavailableError",
     "SubmitClaim",
@@ -38,5 +46,7 @@ __all__ = [
     "SubmitClaimResult",
     "TickerStats",
     "UnknownAssetError",
+    "classify",
     "compute_ticker_breakdown",
+    "rank_board",
 ]

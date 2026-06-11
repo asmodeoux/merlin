@@ -45,6 +45,7 @@ from merlin_core.application.ports.market_data import (
 )
 from merlin_core.application.ports.notifier import NotifierPort
 from merlin_core.application.ports.repositories import (
+    BoardRow,
     ClaimRecord,
     ClaimRepositoryPort,
     InviteAlreadyRedeemedError,
@@ -55,6 +56,7 @@ from merlin_core.application.ports.repositories import (
     OutcomeHistoryEntry,
     OutcomeRecord,
     OutcomeRepositoryPort,
+    RankedSource,
     RepositoryError,
     ResolvedOutcomeForReputation,
     ResolvedOutcomeForTicker,
@@ -69,6 +71,7 @@ from merlin_core.application.ports.repositories import (
 __all__ = [
     "AssetMetadata",
     "AssetNotFoundError",
+    "BoardRow",
     "ClaimDrafterError",
     "ClaimDrafterPort",
     "ClaimRecord",
@@ -86,6 +89,7 @@ __all__ = [
     "OutcomeRecord",
     "OutcomeRepositoryPort",
     "PricePoint",
+    "RankedSource",
     "RepositoryError",
     "ResolvedOutcomeForReputation",
     "ResolvedOutcomeForTicker",

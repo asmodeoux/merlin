@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from merlin_core.application.ports import (
+    BoardRow,
     LeaderboardEntry,
     SourceReputationRecord,
     SourceReputationRepositoryPort,
@@ -138,6 +139,55 @@ class SourceReputationRepository(SourceReputationRepositoryPort):
         if row is None:
             return None
         return _to_record(row)
+
+    async def current_board_rows(self) -> list[BoardRow]:
+        """Latest eligible snapshot per source as raw ranking rows.
+
+        Same latest-snapshot-per-source projection as the all-time
+        leaderboard (``accuracy_pct IS NOT NULL`` drops cold-start
+        sources) but returns the opaque ``source_id`` plus the ORDER BY
+        key (``sort_score`` / ``outcomes_resolved`` / ``weighted_pnl_pct``)
+        instead of joining ``sources`` for the display name. The
+        worker-side board-change hook needs the ``source_id`` to know
+        whom to notify and re-ranks the rows itself
+        (``board_diff.rank_board``), so no ORDER BY is imposed here.
+
+        ``source_id`` is the opaque hash — this projection carries no
+        PII. ``weighted_pnl_pct`` is non-NULL whenever ``accuracy_pct``
+        is (matching DB CHECK); the ``or 0.0`` is defensive only.
+        """
+        latest_effective = (
+            select(
+                SourceReputationHistory.source_id.label("sid"),
+                func.max(SourceReputationHistory.effective_at).label("max_eff"),
+            )
+            .group_by(SourceReputationHistory.source_id)
+            .subquery()
+        )
+        stmt = (
+            select(
+                SourceReputationHistory.source_id,
+                SourceReputationHistory.sort_score,
+                SourceReputationHistory.outcomes_resolved,
+                SourceReputationHistory.weighted_pnl_pct,
+            )
+            .join(
+                latest_effective,
+                (SourceReputationHistory.source_id == latest_effective.c.sid)
+                & (SourceReputationHistory.effective_at == latest_effective.c.max_eff),
+            )
+            .where(SourceReputationHistory.accuracy_pct.isnot(None))
+        )
+        result = await self._session.execute(stmt)
+        return [
+            BoardRow(
+                source_id=row.source_id,
+                sort_score=float(row.sort_score),
+                outcomes_resolved=int(row.outcomes_resolved),
+                weighted_pnl_pct=float(row.weighted_pnl_pct or 0.0),
+            )
+            for row in result.all()
+        ]
 
     async def leaderboard(
         self,

@@ -41,10 +41,20 @@ class _FakeOutcomeRepo:
 @dataclass
 class _FakeReputationRepo:
     snapshots: list[dict[str, Any]] = field(default_factory=list)
+    # Board-change hook reads these; defaults make the hook a no-op
+    # (no previous snapshot, empty board → classify finds nothing).
+    prev: Any = None
+    board_rows: list[Any] = field(default_factory=list)
 
     async def insert_snapshot(self, **kwargs: Any) -> Any:
         self.snapshots.append(kwargs)
         return type("FakeSnapshot", (), kwargs)()
+
+    async def latest_for_source(self, source_id: str) -> Any:
+        return self.prev
+
+    async def current_board_rows(self) -> list[Any]:
+        return list(self.board_rows)
 
 
 @dataclass
@@ -266,3 +276,44 @@ async def test_flat_outcome_contributes_signed_value_to_pnl(
     # Contributions: +0.3 x 1 = +0.3 (w=1); +2.0 x 3 = +6.0 (w=3)
     # Σcontrib = 6.3, Σw = 4 → true weighted mean = 6.3 / 4 = 1.575
     assert row["weighted_pnl_pct"] == pytest.approx(1.575)
+
+
+async def test_board_change_hook_failure_never_breaks_the_recompute(
+    recompute_fixture: _RecomputeFixture,
+) -> None:
+    """The reactive board-change hook is strictly best-effort.
+
+    If anything inside it raises — here the real
+    ``SourceIdentityRepository`` runs against the fake session, which
+    has no ``execute`` — ``_recompute_async`` MUST still commit its
+    snapshot and return the PnL. This is the duplicate-snapshot guard:
+    a hook raise that propagated would trip
+    ``_inline_recompute_with_async_fallback`` into re-enqueuing the
+    recompute and writing a second snapshot row.
+    """
+    from merlin_core.application.ports import BoardRow
+    from merlin_worker.jobs.recompute_source_reputation import _recompute_async
+
+    src_id = "tg:" + "f" * 32
+    recompute_fixture.outcome_repo.rows_by_source[src_id] = [
+        _row(direction="long", conviction="strong", pct=5.0, is_correct=True),
+    ]
+    # A board where the subject lands at #1 (took throne) — the hook
+    # produces notifications and proceeds to the identity lookup, which
+    # blows up on the fake session, exercising the wrap.
+    recompute_fixture.reputation_repo.prev = None
+    recompute_fixture.reputation_repo.board_rows = [
+        BoardRow(source_id=src_id, sort_score=100.0, outcomes_resolved=1, weighted_pnl_pct=5.0),
+        BoardRow(
+            source_id="tg:" + "9" * 32,
+            sort_score=1.0,
+            outcomes_resolved=1,
+            weighted_pnl_pct=0.5,
+        ),
+    ]
+
+    result = await _recompute_async(src_id)
+
+    assert result == pytest.approx(5.0)  # PnL still returned to the resolver
+    assert len(recompute_fixture.reputation_repo.snapshots) == 1  # exactly one snapshot
+    assert recompute_fixture.session_factory.sessions[0].commits == 1

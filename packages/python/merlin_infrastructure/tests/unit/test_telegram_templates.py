@@ -8,13 +8,21 @@ enum literals), one of these tests fails before anyone sees the string.
 from __future__ import annotations
 
 import pytest
+from merlin_core.application.use_cases.board_diff import BoardChangeScenario
 from merlin_infrastructure.notify.telegram.templates import (
     FLAT_THRESHOLD_PCT,
+    board_climbed_top3,
+    board_dropped_in_top3,
+    board_entered_top10,
+    board_fell_out_top10,
+    board_lost_throne,
+    board_took_throne,
     invitee_joined,
     outcome_flat,
     outcome_lost,
     outcome_won,
     rejected_asset_mutation,
+    render_board_change,
     render_outcome,
     resolution_failed_final,
 )
@@ -363,3 +371,102 @@ def test_invitee_joined_passes_through_unicode_names() -> None:
     text = invitee_joined(name="Юрий")
     assert "Юрий" in text
     _assert_bot_voice(text)
+
+
+# ---------------------------------------------------------------------------
+# Board-change notifications — proactive rank-movement DMs. Plain text
+# (no MarkdownV2 escaping), leading emoji, /board or /alpha hook.
+# ---------------------------------------------------------------------------
+
+
+def _assert_plain_text(text: str) -> None:
+    """Board pings are sent with no parse_mode — assert no escaping crept in."""
+    # No MarkdownV2 backslash-escaping (the notifier renders the literal
+    # string, so a stray "\#" or "\." would show to the user verbatim).
+    assert "\\" not in text
+    _assert_bot_voice(text)
+
+
+def test_board_entered_top10_exact_string() -> None:
+    text = board_entered_top10(new_rank=9)
+    assert text == ("🚀 You cracked the top 10! Welcome to #9 — the air's thinner up here. /board")
+    assert text.startswith("🚀")
+    assert "/board" in text
+    _assert_plain_text(text)
+
+
+def test_board_fell_out_top10_exact_string() -> None:
+    text = board_fell_out_top10(old_rank=10)
+    assert text == (
+        "📉 Ouch — you just dropped out of the top 10 (you were #10). "
+        "Don't let it slide. One sharp call claws it back. /alpha"
+    )
+    assert text.startswith("📉")
+    assert "/alpha" in text
+    _assert_plain_text(text)
+
+
+def test_board_took_throne_exact_string() -> None:
+    text = board_took_throne()
+    assert text == "👑 You did it — you're #1. Everyone's chasing you now. Stay ruthless. /board"
+    assert text.startswith("👑")
+    assert "/board" in text
+    _assert_plain_text(text)
+
+
+def test_board_lost_throne_exact_string() -> None:
+    text = board_lost_throne(new_rank=3)
+    assert text == ("🥊 Dethroned. Someone knocked you down to #3. Time to take it back. /alpha")
+    assert text.startswith("🥊")
+    assert "/alpha" in text
+    _assert_plain_text(text)
+
+
+def test_board_climbed_top3_exact_string() -> None:
+    text = board_climbed_top3(old_rank=5, new_rank=2)
+    assert text == ("🔥 On a tear — you climbed from #5 to #2. The podium's in reach. /board")
+    assert text.startswith("🔥")
+    assert "/board" in text
+    _assert_plain_text(text)
+
+
+def test_board_dropped_in_top3_exact_string_covers_dropping_out() -> None:
+    # #3 -> #4 is the "dropped out of the podium" case; the wording fits.
+    text = board_dropped_in_top3(old_rank=3, new_rank=4)
+    assert text == (
+        "⚠️ Slipping — you fell from #3 to #4. The top 3 is brutal. Defend your spot. /board"
+    )
+    assert "#3" in text
+    assert "#4" in text
+    assert "/board" in text
+    _assert_plain_text(text)
+
+
+@pytest.mark.parametrize(
+    "scenario,old_rank,new_rank,needle",
+    [
+        (BoardChangeScenario.ENTERED_TOP10, 11, 8, "cracked the top 10"),
+        (BoardChangeScenario.FELL_OUT_TOP10, 9, 12, "dropped out of the top 10"),
+        (BoardChangeScenario.TOOK_THRONE, 2, 1, "you're #1"),
+        (BoardChangeScenario.LOST_THRONE, 1, 4, "Dethroned"),
+        (BoardChangeScenario.CLIMBED_TOP3, 3, 1, "climbed from #3 to #1"),
+        (BoardChangeScenario.DROPPED_IN_TOP3, 2, 3, "you fell from #2 to #3"),
+    ],
+)
+def test_render_board_change_dispatches_each_scenario(
+    scenario: BoardChangeScenario,
+    old_rank: int,
+    new_rank: int,
+    needle: str,
+) -> None:
+    text = render_board_change(scenario, old_rank=old_rank, new_rank=new_rank)
+    assert needle in text
+    _assert_plain_text(text)
+
+
+def test_render_board_change_raises_on_missing_required_rank() -> None:
+    """Defensive: the classifier guarantees the rank a scenario renders is
+    present, so a None here is a bug — fail loud rather than render "#None".
+    """
+    with pytest.raises(ValueError, match="new_rank"):
+        render_board_change(BoardChangeScenario.ENTERED_TOP10, old_rank=None, new_rank=None)

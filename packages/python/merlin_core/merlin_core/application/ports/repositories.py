@@ -156,6 +156,37 @@ class LeaderboardEntry:
     last_call_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class BoardRow:
+    """Minimal ranking input for the worker-side board-change diff.
+
+    Carries the opaque ``source_id`` plus the full leaderboard ORDER BY
+    key (``sort_score`` -> ``outcomes_resolved`` -> ``weighted_pnl_pct``)
+    so the diff can re-rank an in-memory board after swapping one
+    source's score. Unlike :class:`LeaderboardEntry` this is NOT
+    user-facing — ``source_id`` never leaves the worker — so it omits
+    ``display_name`` and the rendered counts entirely.
+    """
+
+    source_id: str
+    sort_score: float
+    outcomes_resolved: int
+    weighted_pnl_pct: float
+
+
+@dataclass(frozen=True, slots=True)
+class RankedSource:
+    """A source's 1-indexed board position after ranking ``BoardRow``s.
+
+    Output of ``merlin_core.application.use_cases.board_diff.rank_board``
+    and the input the board-change classifier diffs. ``source_id`` is
+    the opaque hash — internal-only, never rendered to a user.
+    """
+
+    source_id: str
+    rank: int
+
+
 # ---------------------------------------------------------------------------
 # Errors — repositories raise these instead of leaking SQLAlchemy types.
 # ---------------------------------------------------------------------------
@@ -235,6 +266,20 @@ class SourceIdentityRepositoryPort(Protocol):
 
         Used by the redeem and admin-bootstrap endpoints to spot
         already-onboarded users (idempotent re-redeems).
+        """
+        ...
+
+    async def get_tg_user_ids_by_source_ids(
+        self,
+        source_ids: list[str],
+    ) -> dict[str, int]:
+        """Batch reverse-lookup: opaque source_ids -> raw Telegram ids.
+
+        Sources without an identity row are absent from the result.
+        Used by the worker's board-change fan-out to notify the handful
+        of affected sources in one round-trip. The values are PII (raw
+        Telegram ids) — pass them to the Bot API, never log them; only
+        the ``source_id`` keys are safe to log.
         """
         ...
 

@@ -43,6 +43,30 @@ class SourceIdentityRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_tg_user_ids_by_source_ids(
+        self,
+        source_ids: list[str],
+    ) -> dict[str, int]:
+        """Batch reverse-lookup: opaque source_ids -> raw Telegram ids.
+
+        One round-trip. Sources without an identity row are simply
+        absent from the returned mapping. Used by the worker's
+        board-change hook to fan out rank-change DMs to the handful of
+        affected sources without an N+1 of single lookups.
+
+        The values are raw Telegram ids — PII (MVP §15 invariant 9).
+        The caller passes them straight to the Bot API and never logs
+        them; only the opaque ``source_id`` keys are safe to log.
+        """
+        if not source_ids:
+            return {}
+        result = await self._session.execute(
+            select(SourceIdentity.source_id, SourceIdentity.tg_user_id).where(
+                SourceIdentity.source_id.in_(source_ids),
+            ),
+        )
+        return {row.source_id: int(row.tg_user_id) for row in result.all()}
+
     async def insert(
         self,
         *,
