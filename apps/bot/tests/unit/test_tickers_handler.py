@@ -24,13 +24,16 @@ from merlin_bot.handlers.tickers import (
     _format_hit_chunk,
     _format_pnl_chunk,
     _render_tickers,
+    _render_tickers_rich,
     build_handler,
     tickers_command,
 )
 from merlin_client.errors import MerlinHTTPError
+from telegram.error import TelegramError
 from telegram.ext import CommandHandler
 
 USER_ID = 42
+CHAT_ID = 999
 
 
 @dataclass
@@ -40,10 +43,32 @@ class _FakeUser:
 
 @dataclass
 class _FakeMessage:
+    chat_id: int = CHAT_ID
     replies: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     async def reply_text(self, text: str, **kw: Any) -> None:
         self.replies.append((text, kw))
+
+
+@dataclass
+class _FakeBot:
+    """Captures raw ``_post`` (rich send) + ``send_message`` (fallback).
+
+    ``post_side_effect`` lets a test force the rich send to fail so the
+    ``send_rich`` plain-text fallback path is exercised.
+    """
+
+    posts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    sent: list[tuple[int, str, dict[str, Any]]] = field(default_factory=list)
+    post_side_effect: Exception | None = None
+
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None, **_kw: Any) -> Any:
+        self.posts.append((endpoint, data or {}))
+        if self.post_side_effect is not None:
+            raise self.post_side_effect
+
+    async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
+        self.sent.append((chat_id, text, kw))
 
 
 @dataclass
@@ -55,6 +80,7 @@ class _FakeUpdate:
 @dataclass
 class _FakeContext:
     bot_data: dict[str, Any]
+    bot: _FakeBot = field(default_factory=_FakeBot)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +206,8 @@ def test_format_calls_chunk_falls_back_on_non_numeric() -> None:
 
 async def test_tickers_command_fetches_and_renders() -> None:
     """Happy path: /tickers hits the API with caller's tg_user_id,
-    then replies with the rendered payload."""
+    then sends the rendered payload as a Rich Message (sendRichMessage)
+    targeting the caller's chat."""
     client = AsyncMock()
     client.get_my_tickers.return_value = {
         "entries": [
@@ -197,16 +224,114 @@ async def test_tickers_command_fetches_and_renders() -> None:
         effective_user=_FakeUser(id=USER_ID),
         message=_FakeMessage(),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await tickers_command(update, ctx)  # type: ignore[arg-type]
 
     client.get_my_tickers.assert_awaited_once_with(tg_user_id=USER_ID)
+    # One rich send, no plain reply.
     assert update.message is not None
-    assert len(update.message.replies) == 1
-    body, _ = update.message.replies[0]
-    assert "TON" in body
-    assert "PnL +6.1%" in body
+    assert update.message.replies == []
+    assert len(bot.posts) == 1
+    endpoint, data = bot.posts[0]
+    assert endpoint == "sendRichMessage"
+    assert data["chat_id"] == CHAT_ID
+    markdown = data["rich_message"]["markdown"]
+    assert "# Your tickers" in markdown
+    assert "| TON | +6.1% | 50% | 2 |" in markdown
+
+
+async def test_tickers_command_falls_back_to_plain_when_rich_rejected() -> None:
+    """If Telegram rejects the rich payload (older client / API server),
+    ``send_rich`` re-sends the plain-text render via ``send_message`` so
+    the user still gets their breakdown."""
+    client = AsyncMock()
+    client.get_my_tickers.return_value = {
+        "entries": [
+            {
+                "asset_symbol": "TON",
+                "calls_resolved": 2,
+                "calls_correct": 1,
+                "accuracy_pct": 50.0,
+                "weighted_pnl_pct": 6.1,
+            },
+        ],
+    }
+    update = _FakeUpdate(
+        effective_user=_FakeUser(id=USER_ID),
+        message=_FakeMessage(),
+    )
+    bot = _FakeBot(post_side_effect=TelegramError("rich not supported"))
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
+
+    await tickers_command(update, ctx)  # type: ignore[arg-type]
+
+    # Rich send was attempted then fell back to a plain send_message.
+    assert len(bot.posts) == 1
+    assert len(bot.sent) == 1
+    sent_chat, sent_text, _kw = bot.sent[0]
+    assert sent_chat == CHAT_ID
+    # The fallback carries the legacy plain render (bullet rows).
+    assert "• TON — PnL +6.1% · 50% hit · 2 calls" in sent_text
+
+
+# ---------------------------------------------------------------------------
+# Rich rendering
+# ---------------------------------------------------------------------------
+
+
+def test_render_tickers_rich_builds_table_with_heading() -> None:
+    """The rich render is a heading + a four-column table; numbers land
+    in their own right-aligned columns."""
+    payload = {
+        "entries": [
+            {
+                "asset_symbol": "TON",
+                "calls_resolved": 2,
+                "accuracy_pct": 50.0,
+                "weighted_pnl_pct": 6.1,
+            },
+            {
+                "asset_symbol": "btc",
+                "calls_resolved": 8,
+                "accuracy_pct": 25.0,
+                "weighted_pnl_pct": -1.3,
+            },
+        ],
+    }
+    text = _render_tickers_rich(payload)
+    assert text.startswith("# Your tickers")
+    assert "| Ticker | PnL | Hit | Calls |" in text
+    # Symbol upcased; one row per ticker; numbers bare (no inline label).
+    assert "| TON | +6.1% | 50% | 2 |" in text
+    assert "| BTC | -1.3% | 25% | 8 |" in text
+
+
+def test_render_tickers_rich_empty_state_has_no_table() -> None:
+    """Cold-start: the rich render falls back to the plain empty-state
+    copy (no table to align)."""
+    text = _render_tickers_rich({"entries": []})
+    assert "Tracking your first resolutions" in text
+    assert "|" not in text
+
+
+def test_render_tickers_rich_escapes_pipe_in_symbol() -> None:
+    """A wire-drift asset symbol containing a pipe must be escaped so it
+    can't shear the table into a phantom column."""
+    text = _render_tickers_rich(
+        {
+            "entries": [
+                {
+                    "asset_symbol": "a|b",
+                    "calls_resolved": 1,
+                    "accuracy_pct": 100.0,
+                    "weighted_pnl_pct": 5.0,
+                },
+            ],
+        },
+    )
+    assert r"A\|B" in text
 
 
 async def test_tickers_command_404_points_at_start() -> None:

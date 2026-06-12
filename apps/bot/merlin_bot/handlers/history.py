@@ -1,14 +1,15 @@
 """``/history`` handler — resolved-call history, newest first, paginated.
 
-First page (30 rows) ships on ``/history``. When the API reports
-``has_more=True``, an inline "Show 30 more" button is appended; the
-button's callback fetches the next page, edits the existing message
-to extend the list, and re-renders (or drops) the button with the
-new offset.
+First page (30 rows) ships on ``/history`` as a Bot API 10.1 Rich
+Message: a native table of resolved calls. When the API reports
+``has_more=True``, an inline "Show 30 more" button is attached; the
+button's callback re-fetches the accumulated window, edits the existing
+message in place to show the full table, and re-renders (or drops) the
+button with the new offset.
 
 Bot-voice rules (plan §6):
 
-* Plain-text rows with the same outcome emojis the live resolution
+* Table rows carry the same outcome emojis the live resolution
   notifications use — won (🎉), flat (📝), lost (🙂‍↔️). The
   won/lost/flat decision is server-side (``HistoryEntry.is_correct``
   + ``HistoryEntry.is_flat``) so this list and the live ping can't
@@ -27,12 +28,19 @@ so an outcome resolving between page 1 and the "Show 30 more" click
 never shifts already-paged rows downward (which would dup the
 boundary row).
 
-Long-list handling: each "Show 30 more" click appends rows to the
-existing message. Past ~60-90 rows the rendered body approaches
-Telegram's 4096-char message cap; on ``BadRequest`` from
-``edit_message_text`` we fall back to sending a fresh reply with the
-new page (and drop the keyboard from the prior message) so the user
-keeps reading instead of hitting a silent button.
+Rich pagination — why re-fetch instead of append: a Rich Message's
+source Markdown is NOT recoverable from ``query.message.text`` (the
+content lives in the new ``rich_message`` field, which PTB 21.x doesn't
+model), so the plain renderer's "strip the footer off the prior body
+and append the new rows" trick can't rebuild the table. Instead each
+"Show more" tap re-fetches the whole window ``[0, target)`` from the
+frozen ``as_of`` and re-renders the complete table — still stateless.
+Once the window would exceed ``HISTORY_WINDOW_LIMIT`` (the API's
+single-page cap) we degrade to a fresh message carrying just the next
+page and drop the prior keyboard — the same graceful fallback the plain
+renderer used when accumulated rows crossed Telegram's 4096-char cap.
+The legacy plain renderer (:func:`_render_history`) is retained as the
+``send_rich`` fallback for clients/servers that can't render rich.
 """
 
 from __future__ import annotations
@@ -44,12 +52,13 @@ from typing import Any
 
 from merlin_client import MerlinClient
 from merlin_client.errors import MerlinHTTPError
-from merlin_core.contracts.history import HISTORY_DEFAULT_PAGE_SIZE
+from merlin_core.contracts.history import HISTORY_DEFAULT_PAGE_SIZE, HISTORY_MAX_PAGE_SIZE
 from merlin_core.contracts.horizons import humanise_horizon
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
+from merlin_bot import rich
 from merlin_bot.api_dependency import BOT_DATA_KEY
 
 _log = logging.getLogger("merlin.bot.handlers.history")
@@ -58,6 +67,17 @@ _log = logging.getLogger("merlin.bot.handlers.history")
 #: bot's request shape, the API's default, and the button label stay
 #: in sync — changing the constant in one place updates all three.
 HISTORY_PAGE_SIZE: int = HISTORY_DEFAULT_PAGE_SIZE
+
+#: Largest single-fetch window. Rich Messages (Bot API 10.1) don't
+#: round-trip through ``Message.text``, so the old "append to the prior
+#: message body" trick can't reconstruct the table on a "Show more"
+#: tap. Instead each tap re-fetches the whole window ``[0, target)`` and
+#: re-renders the full table in place — stateless, driven entirely by
+#: the callback data. The API caps a single page at
+#: ``HISTORY_MAX_PAGE_SIZE``; once the accumulated window would exceed
+#: it we degrade to a fresh message carrying just the next page (the
+#: same graceful fallback the plain renderer used on the 4096-char cap).
+HISTORY_WINDOW_LIMIT: int = HISTORY_MAX_PAGE_SIZE
 
 #: Callback-data prefix for the "Show 30 more" inline button. Pattern:
 #: ``history:page:<as_of_epoch_seconds>:<offset>``. Encoding pagination
@@ -130,29 +150,33 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(_temporary_error_text())
         return
 
-    text, keyboard = _render_history(payload, prior_text=None)
-    await update.message.reply_text(text, reply_markup=keyboard)
+    rich_text, keyboard = _render_history_rich(payload)
+    fallback_text, _ = _render_history(payload, prior_text=None)
+    await rich.send_rich(
+        context.bot,
+        update.message.chat_id,
+        rich_text,
+        reply_markup=keyboard,
+        fallback_text=fallback_text,
+    )
 
 
 async def on_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle a "Show 30 more" inline-button press.
 
-    Three steps:
+    Steps:
 
     1. Validate the callback data. On a malformed payload (shouldn't
        happen — the pattern handler gates the shape — but defence in
        depth), ACK with an error toast and bail.
-    2. Fetch the next page from the API using the frozen ``as_of``.
-       Failures ACK with an error toast and leave the existing
-       rows + button alone — the user can retry without losing
-       context.
-    3. Edit the original message in place: append the new rows and
-       re-render the button with the next offset (or drop it
-       entirely when no more pages remain). If the edit fails with
-       ``Message_too_long`` (we crossed Telegram's 4096-char cap on
-       accumulated rows), drop the keyboard from the prior message
-       and send a fresh reply with just the new page so the user
-       keeps reading.
+    2. Re-fetch the accumulated window ``[0, offset + page)`` from the
+       frozen ``as_of`` (rich messages can't be reconstructed from the
+       prior body — see the module docstring). Failures ACK with an
+       error toast and leave the existing rows + button alone.
+    3. If the window fits in a single API page, re-render the full
+       table and edit the message in place. If it would exceed the
+       single-page cap, degrade to a fresh message carrying just the
+       next page and drop the prior keyboard.
 
     Note: ``query.answer()`` can only be called once per callback —
     Telegram invalidates the query id on the first reply. We ACK
@@ -171,11 +195,20 @@ async def on_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     client: MerlinClient = context.bot_data[BOT_DATA_KEY]
+    chat_id = update.effective_chat.id if update.effective_chat is not None else None
+
+    # ``offset`` is the count of rows already shown; the tap wants the
+    # next page on top, i.e. the full window up to ``target`` rows.
+    target = offset + HISTORY_PAGE_SIZE
+    fits_in_one_fetch = target <= HISTORY_WINDOW_LIMIT
+    fetch_limit = target if fits_in_one_fetch else HISTORY_PAGE_SIZE
+    fetch_offset = 0 if fits_in_one_fetch else offset
+
     try:
         payload = await client.get_my_history(
             tg_user_id=update.effective_user.id,
-            limit=HISTORY_PAGE_SIZE,
-            offset=offset,
+            limit=fetch_limit,
+            offset=fetch_offset,
             as_of=_as_of_iso(as_of),
         )
     except MerlinHTTPError as e:
@@ -187,54 +220,66 @@ async def on_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.answer(_temporary_error_text(), show_alert=True)
         return
 
-    chat_id = update.effective_chat.id if update.effective_chat is not None else None
+    new_text, keyboard = _render_history_rich(payload)
+    message_id = getattr(query.message, "message_id", None)
 
-    if query.message is None:
-        # Original message is gone (rare: the user deleted it) — we
-        # can't edit. ACK and send a fresh reply so the user keeps
-        # reading instead of staring at a dead spinner. ``chat_id``
-        # is typically also None on this branch (PTB derives
-        # ``effective_chat`` from ``callback_query.message``); we
-        # silently no-op only when both are missing because there's
-        # genuinely nowhere to send the reply.
+    # Past the single-fetch cap, OR when the original message is gone
+    # (user deleted it), we can't grow it in place — send a fresh
+    # message with this page and stop the prior message's button.
+    if not fits_in_one_fetch or message_id is None or chat_id is None:
         await query.answer()
-        if chat_id is not None:
-            fresh_text, fresh_kb = _render_history(payload, prior_text=None)
-            await context.bot.send_message(chat_id, fresh_text, reply_markup=fresh_kb)
-        return
-
-    # ``query.message`` is typed ``MaybeInaccessibleMessage`` in PTB
-    # v21 — duck-type on ``.text`` because only a fully-accessible
-    # ``Message`` carries the prior body we need to extend in place.
-    prior_text_attr = getattr(query.message, "text", None)
-    prior_text: str | None = prior_text_attr if isinstance(prior_text_attr, str) else None
-    new_text, keyboard = _render_history(payload, prior_text=prior_text)
-
-    try:
-        await query.edit_message_text(new_text, reply_markup=keyboard)
-        await query.answer()
-    except BadRequest as e:
-        # Most common cause: ``Message_too_long`` — accumulated rows
-        # crossed Telegram's 4096-char cap. Fall back to sending a
-        # fresh reply with just the new page and drop the keyboard
-        # from the prior message so the user can keep paginating
-        # without the silent failure.
-        if _is_message_too_long(e):
-            _log.info("history: message too long, falling back to fresh reply")
-            await query.answer()
-            # Strip the keyboard off the prior message so the user
-            # doesn't see two active "Show 30 more" buttons. Best-
-            # effort: the prior message may already be in a state
-            # where its markup can't be edited (e.g. forwarded).
+        if message_id is not None:
             with contextlib.suppress(BadRequest):
                 await query.edit_message_reply_markup(reply_markup=None)
-            if chat_id is not None:
-                fresh_text, fresh_kb = _render_history(payload, prior_text=None)
-                await context.bot.send_message(chat_id, fresh_text, reply_markup=fresh_kb)
+        if chat_id is not None:
+            await _send_fresh_page(context, chat_id, payload, new_text, keyboard)
+        return
+
+    try:
+        await rich.edit_rich(
+            context.bot,
+            chat_id=chat_id,
+            message_id=message_id,
+            markdown=new_text,
+            reply_markup=keyboard,
+        )
+        await query.answer()
+    except BadRequest as e:
+        if _is_message_too_long(e):
+            # The accumulated table crossed a Rich Message limit
+            # (32768 chars / 500 blocks). Drop the keyboard and send
+            # the window as a fresh message so the user keeps reading.
+            _log.info("history: rich message too large, falling back to fresh reply")
+            await query.answer()
+            with contextlib.suppress(BadRequest):
+                await query.edit_message_reply_markup(reply_markup=None)
+            await _send_fresh_page(context, chat_id, payload, new_text, keyboard)
             return
-        # Some other BadRequest — log + ACK so the spinner stops.
-        _log.warning("history edit_message_text failed: %s", e)
+        _log.warning("history edit_rich failed: %s", e)
         await query.answer(_temporary_error_text(), show_alert=True)
+
+
+async def _send_fresh_page(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    payload: dict[str, Any],
+    rich_text: str,
+    keyboard: InlineKeyboardMarkup | None,
+) -> None:
+    """Send ``payload`` as a fresh Rich Message (pagination fallback).
+
+    Used when the growing message can't be edited in place — the window
+    outgrew the single-fetch cap, the original message was deleted, or a
+    rich limit was hit. The plain render is the ``send_rich`` fallback.
+    """
+    fallback_text, _ = _render_history(payload, prior_text=None)
+    await rich.send_rich(
+        context.bot,
+        chat_id,
+        rich_text,
+        reply_markup=keyboard,
+        fallback_text=fallback_text,
+    )
 
 
 def build_handler() -> CommandHandler:
@@ -250,6 +295,91 @@ def build_callback_handler() -> CallbackQueryHandler:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
+
+
+def _render_history_rich(
+    payload: dict[str, Any],
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Compose the ``/history`` reply as a Rich Message (Bot API 10.1).
+
+    Renders the FULL window in ``payload`` (the caller re-fetches the
+    accumulated rows on each "Show more" tap — see the module docstring)
+    as a native six-column table: outcome emoji, asset, direction,
+    horizon, return, resolved-date. Same server-side won/flat/lost
+    classification and same date/return formatting as the plain
+    :func:`_render_row`. The "Show 30 more" button is attached whenever
+    the wire reports ``has_more`` and carries a round-trippable
+    ``as_of`` + ``next_offset``.
+
+    Empty entries → the plain cold-start copy (no table to align).
+    """
+    entries = payload.get("entries") or []
+    has_more = bool(payload.get("has_more"))
+    next_offset = payload.get("next_offset")
+    as_of = _parse_as_of(payload.get("as_of"))
+
+    if not entries:
+        return _empty_state_text(), None
+
+    lines = [
+        "# Your resolved calls",
+        "",
+        rich.table_header(
+            ["", "Asset", "Call", "Horizon", "Return", "Resolved"],
+            ["left", "left", "left", "left", "right", "left"],
+        ),
+    ]
+    lines.extend(rich.table_row(_rich_history_row(entry)) for entry in entries)
+    text = "\n".join(lines) + "\n\n" + _footer_text()
+    return text, _page_keyboard(has_more=has_more, next_offset=next_offset, as_of=as_of)
+
+
+def _rich_history_row(entry: dict[str, Any]) -> list[str]:
+    """One resolved-call table row for the rich view.
+
+    ``[emoji, asset, direction, horizon, return, date]``. Field
+    formatting mirrors the plain :func:`_render_row` exactly; the asset,
+    direction, horizon, and date cells are escaped via
+    :func:`merlin_bot.rich.escape_cell` (the emoji and signed-percent
+    cells are renderer-controlled).
+    """
+    emoji = _pick_emoji(
+        is_correct=bool(entry.get("is_correct")),
+        is_flat=bool(entry.get("is_flat")),
+    )
+    asset = rich.escape_cell(str(entry.get("asset_symbol") or "?").upper())
+    direction = rich.escape_cell(_direction_phrase(str(entry.get("direction") or "")))
+    horizon = rich.escape_cell(_horizon_human(entry.get("horizon_seconds")))
+    pct = _format_pct(entry.get("observed_return_pct"))
+    date = rich.escape_cell(_format_short_date(entry.get("resolved_at")))
+    return [emoji, asset, direction, horizon, pct, date]
+
+
+def _page_keyboard(
+    *,
+    has_more: bool,
+    next_offset: object,
+    as_of: datetime | None,
+) -> InlineKeyboardMarkup | None:
+    """Build the "Show 30 more" button, or ``None`` when no more pages.
+
+    Shared by the rich first-page render and the pagination callback so
+    the button shape stays identical. Suppressed unless the wire
+    reports more rows AND carries an ``as_of`` we can round-trip on the
+    next tap.
+    """
+    if has_more and isinstance(next_offset, int) and as_of is not None:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"Show {HISTORY_PAGE_SIZE} more",
+                        callback_data=_encode_page_callback(as_of=as_of, offset=next_offset),
+                    ),
+                ],
+            ],
+        )
+    return None
 
 
 def _render_history(
@@ -479,14 +609,16 @@ def _as_of_iso(value: datetime) -> str:
 
 
 def _is_message_too_long(error: BadRequest) -> bool:
-    """True if a ``BadRequest`` from ``edit_message_text`` is a length cap.
+    """True if a ``BadRequest`` is a Rich Message size/limit rejection.
 
-    Telegram's message body cap is 4096 chars; cross it and the API
-    returns ``Bad Request: message is too long``. PTB surfaces the
-    raw message text; we match case-insensitively so a minor wording
-    change on Telegram's side doesn't break the fallback path.
+    Plain messages cap at 4096 chars ("message is too long"); Rich
+    Messages cap at 32768 chars and 500 blocks, and over-limit edits
+    surface as a length / block-count complaint. We match a few
+    case-insensitive substrings so a minor wording change on Telegram's
+    side doesn't break the fresh-message fallback path.
     """
-    return "too long" in str(error).lower()
+    text = str(error).lower()
+    return "too long" in text or "too many" in text or "limit" in text
 
 
 # ---------------------------------------------------------------------------

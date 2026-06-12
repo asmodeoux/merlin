@@ -27,6 +27,7 @@ from merlin_client.errors import MerlinHTTPError
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
+from merlin_bot import rich
 from merlin_bot.api_dependency import BOT_DATA_KEY
 
 _log = logging.getLogger("merlin.bot.handlers.tickers")
@@ -58,7 +59,12 @@ async def tickers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(_temporary_error_text())
         return
 
-    await update.message.reply_text(_render_tickers(payload))
+    await rich.send_rich(
+        context.bot,
+        update.message.chat_id,
+        _render_tickers_rich(payload),
+        fallback_text=_render_tickers(payload),
+    )
 
 
 def build_handler() -> CommandHandler:
@@ -107,6 +113,100 @@ def _render_tickers(payload: dict[str, Any]) -> str:
     lines.append("")
     lines.append("/alpha to add another, /history for past calls.")
     return "\n".join(lines)
+
+
+def _render_tickers_rich(payload: dict[str, Any]) -> str:
+    """Compose the ``/tickers`` reply as a Rich Message (Bot API 10.1).
+
+    Same data + sort order as :func:`_render_tickers`; the per-ticker
+    bullet list becomes a native four-column table so PnL / hit / calls
+    line up in their own right-aligned columns instead of running
+    inline behind middle-dots. The cold-start empty state stays plain
+    prose (no table to align) — it's one sentence and a CTA.
+
+    Layout::
+
+        # Your tickers
+        _Sorted by track-record-weighted PnL._
+
+        | Ticker |  PnL | Hit | Calls |
+        |:-------|-----:|----:|------:|
+        | TON    | +6.1% | 50% |     2 |
+        | BTC    | -1.3% | 25% |     8 |
+
+        /alpha to add another, /history for past calls.
+
+    The asset symbol is the only user-influenced cell, escaped via
+    :func:`merlin_bot.rich.escape_cell`; numeric cells are
+    renderer-controlled so they need no escaping.
+    """
+    entries = payload.get("entries") or []
+    if not entries:
+        return _empty_state_text()
+
+    body = rich.table(
+        ["Ticker", "PnL", "Hit", "Calls"],
+        [_rich_row(entry) for entry in entries],
+        ["left", "right", "right", "right"],
+    )
+    return "\n".join(
+        [
+            "# Your tickers",
+            "",
+            "_Sorted by track-record-weighted PnL._",
+            "",
+            body,
+            "",
+            "/alpha to add another, /history for past calls.",
+        ],
+    )
+
+
+def _rich_row(entry: dict[str, Any]) -> list[str]:
+    """One table row ``[ticker, pnl, hit, calls]`` for the rich view.
+
+    Number formats match the plain renderer's chunks minus their inline
+    labels (the column header carries the label): signed one-decimal
+    PnL, integer hit-rate percent, bare resolved count. Em-dash on a
+    non-numeric wire drift so a single malformed row never breaks the
+    whole table.
+    """
+    asset = rich.escape_cell(str(entry.get("asset_symbol") or "?").upper())
+    return [
+        asset,
+        _pnl_cell(entry.get("weighted_pnl_pct")),
+        _hit_cell(entry.get("accuracy_pct")),
+        _calls_cell(entry.get("calls_resolved")),
+    ]
+
+
+def _pnl_cell(pnl: object) -> str:
+    """Signed one-decimal PnL for a table cell: ``+6.1%`` / ``-1.3%``."""
+    if pnl is None:
+        return "—"
+    try:
+        amount = float(pnl)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "—"
+    return f"{amount:+.1f}%"
+
+
+def _hit_cell(accuracy: object) -> str:
+    """Integer hit-rate percent for a table cell: ``50%``."""
+    if accuracy is None:
+        return "—"
+    try:
+        amount = float(accuracy)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "—"
+    return f"{amount:.0f}%"
+
+
+def _calls_cell(calls: object) -> str:
+    """Bare resolved-count for a table cell: ``2``. Em-dash on drift."""
+    if not isinstance(calls, int):
+        return "—"
+    return str(calls)
 
 
 def _render_row(entry: dict[str, Any]) -> str:

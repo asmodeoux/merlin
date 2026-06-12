@@ -27,6 +27,7 @@ from merlin_bot.handlers.board import (
     _empty_state_text,
     _filter_keyboard,
     _render_board,
+    _render_board_rich,
     _render_row,
     board_command,
     build_callback_handler,
@@ -41,9 +42,14 @@ from telegram.warnings import PTBUserWarning
 
 _ = PTBUserWarning  # re-exported so the type checker keeps the symbol
 
+CHAT_ID = 99
+MESSAGE_ID = 1
+
 
 @dataclass
 class _FakeMessage:
+    chat_id: int = CHAT_ID
+    message_id: int = MESSAGE_ID
     replies: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     async def reply_text(self, text: str, **kw: Any) -> None:
@@ -56,6 +62,30 @@ class _FakeUser:
 
 
 @dataclass
+class _FakeBot:
+    """Captures raw Bot API calls for the rich send/edit paths.
+
+    ``_post`` records ``(endpoint, data)`` and, if ``post_side_effects``
+    maps the endpoint to an exception, raises it once (one-shot, so a
+    fallback to a different endpoint still succeeds). ``send_message``
+    is the plain-text ``send_rich`` fallback sink.
+    """
+
+    posts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    sent: list[tuple[int, str, dict[str, Any]]] = field(default_factory=list)
+    post_side_effects: dict[str, Exception] = field(default_factory=dict)
+
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None, **_kw: Any) -> Any:
+        self.posts.append((endpoint, data or {}))
+        exc = self.post_side_effects.pop(endpoint, None)
+        if exc is not None:
+            raise exc
+
+    async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
+        self.sent.append((chat_id, text, kw))
+
+
+@dataclass
 class _FakeUpdate:
     message: _FakeMessage | None
     effective_user: _FakeUser | None = None
@@ -64,6 +94,15 @@ class _FakeUpdate:
 @dataclass
 class _FakeContext:
     bot_data: dict[str, Any]
+    bot: _FakeBot = field(default_factory=_FakeBot)
+
+
+def _posted_markdown(bot: _FakeBot, endpoint: str) -> str:
+    """Return the rich markdown body of the last ``endpoint`` post."""
+    for posted_endpoint, data in reversed(bot.posts):
+        if posted_endpoint == endpoint:
+            return str(data["rich_message"]["markdown"])
+    raise AssertionError(f"no {endpoint} post captured; got {[e for e, _ in bot.posts]}")
 
 
 def _row_entry(
@@ -290,6 +329,70 @@ def test_render_board_with_rows_renders_medal_lines_and_footer() -> None:
     assert "Ranked by recent PnL, weighted by track record." in text
     assert "/alpha" in text
     assert "/me" in text
+
+
+# ---------------------------------------------------------------------------
+# Rich rendering
+# ---------------------------------------------------------------------------
+
+
+def test_render_board_rich_builds_table_with_medals_and_footer() -> None:
+    """The rich render is a heading + a five-column table (medal emoji
+    in the ``#`` column) + an italic footer + CTA."""
+    payload = {
+        "window": "all_time",
+        "entries": [
+            _row_entry(rank=1, name="Alice", pnl=4.2, accuracy=80.0, resolved=10),
+            _row_entry(rank=2, name="Bob", pnl=-1.5, accuracy=57.0, resolved=7),
+        ],
+        "open_calls_total": 22,
+        "open_callers_total": 4,
+    }
+    text = _render_board_rich(payload)
+    assert text.splitlines()[0] == "# Leaderboard"
+    assert "| # | Caller | PnL | Hit | Calls |" in text
+    assert "| 🥇 | Alice | +4.20% | 80% | 10 |" in text
+    assert "| 🥈 | Bob | -1.50% | 57% | 7 |" in text
+    assert (
+        "_Ranked by recent PnL, weighted by track record. "
+        "22 open calls by 4 users are in progress._"
+    ) in text
+    assert "/alpha to add a call, /me for your own." in text
+
+
+def test_render_board_rich_bolds_only_self_row() -> None:
+    """The caller's row name is wrapped in ``**bold**`` (table-cell
+    equivalent of the old ``<b>``); other rows stay plain."""
+    payload = {
+        "window": "all_time",
+        "entries": [
+            _row_entry(rank=1, name="Alice"),
+            _row_entry(rank=2, name="Yuri"),
+        ],
+    }
+    text = _render_board_rich(payload, self_display_name="Yuri")
+    assert "| 🥈 | **Yuri** |" in text
+    assert "**Alice**" not in text
+
+
+def test_render_board_rich_escapes_markdown_in_display_name() -> None:
+    """A display name with Markdown/HTML/pipe metacharacters is escaped
+    so it can't break the table or inject formatting."""
+    payload = {
+        "window": "all_time",
+        "entries": [_row_entry(rank=1, name="a|b <i>*x*</i>")],
+    }
+    text = _render_board_rich(payload)
+    assert "<i>" not in text
+    assert "&lt;i&gt;" in text
+    assert r"\|" in text  # the pipe in the name was escaped
+    assert r"\*x\*" in text
+
+
+def test_render_board_rich_empty_state_has_no_table() -> None:
+    """Empty entries → the plain empty-state copy (no table)."""
+    text = _render_board_rich({"entries": [], "window": "all_time"})
+    assert text == _empty_state_text()
 
 
 # ---------------------------------------------------------------------------
@@ -710,12 +813,12 @@ async def test_board_command_coerces_string_calls_resolved_total() -> None:
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    body, _ = update.message.replies[0]
+    body = _posted_markdown(bot, "sendRichMessage")
     # Coerced cleanly (no crash). Yuri isn't in entries → anomalous-
     # missing path → no inspiring line, no row.
     assert "Your first resolution" not in body
@@ -740,12 +843,12 @@ async def test_board_command_falls_back_to_zero_on_garbage_calls_resolved_total(
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    body, _ = update.message.replies[0]
+    body = _posted_markdown(bot, "sendRichMessage")
     # Cold-start fallback fires.
     assert "Your first resolution lands you on the board." in body
 
@@ -933,20 +1036,24 @@ async def test_board_command_hits_board_and_me_apis() -> None:
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
     client.get_board.assert_awaited_once_with(window="all_time", horizon="all")
     client.get_me.assert_awaited_once_with(tg_user_id=12345)
+    # One rich send to the caller's chat, no plain reply.
     assert update.message is not None
-    body, kwargs = update.message.replies[0]
-    # Alice (the caller) gets bolded.
-    assert "<b>Alice</b>" in body
-    # Parse mode is HTML.
-    assert kwargs.get("parse_mode") is not None
+    assert update.message.replies == []
+    assert len(bot.posts) == 1
+    endpoint, data = bot.posts[0]
+    assert endpoint == "sendRichMessage"
+    assert data["chat_id"] == CHAT_ID
+    # Alice (the caller) gets bolded in her table row.
+    assert "**Alice**" in data["rich_message"]["markdown"]
     # The horizon filter keyboard is always attached on first render.
-    assert kwargs.get("reply_markup") is not None
+    assert data.get("reply_markup") is not None
 
 
 async def test_board_command_appends_caller_row_when_outside_top_n() -> None:
@@ -969,14 +1076,16 @@ async def test_board_command_appends_caller_row_when_outside_top_n() -> None:
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    body, _ = update.message.replies[0]
-    assert "42. <b>Yuri</b>" in body
-    assert "\n…\n" in body
+    body = _posted_markdown(bot, "sendRichMessage")
+    # Caller's appended row carries their real rank + bold name, behind
+    # a "…" gap row in the table.
+    assert "| 42 | **Yuri** |" in body
+    assert "| … |" in body
 
 
 async def test_board_command_shows_inspiring_line_for_cold_start_caller() -> None:
@@ -995,12 +1104,12 @@ async def test_board_command_shows_inspiring_line_for_cold_start_caller() -> Non
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    body, _ = update.message.replies[0]
+    body = _posted_markdown(bot, "sendRichMessage")
     assert "Your first resolution lands you on the board." in body
     assert "Newcomer" not in body  # no fake row
 
@@ -1019,12 +1128,12 @@ async def test_board_command_handles_me_missing_calls_resolved_total() -> None:
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    body, _ = update.message.replies[0]
+    body = _posted_markdown(bot, "sendRichMessage")
     # Defaulting to 0 means the caller is treated as cold-start.
     assert "Your first resolution lands you on the board." in body
 
@@ -1042,16 +1151,16 @@ async def test_board_command_degrades_when_me_fails() -> None:
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    body, _ = update.message.replies[0]
+    body = _posted_markdown(bot, "sendRichMessage")
     # The board still rendered.
     assert "Alice" in body
     # But nobody got bolded.
-    assert "<b>Alice</b>" not in body
+    assert "**Alice**" not in body
 
 
 async def test_board_command_empty_state_when_board_empty() -> None:
@@ -1063,12 +1172,12 @@ async def test_board_command_empty_state_when_board_empty() -> None:
         message=_FakeMessage(),
         effective_user=_FakeUser(id=12345),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await board_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    body, _ = update.message.replies[0]
+    body = _posted_markdown(bot, "sendRichMessage")
     assert "Leaderboard unlocks" in body
 
 
@@ -1401,25 +1510,26 @@ def test_render_board_empty_position_slice_uses_filtered_copy() -> None:
 
 @dataclass
 class _FakeQuery:
+    """Stand-in for ``telegram.CallbackQuery``.
+
+    The rich filter callback edits via ``context.bot._post`` (not
+    ``query.edit_message_text``), reading ``message_id`` off
+    ``query.message``. ``edited`` is retained (always empty now) for the
+    back-compat assertions that pin "no in-place edit happened".
+    """
+
     data: str
+    message: _FakeMessage | None = field(default_factory=_FakeMessage)
     answered: list[dict[str, Any]] = field(default_factory=list)
     edited: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-    edit_side_effect: Exception | None = None
 
     async def answer(self, **kw: Any) -> None:
         self.answered.append(kw)
 
-    async def edit_message_text(self, text: str, **kw: Any) -> None:
-        if self.edit_side_effect is not None:
-            exc = self.edit_side_effect
-            self.edit_side_effect = None
-            raise exc
-        self.edited.append((text, kw))
-
 
 @dataclass
 class _FakeChat:
-    id: int = 99
+    id: int = CHAT_ID
 
 
 @dataclass
@@ -1429,18 +1539,9 @@ class _FakeUpdateWithQuery:
     effective_chat: _FakeChat | None = None
 
 
-@dataclass
-class _FakeBot:
-    sent: list[tuple[int, str, dict[str, Any]]] = field(default_factory=list)
-
-    async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
-        self.sent.append((chat_id, text, kw))
-
-
-@dataclass
-class _FakeContextWithBot:
-    bot_data: dict[str, Any]
-    bot: _FakeBot = field(default_factory=_FakeBot)
+# The callback tests reuse the module-level _FakeBot / _FakeContext
+# (which capture the raw ``_post`` rich-edit calls).
+_FakeContextWithBot = _FakeContext
 
 
 @pytest.mark.parametrize(
@@ -1480,12 +1581,13 @@ async def test_on_filter_callback_refetches_with_chosen_filter(
     }
 
     query = _FakeQuery(data=callback_data)
+    bot = _FakeBot()
     update = _FakeUpdateWithQuery(
         callback_query=query,
         effective_user=_FakeUser(id=42),
         effective_chat=_FakeChat(id=99),
     )
-    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client})
+    ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await on_filter_callback(update, ctx)  # type: ignore[arg-type]
 
@@ -1493,16 +1595,22 @@ async def test_on_filter_callback_refetches_with_chosen_filter(
         window="all_time",
         horizon=expected_filter,
     )
-    assert len(query.edited) == 1
-    edited_text, edited_kwargs = query.edited[0]
+    # One in-place edit via editMessageText (rich), targeting the
+    # callback's own message.
+    assert len(bot.posts) == 1
+    endpoint, data = bot.posts[0]
+    assert endpoint == "editMessageText"
+    assert data["chat_id"] == CHAT_ID
+    assert data["message_id"] == MESSAGE_ID
+    edited_text = data["rich_message"]["markdown"]
     first_line = edited_text.splitlines()[0]
     if expected_filter == "all":
-        assert first_line == "<b>Leaderboard</b>"
+        assert first_line == "# Leaderboard"
     else:
         assert expected_header_token in first_line
     # The reply keyboard is updated to drop the now-active filter's
     # button — i.e. the three non-active filters are presented.
-    keyboard = edited_kwargs["reply_markup"]
+    keyboard = data["reply_markup"]
     labels = _kb_labels(keyboard)
     assert len(labels) == 3
     active_label = {
@@ -1533,20 +1641,21 @@ async def test_on_filter_callback_swallows_message_not_modified() -> None:
         "calls_resolved_total": 5,
     }
     query = _FakeQuery(data=CB_BOARD_FILTER_ALL)
-    query.edit_side_effect = BadRequest("Message is not modified")
     update = _FakeUpdateWithQuery(
         callback_query=query,
         effective_user=_FakeUser(id=42),
         effective_chat=_FakeChat(id=99),
     )
-    bot = _FakeBot()
+    bot = _FakeBot(post_side_effects={"editMessageText": BadRequest("Message is not modified")})
     ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     # Must not raise.
     await on_filter_callback(update, ctx)  # type: ignore[arg-type]
 
-    # And must NOT fall back to send_message — the existing card is
-    # already correct, we just couldn't edit it because it was identical.
+    # The edit was attempted (and raised not-modified); the handler
+    # swallows it and does NOT fall back to a fresh send — the existing
+    # card is already correct.
+    assert [endpoint for endpoint, _ in bot.posts] == ["editMessageText"]
     assert bot.sent == []
 
 
@@ -1554,7 +1663,7 @@ async def test_on_filter_callback_falls_back_to_send_message_on_other_badrequest
     """Non-"not modified" BadRequest (e.g. message too old) re-sends.
 
     Telegram drops edit rights after 48h. When that fires we must
-    deliver the user the refreshed board via a new message rather
+    deliver the user the refreshed board via a fresh rich send rather
     than silently losing the tap.
     """
     client = AsyncMock()
@@ -1568,22 +1677,24 @@ async def test_on_filter_callback_falls_back_to_send_message_on_other_badrequest
         "calls_resolved_total": 5,
     }
     query = _FakeQuery(data=CB_BOARD_FILTER_DAY)
-    query.edit_side_effect = BadRequest("message can't be edited")
     update = _FakeUpdateWithQuery(
         callback_query=query,
         effective_user=_FakeUser(id=42),
         effective_chat=_FakeChat(id=99),
     )
-    bot = _FakeBot()
+    bot = _FakeBot(post_side_effects={"editMessageText": BadRequest("message can't be edited")})
     ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await on_filter_callback(update, ctx)  # type: ignore[arg-type]
 
-    assert len(bot.sent) == 1
-    sent_chat_id, sent_text, sent_kwargs = bot.sent[0]
-    assert sent_chat_id == 99
-    assert "Day Traders" in sent_text.splitlines()[0]
-    assert sent_kwargs.get("reply_markup") is not None
+    # The in-place edit raised, so the handler fell back to a fresh rich
+    # send carrying the refreshed board + keyboard.
+    endpoints = [endpoint for endpoint, _ in bot.posts]
+    assert endpoints == ["editMessageText", "sendRichMessage"]
+    _, fresh = bot.posts[1]
+    assert fresh["chat_id"] == CHAT_ID
+    assert "Day Traders" in fresh["rich_message"]["markdown"].splitlines()[0]
+    assert fresh.get("reply_markup") is not None
 
 
 async def test_on_filter_callback_ignores_malformed_callback_data() -> None:
@@ -1744,16 +1855,15 @@ async def test_on_filter_callback_shows_toast_when_fetch_fails() -> None:
     assert bot.sent == []
 
 
-async def test_on_filter_callback_fallback_skipped_when_no_effective_chat() -> None:
-    """The ``send_message`` fallback needs an ``effective_chat`` to
-    target. If PTB hands us an Update without one (extreme edge
-    case — typically only happens for some inline dispatches), we
-    log the failed edit but don't crash on a None chat_id.
+async def test_on_filter_callback_no_message_skips_edit() -> None:
+    """If the callback's message is gone (user deleted it) we can't
+    edit in place — the rich edit needs an explicit chat_id +
+    message_id off ``query.message``. The handler clears the spinner
+    and no-ops rather than crashing on a ``None`` message.
 
-    Pins the ``if update.effective_chat is not None`` guard.
-    Without it the bot would raise ``AttributeError: 'NoneType'``
-    and surface as a Sentry error for a corner case that already
-    failed silently from the user's POV (edit raised, no chat).
+    Pins the ``if chat_id is None or message_id is None: return``
+    guard so a corner case that already failed silently from the
+    user's POV doesn't surface as an AttributeError in Sentry.
     """
     client = AsyncMock()
     client.get_board.return_value = {
@@ -1765,12 +1875,11 @@ async def test_on_filter_callback_fallback_skipped_when_no_effective_chat() -> N
         "display_name": "Alice",
         "calls_resolved_total": 5,
     }
-    query = _FakeQuery(data=CB_BOARD_FILTER_SWING)
-    query.edit_side_effect = BadRequest("message can't be edited")
+    query = _FakeQuery(data=CB_BOARD_FILTER_SWING, message=None)
     update = _FakeUpdateWithQuery(
         callback_query=query,
         effective_user=_FakeUser(id=42),
-        effective_chat=None,  # ← the branch under test
+        effective_chat=_FakeChat(id=99),
     )
     bot = _FakeBot()
     ctx = _FakeContextWithBot(bot_data={BOT_DATA_KEY: client}, bot=bot)
@@ -1778,7 +1887,10 @@ async def test_on_filter_callback_fallback_skipped_when_no_effective_chat() -> N
     # Must not raise.
     await on_filter_callback(update, ctx)  # type: ignore[arg-type]
 
-    assert bot.sent == []  # the guard prevented the fallback send
+    # Spinner cleared, but no edit attempt and no fresh send.
+    assert query.answered  # spinner cleared
+    assert bot.posts == []
+    assert bot.sent == []
 
 
 @pytest.mark.filterwarnings("ignore::telegram.warnings.PTBUserWarning")

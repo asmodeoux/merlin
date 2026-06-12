@@ -53,6 +53,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
+from merlin_bot import rich
 from merlin_bot.api_dependency import BOT_DATA_KEY
 
 _log = logging.getLogger("merlin.bot.handlers.board")
@@ -155,19 +156,22 @@ async def board_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     client: MerlinClient = context.bot_data[BOT_DATA_KEY]
     tg_user_id = update.effective_user.id
 
-    text, keyboard = await _fetch_and_render(
+    rich_text, fallback_text, keyboard = await _fetch_and_render(
         client,
         tg_user_id=tg_user_id,
         active_filter="all",
     )
-    if text is None:
+    if rich_text is None or fallback_text is None:
         await update.message.reply_text(_temporary_error_text())
         return
 
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
+    await rich.send_rich(
+        context.bot,
+        update.message.chat_id,
+        rich_text,
         reply_markup=keyboard,
+        fallback_text=fallback_text,
+        fallback_parse_mode=ParseMode.HTML,
     )
 
 
@@ -204,12 +208,12 @@ async def on_filter_callback(
     client: MerlinClient = context.bot_data[BOT_DATA_KEY]
     tg_user_id = update.effective_user.id
 
-    text, keyboard = await _fetch_and_render(
+    rich_text, fallback_text, keyboard = await _fetch_and_render(
         client,
         tg_user_id=tg_user_id,
         active_filter=new_filter,
     )
-    if text is None:
+    if rich_text is None or fallback_text is None:
         # Re-fetch failed — leave the existing message intact rather
         # than wiping it for a temporary outage. The toast is the
         # ONLY ``query.answer`` call on this path: Telegram only
@@ -223,30 +227,42 @@ async def on_filter_callback(
         return
 
     # Clear the spinner now that we have something to render. Done
-    # before ``edit_message_text`` so the spinner clears even if the
-    # edit raises (the user's tap should always feel responsive).
+    # before the edit so the spinner clears even if the edit raises
+    # (the user's tap should always feel responsive).
     await query.answer()
 
+    # ``edit_rich`` needs an explicit chat_id + message_id (the raw Bot
+    # API call can't infer them the way ``query.edit_message_text``
+    # does). Both come off the callback's own message; if it's gone
+    # (user deleted it) there's nothing to edit and nothing to do.
+    chat_id = getattr(query.message, "chat_id", None)
+    message_id = getattr(query.message, "message_id", None)
+    if chat_id is None or message_id is None:
+        return
+
     try:
-        await query.edit_message_text(
-            text,
-            parse_mode=ParseMode.HTML,
+        await rich.edit_rich(
+            context.bot,
+            chat_id=chat_id,
+            message_id=message_id,
+            markdown=rich_text,
             reply_markup=keyboard,
         )
     except BadRequest as e:
         if _NOT_MODIFIED_SUBSTRING in str(e).lower():
             return
         _log.warning(
-            "board filter edit_message_text fell back to send_message: %s",
+            "board filter edit_rich fell back to send_rich: %s",
             e,
         )
-        if update.effective_chat is not None:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
+        await rich.send_rich(
+            context.bot,
+            chat_id,
+            rich_text,
+            reply_markup=keyboard,
+            fallback_text=fallback_text,
+            fallback_parse_mode=ParseMode.HTML,
+        )
 
 
 def build_handler() -> CommandHandler:
@@ -264,14 +280,17 @@ async def _fetch_and_render(
     *,
     tg_user_id: int,
     active_filter: str,
-) -> tuple[str | None, InlineKeyboardMarkup | None]:
+) -> tuple[str | None, str | None, InlineKeyboardMarkup | None]:
     """Run the parallel ``/board`` + ``/me`` fetch and render the reply.
 
-    Returns ``(None, None)`` on a board-fetch error (the caller renders
-    a temporary-error message); a populated ``(text, keyboard)`` pair
-    on success — including the empty-state path. The keyboard is
-    always the three non-active filter buttons so users can switch
-    filters even when the active slice is empty.
+    Returns ``(None, None, None)`` on a board-fetch error (the caller
+    renders a temporary-error message); a populated
+    ``(rich_text, fallback_text, keyboard)`` triple on success —
+    including the empty-state path. ``rich_text`` is the Bot API 10.1
+    Rich Message body; ``fallback_text`` is the legacy HTML render the
+    sender drops back to if Telegram rejects the rich payload. The
+    keyboard is always the three non-active filter buttons so users can
+    switch filters even when the active slice is empty.
     """
     board_task = asyncio.create_task(
         client.get_board(window="all_time", horizon=active_filter),
@@ -283,11 +302,11 @@ async def _fetch_and_render(
     except MerlinHTTPError as e:
         _log.warning("get_board failed: %s", e)
         me_task.cancel()
-        return None, None
+        return None, None, None
     except Exception as e:
         _log.warning("get_board transport error: %s", e)
         me_task.cancel()
-        return None, None
+        return None, None, None
 
     self_display_name: str | None = None
     self_resolved_total: int = 0
@@ -312,14 +331,20 @@ async def _fetch_and_render(
     # a stale-deploy mismatch shows the truth, not the request.
     rendered_filter = _coerce_filter(board_payload.get("horizon"), active_filter)
 
-    text = _render_board(
+    rich_text = _render_board_rich(
+        board_payload,
+        self_display_name=self_display_name,
+        self_resolved_total=self_resolved_total,
+        active_filter=rendered_filter,
+    )
+    fallback_text = _render_board(
         board_payload,
         self_display_name=self_display_name,
         self_resolved_total=self_resolved_total,
         active_filter=rendered_filter,
     )
     keyboard = _filter_keyboard(rendered_filter)
-    return text, keyboard
+    return rich_text, fallback_text, keyboard
 
 
 def _coerce_filter(echoed: object, fallback: str) -> str:
@@ -371,6 +396,179 @@ def _filter_keyboard(active_filter: str) -> InlineKeyboardMarkup:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
+
+
+def _render_board_rich(
+    payload: dict[str, Any],
+    *,
+    self_display_name: str | None = None,
+    self_resolved_total: int = 0,
+    active_filter: str = "all",
+) -> str:
+    """Compose the ``/board`` reply as a Rich Message (Bot API 10.1).
+
+    Same data, ranking, self-positioning, and filter semantics as
+    :func:`_render_board`; the emoji-prefixed line list becomes a native
+    five-column table (``#`` / ``Caller`` / ``PnL`` / ``Hit`` /
+    ``Calls``) so the numbers line up in right-aligned columns instead
+    of running inline behind middle-dots.
+
+    Self-positioning carries over: the caller's name is wrapped in
+    ``**bold**`` (Markdown's table-cell equivalent of the old ``<b>``),
+    and an outside-top-N caller still gets a ``…`` gap row followed by
+    their own row appended to the table. The cold-start inspiring line
+    and the filtered/empty states reuse the plain renderer's honest copy
+    (no table to align). The footer ranking explainer + activity
+    heartbeat is rendered as an italic block; the CTA follows.
+    """
+    entries = payload.get("entries") or []
+    if not entries:
+        return _empty_state_text(active_filter=active_filter)
+
+    top_entries = entries[:LEADERBOARD_LIMIT]
+    rows = [_rich_board_row(entry, self_display_name=self_display_name) for entry in top_entries]
+
+    extra_rows, trailing = _rich_self_appendage(
+        entries=entries,
+        visible_count=len(top_entries),
+        self_display_name=self_display_name,
+        self_resolved_total=self_resolved_total,
+    )
+    rows.extend(extra_rows)
+
+    body = rich.table(
+        ["#", "Caller", "PnL", "Hit", "Calls"],
+        rows,
+        ["left", "left", "right", "right", "right"],
+    )
+
+    header_suffix = _FILTER_HEADER_SUFFIX.get(active_filter, "")
+    blocks = [f"# Leaderboard{header_suffix}", "", body, ""]
+    if trailing is not None:
+        blocks.extend([trailing, ""])
+    blocks.append(_footer_ranking_rich(payload))
+    blocks.append("/alpha to add a call, /me for your own.")
+    return "\n".join(blocks)
+
+
+def _rich_board_row(
+    entry: dict[str, Any],
+    *,
+    self_display_name: str | None,
+) -> list[str]:
+    """One leaderboard table row ``[#, caller, pnl, hit, calls]``.
+
+    The caller's own name is wrapped in ``**bold**`` so they can find
+    themselves at a glance (the rich-table equivalent of the plain
+    renderer's ``<b>``); the name is escaped via
+    :func:`merlin_bot.rich.escape_cell` first so a display name with
+    Markdown/HTML/pipe characters can't break the table or inject
+    formatting. Podium ranks keep their medal emoji; below the podium
+    the ``#`` column carries the bare rank number.
+    """
+    rank = int(entry.get("rank") or 0)
+    raw_name = str(entry.get("display_name") or "anonymous")
+    name = rich.escape_cell(raw_name)
+    if self_display_name is not None and raw_name == self_display_name:
+        name = f"**{name}**"
+    prefix = _PODIUM_EMOJI.get(rank, str(rank))
+    return [
+        prefix,
+        name,
+        _board_pnl_cell(entry.get("weighted_pnl_pct")),
+        _board_hit_cell(entry.get("accuracy_pct")),
+        _board_calls_cell(entry.get("calls_resolved")),
+    ]
+
+
+def _rich_self_appendage(
+    *,
+    entries: list[dict[str, Any]],
+    visible_count: int,
+    self_display_name: str | None,
+    self_resolved_total: int,
+) -> tuple[list[list[str]], str | None]:
+    """Rich-table analogue of :func:`_self_appendage_lines`.
+
+    Returns ``(extra_rows, trailing_block)``:
+
+    * ``extra_rows`` — table rows appended after the visible top-N: a
+      ``…`` gap row then the caller's own row, when they rank outside
+      the visible window. Empty otherwise.
+    * ``trailing_block`` — the cold-start inspiring one-liner placed
+      below the table, or ``None``.
+
+    Same four behaviour branches and the same "anomalous missing
+    caller" warning as the plain renderer.
+    """
+    if self_display_name is None:
+        return [], None
+
+    caller_row = _find_caller_row(entries, self_display_name)
+    if caller_row is not None:
+        caller_rank = _safe_int(caller_row.get("rank"))
+        if caller_rank <= visible_count:
+            return [], None
+        gap_row = [_GAP_LINE, "", "", "", ""]
+        return [gap_row, _rich_board_row(caller_row, self_display_name=self_display_name)], None
+
+    if self_resolved_total == 0:
+        return [], _cold_start_message()
+
+    _log.warning(
+        "caller %r has %d resolved calls but is missing from /board",
+        self_display_name,
+        self_resolved_total,
+    )
+    return [], None
+
+
+def _footer_ranking_rich(payload: dict[str, Any]) -> str:
+    """Italic footer for the rich board: ranking explainer + activity.
+
+    Markdown-italic (``_..._``) twin of :func:`_footer_ranking_line`,
+    with the identical zero-activity omission rule and pluralisation.
+    """
+    open_calls = _safe_int(payload.get("open_calls_total"))
+    open_callers = _safe_int(payload.get("open_callers_total"))
+
+    base = "Ranked by recent PnL, weighted by track record."
+    if open_calls <= 0 or open_callers <= 0:
+        return f"_{base}_"
+
+    call_word = "call" if open_calls == 1 else "calls"
+    user_word = "user" if open_callers == 1 else "users"
+    verb = "is" if open_calls == 1 else "are"
+    return (
+        f"_{base} {open_calls} open {call_word} by {open_callers} {user_word} {verb} in progress._"
+    )
+
+
+def _board_pnl_cell(pnl: object) -> str:
+    """Signed two-decimal PnL for a board table cell: ``+2.50%``."""
+    if pnl is None:
+        return "—"
+    try:
+        amount = float(pnl)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "—"
+    return f"{amount:+.2f}%"
+
+
+def _board_hit_cell(accuracy: object) -> str:
+    """Integer hit-rate percent for a board table cell: ``80%``."""
+    if accuracy is None:
+        return "—"
+    try:
+        amount = float(accuracy)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "—"
+    return f"{amount:.0f}%"
+
+
+def _board_calls_cell(resolved: object) -> str:
+    """Bare resolved-count for a board table cell: ``10``."""
+    return str(_safe_int(resolved))
 
 
 def _render_board(

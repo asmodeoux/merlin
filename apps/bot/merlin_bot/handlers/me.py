@@ -27,6 +27,7 @@ from merlin_client.errors import MerlinHTTPError
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
+from merlin_bot import rich
 from merlin_bot.api_dependency import BOT_DATA_KEY
 
 _log = logging.getLogger("merlin.bot.handlers.me")
@@ -55,7 +56,12 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(_temporary_error_text())
         return
 
-    await update.message.reply_text(_render_me(payload))
+    await rich.send_rich(
+        context.bot,
+        update.message.chat_id,
+        _render_me_rich(payload),
+        fallback_text=_render_me(payload),
+    )
 
 
 def build_handler() -> CommandHandler:
@@ -120,6 +126,147 @@ def _render_me(payload: dict[str, Any]) -> str:
     look_back = "Tap /tickers for your per-ticker breakdown, /history for past calls."
 
     return "\n\n".join([header, f"{counts}\n{headline_stats}", body, footer, look_back])
+
+
+def _render_me_rich(payload: dict[str, Any]) -> str:
+    """Compose the ``/me`` reply as a Rich Message (Bot API 10.1).
+
+    ``/me`` is a personal profile, not a leaderboard, so it stays
+    structured rather than collapsing into one big table:
+
+    * ``# <name> — your calls`` heading.
+    * A bold "stat strip": ``**Open** N · **Resolved** M`` then the
+      headline PnL/hit/resolved line (or the cold-start tracking copy).
+    * ``## Open calls`` + a five-column table. The **Resolves** column
+      uses a native ``tg://time`` entity (:func:`merlin_bot.rich.tg_time`)
+      so each open call shows a live, client-localised countdown that
+      ticks down on the user's device — the standout upgrade over the
+      static "resolves June 12 @ 16:35 UTC" string (which is preserved
+      as the entity's fallback label for clients that can't render it).
+
+    Cold-start / zero-open states keep the plain renderer's honest copy:
+    "No open calls yet" rather than an empty table, and "tracking your
+    first resolutions" rather than a faked +0.00%.
+    """
+    display_name = str(payload.get("display_name") or "you")
+    open_calls = payload.get("calls_open") or []
+    resolved_total = int(payload.get("calls_resolved_total") or 0)
+
+    blocks = [
+        f"# {rich.escape_inline(display_name)} — your calls",
+        "",
+        f"**Open** {len(open_calls)} · **Resolved** {resolved_total}",
+        _headline_stats_rich(
+            weighted_pnl_pct=payload.get("weighted_pnl_pct"),
+            accuracy_pct=payload.get("accuracy_pct"),
+            resolved_total=resolved_total,
+        ),
+        "",
+    ]
+
+    if open_calls:
+        table = rich.table(
+            ["Asset", "Direction", "Horizon", "Entry", "Resolves"],
+            [_rich_open_call(call) for call in open_calls],
+            ["left", "left", "left", "right", "left"],
+        )
+        blocks.extend(["## Open calls", "", table, ""])
+    else:
+        blocks.extend(["No open calls yet. /alpha to make your first.", ""])
+
+    blocks.extend(
+        [
+            "/alpha to add another, /board for the leaderboard.",
+            "Tap /tickers for your per-ticker breakdown, /history for past calls.",
+        ],
+    )
+    return "\n".join(blocks)
+
+
+def _headline_stats_rich(
+    *,
+    weighted_pnl_pct: object,
+    accuracy_pct: object,
+    resolved_total: int,
+) -> str:
+    """Bold stat strip for the rich ``/me`` header.
+
+    Same two shapes (and same cold-start gating) as
+    :func:`_headline_stats_line`, restyled for Rich Markdown: an italic
+    "tracking your first resolutions" line on cold-start, or a
+    ``**PnL** +1.85% · **Hit** 60% · **5 calls**`` strip once outcomes
+    land. PnL stays primary with two decimals to match /board.
+    """
+    if weighted_pnl_pct is None or accuracy_pct is None or resolved_total == 0:
+        return "_Accuracy: tracking your first resolutions_"
+    try:
+        pnl = float(weighted_pnl_pct)  # type: ignore[arg-type]
+        acc = float(accuracy_pct)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "_Accuracy: tracking your first resolutions_"
+    calls_suffix = "" if resolved_total == 1 else "s"
+    return f"**PnL** {pnl:+.2f}% · **Hit** {acc:.0f}% · **{resolved_total} call{calls_suffix}**"
+
+
+def _rich_open_call(call: dict[str, Any]) -> list[str]:
+    """One open-call table row ``[asset, dir, horizon, entry, resolves]``.
+
+    Mirrors :func:`_render_open_call` field-for-field. The entry column
+    reuses the adaptive-decimal USD format; the resolves column is a
+    live ``tg://time`` countdown.
+    """
+    asset = rich.escape_cell(str(call.get("asset_symbol") or "?").upper())
+    direction = rich.escape_cell(_direction_human(str(call.get("direction") or "")))
+    horizon = rich.escape_cell(_horizon_human(call.get("horizon_seconds")))
+    return [
+        asset,
+        direction,
+        horizon,
+        _entry_cell(call.get("entry_price_usd")),
+        _resolves_cell(str(call.get("resolves_at") or "")),
+    ]
+
+
+def _entry_cell(price: object) -> str:
+    """Adaptive-decimal USD entry price for a table cell; ``—`` if absent.
+
+    Same bucket thresholds as :func:`_format_entry_price` (>=$1 -> 2dp,
+    $0.01-$1 -> 4dp, <$0.01 -> 8dp) so the number matches the /alpha
+    receipt and the plain /me line — but rendered as a bare ``$X`` cell
+    (no "entry " prefix; the column header carries the label) and an
+    em-dash when the server captured no snapshot.
+    """
+    if price is None:
+        return "—"
+    try:
+        amount = float(price)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "—"
+    if amount >= 1.0:
+        return f"${amount:,.2f}"
+    if amount >= 0.01:
+        return f"${amount:.4f}"
+    return f"${amount:.8f}"
+
+
+def _resolves_cell(iso: str) -> str:
+    """Render the resolves-at cell as a live ``tg://time`` countdown.
+
+    The entity renders as a relative countdown ("in 3 hours") that
+    updates client-side; its fallback label is the same absolute UTC
+    string the plain renderer shows ("June 12 @ 16:35 UTC") so clients
+    that can't render the entity still get a readable cell. Falls back
+    to ``"soon"`` on a missing / malformed timestamp.
+    """
+    if not iso:
+        return "soon"
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return "soon"
+    dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    label = f"{dt:%B} {dt.day} @ {dt:%H:%M} UTC"
+    return rich.tg_time(dt, fmt="r", label=label)
 
 
 #: Prefix for each open-call line. ``•`` (U+2022 BULLET) instead of

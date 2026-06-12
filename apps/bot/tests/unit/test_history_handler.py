@@ -34,6 +34,7 @@ from merlin_bot.handlers.history import (
     _format_short_date,
     _pick_emoji,
     _render_history,
+    _render_history_rich,
     build_callback_handler,
     build_handler,
     history_command,
@@ -41,9 +42,12 @@ from merlin_bot.handlers.history import (
 )
 from merlin_client.errors import MerlinHTTPError
 from telegram import InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, CommandHandler
 
 USER_ID = 42
+CHAT_ID = 99
+MESSAGE_ID = 7
 
 
 @dataclass
@@ -59,6 +63,8 @@ class _FakeChat:
 @dataclass
 class _FakeMessage:
     text: str | None = None
+    chat_id: int = CHAT_ID
+    message_id: int = MESSAGE_ID
     replies: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     edits: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
@@ -97,13 +103,35 @@ class _FakeQuery:
 
 @dataclass
 class _FakeBot:
-    """Captures ``context.bot.send_message`` calls — used by the
-    fresh-reply fallback paths (message-too-long, deleted-message)."""
+    """Captures raw Bot API calls for the rich send/edit paths.
 
+    ``posts`` records ``(endpoint, data)`` for ``sendRichMessage`` /
+    ``editMessageText``; ``post_side_effects`` maps an endpoint to a
+    one-shot exception (so a too-long edit can be simulated while a
+    follow-up fresh send still succeeds). ``sent_messages`` is the
+    plain-text ``send_rich`` fallback sink.
+    """
+
+    posts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     sent_messages: list[tuple[int, str, dict[str, Any]]] = field(default_factory=list)
+    post_side_effects: dict[str, Exception] = field(default_factory=dict)
+
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None, **_kw: Any) -> Any:
+        self.posts.append((endpoint, data or {}))
+        exc = self.post_side_effects.pop(endpoint, None)
+        if exc is not None:
+            raise exc
 
     async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
         self.sent_messages.append((chat_id, text, kw))
+
+
+def _posted(bot: _FakeBot, endpoint: str) -> dict[str, Any]:
+    """Return the data of the last ``endpoint`` post."""
+    for posted_endpoint, data in reversed(bot.posts):
+        if posted_endpoint == endpoint:
+            return data
+    raise AssertionError(f"no {endpoint} post captured; got {[e for e, _ in bot.posts]}")
 
 
 @dataclass
@@ -343,6 +371,61 @@ def test_render_history_follow_up_page_appends_below_existing_rows() -> None:
     assert new_kb is None
 
 
+# ---------------------------------------------------------------------------
+# Rich rendering
+# ---------------------------------------------------------------------------
+
+
+def test_render_history_rich_builds_table_with_emoji_and_button() -> None:
+    """The rich render is a heading + a six-column table (outcome emoji
+    first) + footer, with the "Show 30 more" button when ``has_more``."""
+    payload = {
+        "entries": [
+            _entry(
+                asset_symbol="TON",
+                direction="short",
+                horizon_seconds=86_400,
+                observed_return_pct=-7.6,
+                is_correct=False,
+                is_flat=False,
+                resolved_at=_PIN_ISO,
+            ),
+        ],
+        "has_more": True,
+        "next_offset": 30,
+        "as_of": _PIN_ISO,
+    }
+    text, keyboard = _render_history_rich(payload)
+    assert text.startswith("# Your resolved calls")
+    assert "|  | Asset | Call | Horizon | Return | Resolved |" in text
+    assert "| 🙂‍↔️ | TON | Short | 24 hours | -7.6% | Apr 28 |" in text
+    assert "/tickers for your per-ticker view" in text
+    assert isinstance(keyboard, InlineKeyboardMarkup)
+    assert keyboard.inline_keyboard[0][0].callback_data == f"history:page:{_PIN_EPOCH}:30"
+
+
+def test_render_history_rich_empty_state_has_no_table() -> None:
+    """Cold-start → plain empty-state copy, no table, no button."""
+    text, keyboard = _render_history_rich({"entries": []})
+    assert "No resolved calls yet" in text
+    assert "|" not in text
+    assert keyboard is None
+
+
+def test_render_history_rich_escapes_pipe_in_symbol() -> None:
+    """A wire-drift asset symbol with a pipe is escaped so it can't
+    shear the table."""
+    text, _kb = _render_history_rich(
+        {
+            "entries": [_entry(asset_symbol="a|b")],
+            "has_more": False,
+            "next_offset": None,
+            "as_of": _PIN_ISO,
+        },
+    )
+    assert r"A\|B" in text
+
+
 def test_encode_decode_page_callback_roundtrips() -> None:
     """The callback-data shape must roundtrip cleanly so a stale
     button click never gets a forged offset or ``as_of``."""
@@ -409,7 +492,8 @@ def test_history_page_callback_pattern_accepts_only_two_non_negative_integers() 
 
 async def test_history_command_fetches_first_page_and_renders() -> None:
     """Happy path: /history hits the API with the caller's tg id +
-    default ``limit/offset``, then renders the payload."""
+    default ``limit/offset``, then sends the first page as a Rich
+    Message."""
     client = AsyncMock()
     client.get_my_history.return_value = {
         "entries": [_entry(asset_symbol="TON")],
@@ -420,7 +504,8 @@ async def test_history_command_fetches_first_page_and_renders() -> None:
         effective_user=_FakeUser(id=USER_ID),
         message=_FakeMessage(),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await history_command(update, ctx)  # type: ignore[arg-type]
 
@@ -430,15 +515,18 @@ async def test_history_command_fetches_first_page_and_renders() -> None:
         offset=0,
     )
     assert update.message is not None
-    assert len(update.message.replies) == 1
-    body, kw = update.message.replies[0]
-    assert "TON" in body
-    # Last page → no keyboard on the reply.
-    assert kw.get("reply_markup") is None
+    assert update.message.replies == []
+    data = _posted(bot, "sendRichMessage")
+    assert data["chat_id"] == CHAT_ID
+    markdown = data["rich_message"]["markdown"]
+    assert markdown.startswith("# Your resolved calls")
+    assert "TON" in markdown
+    # Last page → no keyboard on the send.
+    assert data.get("reply_markup") is None
 
 
 async def test_history_command_attaches_keyboard_when_has_more() -> None:
-    """``has_more=True`` → the reply carries an InlineKeyboardMarkup
+    """``has_more=True`` → the rich send carries an InlineKeyboardMarkup
     with the "Show 30 more" button + correct next-offset encoded in
     callback_data, alongside the frozen ``as_of`` epoch."""
     client = AsyncMock()
@@ -452,13 +540,13 @@ async def test_history_command_attaches_keyboard_when_has_more() -> None:
         effective_user=_FakeUser(id=USER_ID),
         message=_FakeMessage(),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await history_command(update, ctx)  # type: ignore[arg-type]
 
-    assert update.message is not None
-    _body, kw = update.message.replies[0]
-    keyboard = kw.get("reply_markup")
+    data = _posted(bot, "sendRichMessage")
+    keyboard = data.get("reply_markup")
     assert isinstance(keyboard, InlineKeyboardMarkup)
     button = keyboard.inline_keyboard[0][0]
     assert button.callback_data == f"history:page:{_PIN_EPOCH}:30"
@@ -515,61 +603,62 @@ async def test_history_command_handles_missing_message_silently() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_on_page_callback_fetches_next_page_and_edits_message() -> None:
+async def test_on_page_callback_fetches_window_and_edits_message() -> None:
     """A "Show 30 more" click must:
 
-    1. Hit the API with the encoded offset + frozen ``as_of``.
-    2. Edit the original message in place with the new rows appended
-       below the existing ones.
-    3. ACK exactly once — AFTER the successful edit — so the
-       loading spinner stops and Telegram does not reject a second
-       answer for the same callback id (Telegram invalidates the
-       query id on the first reply).
+    1. Re-fetch the accumulated window ``[0, offset + page)`` from the
+       frozen ``as_of`` (rich messages can't be rebuilt from the prior
+       body — so the whole table is re-rendered each tap).
+    2. Edit the original message in place via ``editMessageText`` with
+       the full table.
+    3. ACK exactly once — AFTER the successful edit — so the loading
+       spinner stops and Telegram does not reject a second answer for
+       the same callback id.
     """
     client = AsyncMock()
+    # The re-fetched window carries the full accumulated list.
     client.get_my_history.return_value = {
-        "entries": [_entry(asset_symbol="BTC", resolved_at="2026-04-27T12:00:00Z")],
+        "entries": [
+            _entry(asset_symbol="TON", resolved_at="2026-04-28T12:00:00Z"),
+            _entry(asset_symbol="BTC", resolved_at="2026-04-27T12:00:00Z"),
+        ],
         "has_more": False,
         "next_offset": None,
         "as_of": _PIN_ISO,
     }
-    prior_text = (
-        "Your resolved calls\n"
-        "\n"
-        "🎉 TON — Short over 24 hours ended -7.6% · Apr 28\n"
-        "\n"
-        "/alpha to add another, /tickers for your per-ticker view."
-    )
-    message = _FakeMessage(text=prior_text)
-    query = _FakeQuery(data=f"history:page:{_PIN_EPOCH}:1", message=message)
+    query = _FakeQuery(data=f"history:page:{_PIN_EPOCH}:1", message=_FakeMessage())
     update = _FakeUpdate(
         effective_user=_FakeUser(id=USER_ID),
         callback_query=query,
-        effective_chat=_FakeChat(id=99),
+        effective_chat=_FakeChat(id=CHAT_ID),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await on_page_callback(update, ctx)  # type: ignore[arg-type]
 
+    # offset=1 rows shown → target window of 31 rows fetched from 0.
     client.get_my_history.assert_awaited_once_with(
         tg_user_id=USER_ID,
-        limit=HISTORY_PAGE_SIZE,
-        offset=1,
+        limit=1 + HISTORY_PAGE_SIZE,
+        offset=0,
         as_of=_PIN_ISO,
     )
     # Exactly one ACK — Telegram rejects a second ``answer()`` for the
     # same callback id, so the success path ACKs once at the end.
     assert len(query.answers) == 1
     assert query.answers[0] == (None, {})
-    # Exactly one edit landed.
-    assert len(query.edits) == 1
-    new_text, _kw = query.edits[0]
-    # Both old and new rows present, in order.
+    # Exactly one in-place edit via editMessageText.
+    data = _posted(bot, "editMessageText")
+    assert data["chat_id"] == CHAT_ID
+    assert data["message_id"] == MESSAGE_ID
+    new_text = data["rich_message"]["markdown"]
+    # Both rows present, in order.
     assert "TON" in new_text
     assert "BTC" in new_text
     assert new_text.index("TON") < new_text.index("BTC")
     # No more pages → keyboard removed.
-    assert _kw.get("reply_markup") is None
+    assert data.get("reply_markup") is None
 
 
 async def test_on_page_callback_failure_acks_once_with_alert() -> None:
@@ -623,55 +712,52 @@ async def test_on_page_callback_malformed_data_acks_with_alert() -> None:
     assert query.answers[0][1].get("show_alert") is True
 
 
-async def test_on_page_callback_message_too_long_falls_back_to_fresh_reply() -> None:
-    """If the accumulated message would exceed Telegram's 4096-char
-    cap, ``edit_message_text`` raises ``BadRequest: message is too
-    long``. The handler must catch it, drop the prior keyboard, and
-    send a fresh reply with just the new page so the user keeps
-    paginating instead of staring at a silent button."""
-    from telegram.error import BadRequest
-
+async def test_on_page_callback_rich_too_large_falls_back_to_fresh_reply() -> None:
+    """If the accumulated table exceeds a Rich Message limit,
+    ``editMessageText`` raises ``BadRequest`` (e.g. "message is too
+    long"). The handler must catch it, drop the prior keyboard, and
+    send the window as a fresh message so the user keeps paginating
+    instead of staring at a silent button."""
     client = AsyncMock()
     client.get_my_history.return_value = {
-        "entries": [_entry(asset_symbol="BTC", resolved_at="2026-04-27T12:00:00Z")],
+        "entries": [
+            _entry(asset_symbol="TON", resolved_at="2026-04-28T12:00:00Z"),
+            _entry(asset_symbol="BTC", resolved_at="2026-04-27T12:00:00Z"),
+        ],
         "has_more": True,
         "next_offset": 60,
         "as_of": _PIN_ISO,
     }
-    message = _FakeMessage(text="Your resolved calls\n\n... 60 prior rows ...")
-
-    async def _raises_message_too_long(*_a: Any, **_kw: Any) -> None:
-        raise BadRequest("Message is too long")
-
-    query = _FakeQuery(
-        data=f"history:page:{_PIN_EPOCH}:30",
-        message=message,
-        edit_message_text_impl=_raises_message_too_long,
-    )
-    chat = _FakeChat(id=99)
+    query = _FakeQuery(data=f"history:page:{_PIN_EPOCH}:30", message=_FakeMessage())
     update = _FakeUpdate(
         effective_user=_FakeUser(id=USER_ID),
         callback_query=query,
-        effective_chat=chat,
+        effective_chat=_FakeChat(id=CHAT_ID),
     )
-    bot = _FakeBot()
+    bot = _FakeBot(post_side_effects={"editMessageText": BadRequest("Message is too long")})
     ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await on_page_callback(update, ctx)  # type: ignore[arg-type]
 
+    # offset=30 → window of 60 rows fetched from 0 (fits the cap).
+    client.get_my_history.assert_awaited_once_with(
+        tg_user_id=USER_ID,
+        limit=30 + HISTORY_PAGE_SIZE,
+        offset=0,
+        as_of=_PIN_ISO,
+    )
     # Single ACK after fallback decision.
     assert len(query.answers) == 1
     # Edit was attempted (and raised); the prior keyboard was then
-    # stripped via ``edit_message_reply_markup``.
-    assert len(query.edits) == 1
+    # stripped via ``edit_message_reply_markup``, and a fresh rich
+    # send carried the window.
+    assert [endpoint for endpoint, _ in bot.posts] == ["editMessageText", "sendRichMessage"]
     assert query.markup_edits == [None]
-    # Fresh message was sent to the same chat with the new page.
-    assert len(bot.sent_messages) == 1
-    sent_chat, sent_text, sent_kw = bot.sent_messages[0]
-    assert sent_chat == 99
-    assert "BTC" in sent_text
-    # The fresh reply's button must encode the next offset (still has more).
-    fresh_kb = sent_kw.get("reply_markup")
+    fresh = _posted(bot, "sendRichMessage")
+    assert fresh["chat_id"] == CHAT_ID
+    assert "BTC" in fresh["rich_message"]["markdown"]
+    # The fresh reply's button encodes the next offset (still has more).
+    fresh_kb = fresh.get("reply_markup")
     assert isinstance(fresh_kb, InlineKeyboardMarkup)
     assert fresh_kb.inline_keyboard[0][0].callback_data == f"history:page:{_PIN_EPOCH}:60"
 
@@ -700,13 +786,12 @@ async def test_on_page_callback_inaccessible_message_falls_back_to_fresh_reply()
 
     await on_page_callback(update, ctx)  # type: ignore[arg-type]
 
-    # ACKed once, no edit (no message to edit), one fresh reply.
+    # ACKed once, no edit (no message to edit), one fresh rich send.
     assert len(query.answers) == 1
-    assert query.edits == []
-    assert len(bot.sent_messages) == 1
-    sent_chat, sent_text, _ = bot.sent_messages[0]
-    assert sent_chat == 77
-    assert "BTC" in sent_text
+    assert [endpoint for endpoint, _ in bot.posts] == ["sendRichMessage"]
+    fresh = _posted(bot, "sendRichMessage")
+    assert fresh["chat_id"] == 77
+    assert "BTC" in fresh["rich_message"]["markdown"]
 
 
 async def test_on_page_callback_short_circuits_on_missing_query() -> None:

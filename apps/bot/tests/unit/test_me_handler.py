@@ -24,17 +24,20 @@ from merlin_bot.api_dependency import BOT_DATA_KEY
 from merlin_bot.handlers.me import (
     _headline_stats_line,
     _render_me,
+    _render_me_rich,
     _utc_datetime,
     build_handler,
     me_command,
 )
 from merlin_client.errors import MerlinHTTPError
+from telegram.error import TelegramError
 from telegram.ext import CommandHandler
 from telegram.warnings import PTBUserWarning
 
 _ = PTBUserWarning  # re-exported so the type checker keeps the symbol
 
 USER_ID = 42
+CHAT_ID = 999
 
 
 @dataclass
@@ -44,10 +47,28 @@ class _FakeUser:
 
 @dataclass
 class _FakeMessage:
+    chat_id: int = CHAT_ID
     replies: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     async def reply_text(self, text: str, **kw: Any) -> None:
         self.replies.append((text, kw))
+
+
+@dataclass
+class _FakeBot:
+    """Captures raw ``_post`` (rich send) + ``send_message`` (fallback)."""
+
+    posts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    sent: list[tuple[int, str, dict[str, Any]]] = field(default_factory=list)
+    post_side_effect: Exception | None = None
+
+    async def _post(self, endpoint: str, data: dict[str, Any] | None = None, **_kw: Any) -> Any:
+        self.posts.append((endpoint, data or {}))
+        if self.post_side_effect is not None:
+            raise self.post_side_effect
+
+    async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
+        self.sent.append((chat_id, text, kw))
 
 
 @dataclass
@@ -59,6 +80,7 @@ class _FakeUpdate:
 @dataclass
 class _FakeContext:
     bot_data: dict[str, Any]
+    bot: _FakeBot = field(default_factory=_FakeBot)
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +409,99 @@ def test_render_me_avoids_internal_jargon() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Rich rendering
+# ---------------------------------------------------------------------------
+
+
+def test_render_me_rich_open_calls_table_with_live_resolves() -> None:
+    """The rich render keeps the profile shape (heading + stat strip)
+    and lays out open calls as a table whose Resolves column carries a
+    live ``tg://time`` countdown entity (with an absolute-UTC fallback
+    label). The entry-price column shows the captured snapshot or an
+    em-dash."""
+    payload: dict[str, Any] = {
+        "display_name": "Yuri",
+        "calls_open": [
+            {
+                "asset_symbol": "ETH",
+                "direction": "long",
+                "horizon_seconds": 1_209_600,
+                "resolves_at": "2030-06-12T16:35:00Z",
+                "entry_price_usd": 2438.12,
+            },
+            {
+                "asset_symbol": "BTC",
+                "direction": "short",
+                "horizon_seconds": 604_800,
+                "resolves_at": "2030-06-05T12:00:00Z",
+                "entry_price_usd": None,
+            },
+        ],
+        "calls_resolved_total": 0,
+        "accuracy_pct": None,
+    }
+    text = _render_me_rich(payload)
+    assert text.startswith("# Yuri — your calls")
+    assert "**Open** 2 · **Resolved** 0" in text
+    assert "## Open calls" in text
+    assert "| Asset | Direction | Horizon | Entry | Resolves |" in text
+    # ETH row: captured entry + live countdown entity (fallback label is
+    # the absolute UTC string the plain renderer shows).
+    assert "| ETH | long | 2 weeks | $2,438.12 | " in text
+    assert "![June 12 @ 16:35 UTC](tg://time?unix=" in text
+    assert "&format=r)" in text
+    # BTC row: no captured entry → em-dash, never a faked $0.00.
+    assert "| BTC | short | 1 week | — | " in text
+
+
+def test_render_me_rich_resolved_state_stat_strip() -> None:
+    """Once outcomes land the stat strip shows bold PnL / Hit / calls,
+    PnL primary with two decimals (matching /board)."""
+    payload = {
+        "display_name": "Alice",
+        "calls_open": [],
+        "calls_resolved_total": 5,
+        "accuracy_pct": 60.0,
+        "weighted_pnl_pct": 1.85,
+    }
+    text = _render_me_rich(payload)
+    assert "**PnL** +1.85% · **Hit** 60% · **5 calls**" in text
+    # Zero-open collapses to the honest one-liner, no empty table.
+    assert "No open calls yet" in text
+    assert "## Open calls" not in text
+
+
+def test_render_me_rich_cold_start_uses_tracking_copy() -> None:
+    """Null PnL / accuracy → the italic tracking line, never a faked
+    +0.00%."""
+    payload: dict[str, Any] = {
+        "display_name": "Yuri",
+        "calls_open": [],
+        "calls_resolved_total": 0,
+        "accuracy_pct": None,
+    }
+    text = _render_me_rich(payload)
+    assert "_Accuracy: tracking your first resolutions_" in text
+
+
+def test_render_me_rich_escapes_markdown_in_display_name() -> None:
+    """A display name with Markdown/HTML metacharacters must be escaped
+    in the heading so it renders literally and can't inject formatting
+    or an HTML tag (Rich Markdown allows embedded HTML)."""
+    payload: dict[str, Any] = {
+        "display_name": "*<b>x</b>*",
+        "calls_open": [],
+        "calls_resolved_total": 0,
+        "accuracy_pct": None,
+    }
+    text = _render_me_rich(payload)
+    first_line = text.splitlines()[0]
+    assert "<b>" not in first_line
+    assert "&lt;b&gt;" in first_line
+    assert r"\*" in first_line
+
+
+# ---------------------------------------------------------------------------
 # Accuracy line
 # ---------------------------------------------------------------------------
 
@@ -665,7 +780,7 @@ def test_resolves_at_chunk_integrates_into_open_call_line() -> None:
 
 async def test_me_command_fetches_and_renders() -> None:
     """Happy path: /me hits the API with the caller's tg_user_id,
-    then replies with the rendered payload."""
+    then sends the rendered payload as a Rich Message."""
     client = AsyncMock()
     client.get_me.return_value = {
         "display_name": "Yuri",
@@ -677,16 +792,47 @@ async def test_me_command_fetches_and_renders() -> None:
         effective_user=_FakeUser(id=USER_ID),
         message=_FakeMessage(),
     )
-    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client})
+    bot = _FakeBot()
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
 
     await me_command(update, ctx)  # type: ignore[arg-type]
 
     client.get_me.assert_awaited_once_with(tg_user_id=USER_ID)
     assert update.message is not None
-    assert len(update.message.replies) == 1
-    body, _kw = update.message.replies[0]
-    assert "Yuri" in body
-    assert "Open: 0" in body
+    assert update.message.replies == []
+    assert len(bot.posts) == 1
+    endpoint, data = bot.posts[0]
+    assert endpoint == "sendRichMessage"
+    assert data["chat_id"] == CHAT_ID
+    markdown = data["rich_message"]["markdown"]
+    assert "# Yuri — your calls" in markdown
+    assert "**Open** 0 · **Resolved** 0" in markdown
+
+
+async def test_me_command_falls_back_to_plain_when_rich_rejected() -> None:
+    """Telegram rejecting the rich payload falls back to the plain
+    ``send_message`` render so the user still sees their calls."""
+    client = AsyncMock()
+    client.get_me.return_value = {
+        "display_name": "Yuri",
+        "calls_open": [],
+        "calls_resolved_total": 0,
+        "accuracy_pct": None,
+    }
+    update = _FakeUpdate(
+        effective_user=_FakeUser(id=USER_ID),
+        message=_FakeMessage(),
+    )
+    bot = _FakeBot(post_side_effect=TelegramError("rich not supported"))
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
+
+    await me_command(update, ctx)  # type: ignore[arg-type]
+
+    assert len(bot.posts) == 1
+    assert len(bot.sent) == 1
+    sent_chat, sent_text, _kw = bot.sent[0]
+    assert sent_chat == CHAT_ID
+    assert sent_text.startswith("Yuri — your calls")
 
 
 async def test_me_command_404_points_at_start() -> None:
