@@ -87,6 +87,12 @@ HISTORY_WINDOW_LIMIT: int = HISTORY_MAX_PAGE_SIZE
 _HISTORY_PAGE_CB_PREFIX: str = "history:page:"
 _HISTORY_PAGE_CB_PATTERN: str = rf"^{_HISTORY_PAGE_CB_PREFIX}\d+:\d+$"
 
+# Substring Telegram returns when an edit's content is byte-identical to
+# the live message. A fast double-tap on "Show 30 more" can race two
+# clicks carrying the same offset into rendering the same window, so the
+# second edit is a no-op — swallow it rather than flashing an error toast.
+_NOT_MODIFIED_SUBSTRING: str = "message is not modified"
+
 
 def _encode_page_callback(*, as_of: datetime, offset: int) -> str:
     """Render the inline-button callback data for the next page.
@@ -245,7 +251,11 @@ async def on_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         await query.answer()
     except BadRequest as e:
-        if _is_message_too_long(e):
+        if _NOT_MODIFIED_SUBSTRING in str(e).lower():
+            # Identical re-render (e.g. a fast double-tap on "Show more"
+            # before the first edit landed) — clear the spinner, no error.
+            await query.answer()
+        elif _is_message_too_long(e):
             # The accumulated table crossed a Rich Message limit
             # (32768 chars / 500 blocks). Drop the keyboard and send
             # the window as a fresh message so the user keeps reading.
@@ -254,9 +264,9 @@ async def on_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             with contextlib.suppress(BadRequest):
                 await query.edit_message_reply_markup(reply_markup=None)
             await _send_fresh_page(context, chat_id, payload, new_text, keyboard)
-            return
-        _log.warning("history edit_rich failed: %s", e)
-        await query.answer(_temporary_error_text(), show_alert=True)
+        else:
+            _log.warning("history edit_rich failed: %s", e)
+            await query.answer(_temporary_error_text(), show_alert=True)
 
 
 async def _send_fresh_page(

@@ -155,9 +155,11 @@ def _draft_response(
     }
 
 
-def _text_update(*, chat_id: int = 555) -> MagicMock:
+def _text_update(*, chat_id: int = 555, message_id: int = 1234) -> MagicMock:
     msg = MagicMock()
     msg.text = "ETH long 2 weeks"
+    msg.chat_id = chat_id
+    msg.message_id = message_id
     msg.reply_text = AsyncMock()
     update = MagicMock()
     update.message = msg
@@ -171,6 +173,10 @@ def _context(*, client: MagicMock) -> MagicMock:
     ctx.user_data = {}
     ctx.bot = MagicMock()
     ctx.bot.send_message = AsyncMock(return_value=MagicMock())
+    # The freeform handler fires a "Thinking…" draft via ``bot._post``
+    # (Bot API 10.1) before the LLM call; the real ExtBot has ``_post``,
+    # so the mock must expose an awaitable one too.
+    ctx.bot._post = AsyncMock()
     ctx.bot_data = {BOT_DATA_KEY: client}
     return ctx
 
@@ -223,6 +229,48 @@ async def test_handle_text_skips_autofill_on_ambiguous_match() -> None:
     assert USER_KEY_ASSET_RESOLUTION not in ctx.user_data
     # But candidates were stored so the picker has something to show.
     assert ctx.user_data[USER_KEY_CANDIDATES] == ambiguous_candidates
+
+
+@pytest.mark.asyncio
+async def test_handle_text_shows_thinking_bubble_before_llm_call() -> None:
+    """Before the (several-second) LLM extraction, the handler fires a
+    native "Thinking…" draft (Bot API 10.1 ``sendMessageDraft`` with
+    empty text) targeting the caller's chat, keyed by the triggering
+    message id."""
+    client = MagicMock()
+    client.draft_claim = AsyncMock(
+        return_value=_draft_response(asset_query="ETH", candidates=_ETH_CANDIDATES)
+    )
+    update = _text_update(chat_id=555, message_id=1234)
+    ctx = _context(client=client)
+
+    await step_freeform._handle_text(update, ctx, "ETH long 2 weeks")
+
+    ctx.bot._post.assert_awaited_once_with(
+        "sendMessageDraft",
+        {"chat_id": 555, "draft_id": 1234, "text": ""},
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_text_survives_thinking_bubble_failure() -> None:
+    """The thinking bubble is cosmetic + best-effort: a Telegram-side
+    failure (older API server, etc.) must NOT abort the draft flow."""
+    from telegram.error import TelegramError
+
+    client = MagicMock()
+    client.draft_claim = AsyncMock(
+        return_value=_draft_response(asset_query="ETH", candidates=_ETH_CANDIDATES)
+    )
+    update = _text_update()
+    ctx = _context(client=client)
+    ctx.bot._post = AsyncMock(side_effect=TelegramError("drafts unsupported"))
+
+    await step_freeform._handle_text(update, ctx, "ETH long 2 weeks")
+
+    # Draft flow still completed despite the bubble failing.
+    client.draft_claim.assert_awaited_once()
+    assert USER_KEY_DRAFT in ctx.user_data
 
 
 @pytest.mark.asyncio

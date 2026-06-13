@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from telegram import Bot, InlineKeyboardMarkup
@@ -172,8 +172,13 @@ def tg_time(when: datetime, *, fmt: str = "r", label: str = "") -> str:
     ``fmt`` follows Telegram's date-time format grammar ``r|w?[dD]?[tT]?``:
     ``r`` relative, ``w`` weekday, ``d`` short date, ``D`` long date,
     ``t`` short time, ``T`` long time.
+
+    A naive ``when`` is assumed to be UTC — ``datetime.timestamp()`` would
+    otherwise interpret it in the host's local timezone and emit the
+    wrong epoch.
     """
-    unix = int(when.timestamp())
+    aware = when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+    unix = int(aware.timestamp())
     safe_label = escape_inline(label) if label else ""
     return f"![{safe_label}](tg://time?unix={unix}&format={fmt})"
 
@@ -232,6 +237,35 @@ async def edit_rich(
     data = _rich_payload(chat_id, markdown, reply_markup=reply_markup)
     data["message_id"] = message_id
     await bot._post("editMessageText", data)
+
+
+async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
+    """Show a transient native "Thinking…" bubble (Bot API 10.1).
+
+    Streams an empty ``sendMessageDraft`` — Telegram renders empty draft
+    text as an animated "Thinking…" placeholder while the bot works on a
+    slow step (e.g. the ``/alpha`` freeform LLM extraction). The draft is
+    ephemeral (~30s) and is superseded by the next real message the bot
+    sends to the chat, so callers just fire this before the slow step and
+    then send their actual reply as usual — no explicit dismissal needed.
+
+    Best-effort and non-fatal: message drafts are a brand-new Bot API
+    10.1 feature with no typed PTB support, render only on updated
+    clients, and are purely cosmetic — so any Telegram-side failure
+    (older bot-API server, non-private chat, etc.) is swallowed at debug
+    level. The caller's real reply is what matters.
+
+    ``draft_id`` must be non-zero (Telegram rejects 0); reusing the same
+    id animates an update to a live draft. Callers typically pass the
+    triggering message id.
+    """
+    try:
+        await bot._post(
+            "sendMessageDraft",
+            {"chat_id": chat_id, "draft_id": draft_id, "text": ""},
+        )
+    except TelegramError as exc:
+        _log.debug("sendMessageDraft (thinking bubble) failed: %s", exc)
 
 
 def _rich_payload(

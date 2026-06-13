@@ -762,6 +762,41 @@ async def test_on_page_callback_rich_too_large_falls_back_to_fresh_reply() -> No
     assert fresh_kb.inline_keyboard[0][0].callback_data == f"history:page:{_PIN_EPOCH}:60"
 
 
+async def test_on_page_callback_swallows_message_not_modified() -> None:
+    """A fast double-tap on "Show more" can race two clicks into
+    rendering the same window, so the second ``editMessageText`` is a
+    byte-identical no-op. The handler must clear the spinner WITHOUT
+    flashing an error toast (and without a fresh-message fallback)."""
+    client = AsyncMock()
+    client.get_my_history.return_value = {
+        "entries": [
+            _entry(asset_symbol="TON", resolved_at="2026-04-28T12:00:00Z"),
+            _entry(asset_symbol="BTC", resolved_at="2026-04-27T12:00:00Z"),
+        ],
+        "has_more": False,
+        "next_offset": None,
+        "as_of": _PIN_ISO,
+    }
+    query = _FakeQuery(data=f"history:page:{_PIN_EPOCH}:30", message=_FakeMessage())
+    update = _FakeUpdate(
+        effective_user=_FakeUser(id=USER_ID),
+        callback_query=query,
+        effective_chat=_FakeChat(id=CHAT_ID),
+    )
+    bot = _FakeBot(post_side_effects={"editMessageText": BadRequest("Message is not modified")})
+    ctx = _FakeContext(bot_data={BOT_DATA_KEY: client}, bot=bot)
+
+    await on_page_callback(update, ctx)  # type: ignore[arg-type]
+
+    # The edit was attempted (and raised not-modified); spinner cleared
+    # with a bare answer, no error alert, no fresh send, no keyboard strip.
+    assert [endpoint for endpoint, _ in bot.posts] == ["editMessageText"]
+    assert len(query.answers) == 1
+    assert query.answers[0] == (None, {})
+    assert query.markup_edits == []
+    assert bot.sent_messages == []
+
+
 async def test_on_page_callback_inaccessible_message_falls_back_to_fresh_reply() -> None:
     """If ``query.message`` is ``None`` (the original message was
     deleted), the handler can't edit. It ACKs and sends a fresh

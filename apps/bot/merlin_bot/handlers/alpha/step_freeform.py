@@ -22,6 +22,7 @@ from merlin_client.errors import MerlinHTTPError
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 
+from merlin_bot import rich
 from merlin_bot.api_dependency import BOT_DATA_KEY
 from merlin_bot.handlers.alpha.states import (
     USER_KEY_ASSET_RESOLUTION,
@@ -68,6 +69,15 @@ async def _handle_text(
         return ConversationHandler.END
 
     client: MerlinClient = context.bot_data[BOT_DATA_KEY]
+    # The LLM extraction (``POST /claims/draft``) takes a few seconds, so
+    # show a native "Thinking…" bubble while we wait. Best-effort and
+    # superseded by the preview card we send next — see
+    # ``rich.send_thinking_draft``.
+    await rich.send_thinking_draft(
+        context.bot,
+        update.message.chat_id,
+        draft_id=update.message.message_id,
+    )
     try:
         draft = await client.draft_claim(text=text)
     except MerlinHTTPError as e:

@@ -128,6 +128,16 @@ def test_tg_time_defaults_to_relative_format() -> None:
     assert "&format=r)" in rich.tg_time(when)
 
 
+def test_tg_time_normalizes_naive_datetime_as_utc() -> None:
+    """A naive datetime is assumed UTC — otherwise ``.timestamp()`` would
+    use the host's local timezone and emit the wrong epoch (the bubble
+    would point at the wrong instant on the user's device)."""
+    aware = datetime(2026, 6, 12, 16, 35, tzinfo=UTC)
+    naive = datetime(2026, 6, 12, 16, 35)
+    aware_unix = int(aware.timestamp())
+    assert rich.tg_time(naive) == f"![](tg://time?unix={aware_unix}&format=r)"
+
+
 def test_tg_time_escapes_label() -> None:
     """The fallback label sits inside the ``![...]`` span and is escaped
     so a metacharacter can't break the entity."""
@@ -218,6 +228,24 @@ async def test_edit_rich_posts_edit_message_text_with_ids() -> None:
         "message_id": 9,
         "rich_message": {"markdown": "# Edited"},
     }
+
+
+async def test_send_thinking_draft_posts_empty_message_draft() -> None:
+    """The 'Thinking…' bubble is an empty-text ``sendMessageDraft``."""
+    bot = _FakeBot()
+    await rich.send_thinking_draft(bot, chat_id=7, draft_id=42)  # type: ignore[arg-type]
+    assert bot.posts == [
+        ("sendMessageDraft", {"chat_id": 7, "draft_id": 42, "text": ""}),
+    ]
+
+
+async def test_send_thinking_draft_swallows_telegram_error() -> None:
+    """The bubble is cosmetic + best-effort — a Telegram-side failure
+    (older API server, non-private chat) must not propagate."""
+    bot = _FakeBot(post_side_effect=TelegramError("drafts unsupported"))
+    # Must not raise.
+    await rich.send_thinking_draft(bot, chat_id=1, draft_id=1)  # type: ignore[arg-type]
+    assert len(bot.posts) == 1
 
 
 async def test_edit_rich_propagates_telegram_error() -> None:
