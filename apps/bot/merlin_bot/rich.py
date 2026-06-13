@@ -239,15 +239,25 @@ async def edit_rich(
     await bot._post("editMessageText", data)
 
 
+#: Rich-message HTML for the animated "Thinking…" placeholder. The
+#: ``<tg-thinking>`` tag is Bot API 10.1's ``RichBlockThinking`` — the
+#: only block that renders the AI "Thinking…" indicator, and it's valid
+#: ONLY inside ``sendRichMessageDraft``. An *empty* plain draft instead
+#: renders as a literal "[]" on the client (empty blocks array), so the
+#: explicit thinking block is required.
+_THINKING_DRAFT_HTML: str = "<tg-thinking>Thinking…</tg-thinking>"
+
+
 async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
     """Show a transient native "Thinking…" bubble (Bot API 10.1).
 
-    Streams an empty ``sendMessageDraft`` — Telegram renders empty draft
-    text as an animated "Thinking…" placeholder while the bot works on a
-    slow step (e.g. the ``/alpha`` freeform LLM extraction). The draft is
-    ephemeral (~30s) and is superseded by the next real message the bot
-    sends to the chat, so callers just fire this before the slow step and
-    then send their actual reply as usual — no explicit dismissal needed.
+    Streams a ``sendRichMessageDraft`` carrying a single ``<tg-thinking>``
+    block (``RichBlockThinking``) — Telegram renders it as the animated
+    "Thinking…" placeholder while the bot works on a slow step (e.g. the
+    ``/alpha`` freeform LLM extraction). The draft is ephemeral (~30s)
+    and is superseded by the next real message the bot sends to the chat,
+    so callers just fire this before the slow step and then send their
+    actual reply as usual — no explicit dismissal needed.
 
     Best-effort and non-fatal: message drafts are a brand-new Bot API
     10.1 feature with no typed PTB support, render only on updated
@@ -261,11 +271,15 @@ async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
     """
     try:
         await bot._post(
-            "sendMessageDraft",
-            {"chat_id": chat_id, "draft_id": draft_id, "text": ""},
+            "sendRichMessageDraft",
+            {
+                "chat_id": chat_id,
+                "draft_id": draft_id,
+                "rich_message": {"html": _THINKING_DRAFT_HTML},
+            },
         )
     except TelegramError as exc:
-        _log.debug("sendMessageDraft (thinking bubble) failed: %s", exc)
+        _log.debug("sendRichMessageDraft (thinking bubble) failed: %s", exc)
 
 
 def _rich_payload(

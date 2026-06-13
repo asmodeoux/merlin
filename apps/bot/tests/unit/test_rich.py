@@ -230,12 +230,21 @@ async def test_edit_rich_posts_edit_message_text_with_ids() -> None:
     }
 
 
-async def test_send_thinking_draft_posts_empty_message_draft() -> None:
-    """The 'Thinking…' bubble is an empty-text ``sendMessageDraft``."""
+async def test_send_thinking_draft_posts_rich_thinking_block() -> None:
+    """The 'Thinking…' bubble is a ``sendRichMessageDraft`` carrying a
+    single ``<tg-thinking>`` block — an empty *plain* draft instead
+    renders as a literal "[]" on the client."""
     bot = _FakeBot()
     await rich.send_thinking_draft(bot, chat_id=7, draft_id=42)  # type: ignore[arg-type]
     assert bot.posts == [
-        ("sendMessageDraft", {"chat_id": 7, "draft_id": 42, "text": ""}),
+        (
+            "sendRichMessageDraft",
+            {
+                "chat_id": 7,
+                "draft_id": 42,
+                "rich_message": {"html": "<tg-thinking>Thinking…</tg-thinking>"},
+            },
+        ),
     ]
 
 
