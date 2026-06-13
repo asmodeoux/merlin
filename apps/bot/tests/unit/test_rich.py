@@ -238,7 +238,15 @@ async def test_send_thinking_draft_streams_thinking_text() -> None:
     bot = _FakeBot()
     await rich.send_thinking_draft(bot, chat_id=7, draft_id=42)  # type: ignore[arg-type]
     assert bot.posts == [
-        ("sendMessageDraft", {"chat_id": 7, "draft_id": 42, "text": "💭 Thinking"}),
+        (
+            "sendMessageDraft",
+            {
+                "chat_id": 7,
+                "draft_id": 42,
+                "text": '<tg-emoji emoji-id="5573473356579078196">💭</tg-emoji> Thinking',
+                "parse_mode": "HTML",
+            },
+        ),
     ]
 
 

@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from merlin_bot import rich
 from merlin_bot.api_dependency import BOT_DATA_KEY
 from merlin_bot.handlers.alpha import step_freeform
 from merlin_bot.handlers.alpha.states import (
@@ -248,7 +249,12 @@ async def test_handle_text_shows_thinking_bubble_before_llm_call() -> None:
 
     ctx.bot._post.assert_awaited_once_with(
         "sendMessageDraft",
-        {"chat_id": 555, "draft_id": 1234, "text": "💭 Thinking"},
+        {
+            "chat_id": 555,
+            "draft_id": 1234,
+            "text": rich._THINKING_DRAFT_HTML,
+            "parse_mode": "HTML",
+        },
     )
 
 

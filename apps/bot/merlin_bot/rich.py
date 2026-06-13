@@ -239,37 +239,36 @@ async def edit_rich(
     await bot._post("editMessageText", data)
 
 
-#: Text streamed into the "Thinking" draft bubble.
+#: Custom-emoji id of the animated "thinking" indicator from Telegram's
+#: AIActions pack (https://t.me/addemoji/AIActions) — the emoji Telegram
+#: recommends for the thinking placeholder. Looked up once via
+#: ``getStickerSet(name="AIActions")``; static because the pack is fixed.
+_THINKING_EMOJI_ID: str = "5573473356579078196"
+
+#: HTML streamed into the "Thinking" draft bubble: the animated custom
+#: emoji (💭 is the fallback glyph for clients/recipients that can't
+#: render custom emoji) followed by the label.
 #:
-#: We deliberately stream *non-empty* text via the plain
-#: ``sendMessageDraft``. Two dead ends ruled out by live testing:
-#: an *empty* draft renders as a literal "[]" on the client (not the
-#: documented placeholder), and the rich ``<tg-thinking>``
-#: (``RichBlockThinking``) block's ``text`` is a RichText that only
-#: renders custom emoji (from the AIActions pack) — plain inner text via
-#: the ``html`` field is dropped, leaving the block empty ("[]"). Since
-#: we have no custom-emoji id, an explicit plain-text draft is the
-#: reliable way to show a "Thinking" bubble.
-#:
-#: Leads with 💭 (thought balloon) — the standard-emoji stand-in for the
-#: animated AIActions custom emoji that Telegram recommends for the
-#: thinking block but which we can't use without its custom-emoji id.
-#: Telegram appends its own animated "…" on the client, so we don't.
-_THINKING_DRAFT_TEXT: str = "💭 Thinking"
+#: We stream *non-empty* text via the plain ``sendMessageDraft`` because,
+#: from live testing: an *empty* draft renders as a literal "[]" on the
+#: client (not the documented placeholder), and the rich ``<tg-thinking>``
+#: (``RichBlockThinking``) block drops plain inner text. Telegram appends
+#: its own animated "…" on the client, so we don't.
+_THINKING_DRAFT_HTML: str = f'<tg-emoji emoji-id="{_THINKING_EMOJI_ID}">💭</tg-emoji> Thinking'
 
 
 async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
     """Show a transient "Thinking" bubble (Bot API 10.1 message draft).
 
-    Streams a ``sendMessageDraft`` carrying the literal text "Thinking"
-    — Telegram renders it as a partial/streamed draft bubble while the
-    bot works on a slow step (e.g. the ``/alpha`` freeform LLM
-    extraction). The draft is ephemeral (~30s) and is superseded by the
-    next real message the bot sends to the chat, so callers just fire
-    this before the slow step and then send their actual reply as usual
-    — no explicit dismissal needed. (See ``_THINKING_DRAFT_TEXT`` for why
-    we stream plain text rather than an empty draft or a rich
-    ``<tg-thinking>`` block.)
+    Streams a ``sendMessageDraft`` whose HTML body is the recommended
+    animated AIActions custom emoji + "Thinking" label — Telegram renders
+    it as a partial/streamed draft bubble while the bot works on a slow
+    step (e.g. the ``/alpha`` freeform LLM extraction). The draft is
+    ephemeral (~30s) and is superseded by the next real message the bot
+    sends to the chat, so callers just fire this before the slow step and
+    then send their actual reply as usual — no explicit dismissal needed.
+    (See ``_THINKING_DRAFT_HTML`` for why we stream HTML text rather than
+    an empty draft or a rich ``<tg-thinking>`` block.)
 
     Best-effort and non-fatal: message drafts are a brand-new Bot API
     10.1 feature with no typed PTB support, render only on updated
@@ -284,7 +283,12 @@ async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
     try:
         await bot._post(
             "sendMessageDraft",
-            {"chat_id": chat_id, "draft_id": draft_id, "text": _THINKING_DRAFT_TEXT},
+            {
+                "chat_id": chat_id,
+                "draft_id": draft_id,
+                "text": _THINKING_DRAFT_HTML,
+                "parse_mode": "HTML",
+            },
         )
     except TelegramError as exc:
         _log.debug("sendMessageDraft (thinking bubble) failed: %s", exc)
