@@ -439,7 +439,10 @@ def _render_board_rich(
     body = rich.table(
         ["#", "Caller", "PnL", "Hit", "Calls"],
         rows,
-        ["left", "left", "right", "right", "right"],
+        # Center the rank column so medal emoji (🥇/🥈/🥉) and plain rank
+        # numbers (4, 5, …) sit consistently instead of the medals
+        # hugging the left edge.
+        ["center", "left", "right", "right", "right"],
     )
 
     header_suffix = _FILTER_HEADER_SUFFIX.get(active_filter, "")
