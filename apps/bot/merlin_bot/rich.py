@@ -250,7 +250,12 @@ async def edit_rich(
 #: the ``html`` field is dropped, leaving the block empty ("[]"). Since
 #: we have no custom-emoji id, an explicit plain-text draft is the
 #: reliable way to show a "Thinking" bubble.
-_THINKING_DRAFT_TEXT: str = "Thinking"
+#:
+#: Leads with 💭 (thought balloon) — the standard-emoji stand-in for the
+#: animated AIActions custom emoji that Telegram recommends for the
+#: thinking block but which we can't use without its custom-emoji id.
+#: Telegram appends its own animated "…" on the client, so we don't.
+_THINKING_DRAFT_TEXT: str = "💭 Thinking"
 
 
 async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:

@@ -248,7 +248,7 @@ async def test_handle_text_shows_thinking_bubble_before_llm_call() -> None:
 
     ctx.bot._post.assert_awaited_once_with(
         "sendMessageDraft",
-        {"chat_id": 555, "draft_id": 1234, "text": "Thinking"},
+        {"chat_id": 555, "draft_id": 1234, "text": "💭 Thinking"},
     )
 
 
