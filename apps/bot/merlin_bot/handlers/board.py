@@ -447,6 +447,10 @@ def _render_board_rich(
     if trailing is not None:
         blocks.extend([trailing, ""])
     blocks.append(_footer_ranking_rich(payload))
+    # Blank line before the CTA: Telegram soft-joins single-newline
+    # lines into one paragraph, which would run the italic footer and
+    # the CTA together on one line.
+    blocks.append("")
     blocks.append("/alpha to add a call, /me for your own.")
     return "\n".join(blocks)
 

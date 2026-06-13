@@ -444,14 +444,19 @@ def test_render_me_rich_open_calls_table_with_live_resolves() -> None:
     assert text.startswith("# Yuri — your calls")
     assert "**Open** 2 · **Resolved** 0" in text
     assert "## Open calls" in text
-    assert "| Asset | Direction | Horizon | Entry | Resolves |" in text
-    # ETH row: captured entry + live countdown entity (fallback label is
-    # the absolute UTC string the plain renderer shows).
-    assert "| ETH | long | 2 weeks | $2,438.12 | " in text
-    assert "![June 12 @ 16:35 UTC](tg://time?unix=" in text
-    assert "&format=r)" in text
-    # BTC row: no captured entry → em-dash, never a faked $0.00.
-    assert "| BTC | short | 1 week | — | " in text
+    # Asset + direction folded into one "Call" column; Resolves before Entry.
+    assert "| Call | Horizon | Resolves | Entry |" in text
+    # ETH row: "ETH long" call cell, live countdown, captured entry last.
+    eth_line = next(line for line in text.splitlines() if line.startswith("| ETH long |"))
+    assert eth_line.startswith("| ETH long | 2 weeks | ")
+    assert eth_line.endswith("| $2,438.12 |")
+    assert "![June 12 @ 16:35 UTC](tg://time?unix=" in eth_line
+    assert "&format=r)" in eth_line
+    # BTC row: no captured entry → em-dash last, never a faked $0.00.
+    btc_line = next(line for line in text.splitlines() if line.startswith("| BTC short |"))
+    assert btc_line.startswith("| BTC short | 1 week | ")
+    assert btc_line.endswith("| — |")
+    assert "tg://time?unix=" in btc_line
 
 
 def test_render_me_rich_resolved_state_stat_strip() -> None:

@@ -335,8 +335,8 @@ def _render_history_rich(
         "# Your resolved calls",
         "",
         rich.table_header(
-            ["", "Asset", "Call", "Horizon", "Return", "Resolved"],
-            ["left", "left", "left", "left", "right", "left"],
+            ["Call", "Horizon", "Return", "Resolved"],
+            ["left", "left", "right", "left"],
         ),
     ]
     lines.extend(rich.table_row(_rich_history_row(entry)) for entry in entries)
@@ -347,22 +347,23 @@ def _render_history_rich(
 def _rich_history_row(entry: dict[str, Any]) -> list[str]:
     """One resolved-call table row for the rich view.
 
-    ``[emoji, asset, direction, horizon, return, date]``. Field
-    formatting mirrors the plain :func:`_render_row` exactly; the asset,
-    direction, horizon, and date cells are escaped via
-    :func:`merlin_bot.rich.escape_cell` (the emoji and signed-percent
-    cells are renderer-controlled).
+    ``[call, horizon, return, date]``. ``call`` folds the asset symbol,
+    direction, and outcome emoji into one cell ("HYPE long 🎉") to save
+    horizontal space. Field formatting otherwise mirrors the plain
+    :func:`_render_row`; the asset, direction, horizon, and date cells
+    are escaped via :func:`merlin_bot.rich.escape_cell` (the emoji and
+    signed-percent cells are renderer-controlled).
     """
     emoji = _pick_emoji(
         is_correct=bool(entry.get("is_correct")),
         is_flat=bool(entry.get("is_flat")),
     )
     asset = rich.escape_cell(str(entry.get("asset_symbol") or "?").upper())
-    direction = rich.escape_cell(_direction_phrase(str(entry.get("direction") or "")))
+    direction = rich.escape_cell(str(entry.get("direction") or "?").lower())
     horizon = rich.escape_cell(_horizon_human(entry.get("horizon_seconds")))
     pct = _format_pct(entry.get("observed_return_pct"))
     date = rich.escape_cell(_format_short_date(entry.get("resolved_at")))
-    return [emoji, asset, direction, horizon, pct, date]
+    return [f"{asset} {direction} {emoji}", horizon, pct, date]
 
 
 def _page_keyboard(

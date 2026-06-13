@@ -156,6 +156,10 @@ def _render_me_rich(payload: dict[str, Any]) -> str:
         f"# {rich.escape_inline(display_name)} — your calls",
         "",
         f"**Open** {len(open_calls)} · **Resolved** {resolved_total}",
+        # Blank line between the count line and the headline stats:
+        # Telegram soft-joins single-newline lines into one paragraph,
+        # so without it "Resolved 8" and "PnL …" run together.
+        "",
         _headline_stats_rich(
             weighted_pnl_pct=payload.get("weighted_pnl_pct"),
             accuracy_pct=payload.get("accuracy_pct"),
@@ -165,10 +169,13 @@ def _render_me_rich(payload: dict[str, Any]) -> str:
     ]
 
     if open_calls:
+        # ``Call`` folds asset + direction ("GOLD long") into one column
+        # to save horizontal space; ``Resolves`` sits before ``Entry``
+        # since the deadline matters more at a glance than the entry price.
         table = rich.table(
-            ["Asset", "Direction", "Horizon", "Entry", "Resolves"],
+            ["Call", "Horizon", "Resolves", "Entry"],
             [_rich_open_call(call) for call in open_calls],
-            ["left", "left", "left", "right", "left"],
+            ["left", "left", "left", "right"],
         )
         blocks.extend(["## Open calls", "", table, ""])
     else:
@@ -177,6 +184,7 @@ def _render_me_rich(payload: dict[str, Any]) -> str:
     blocks.extend(
         [
             "/alpha to add another, /board for the leaderboard.",
+            "",
             "Tap /tickers for your per-ticker breakdown, /history for past calls.",
         ],
     )
@@ -209,21 +217,21 @@ def _headline_stats_rich(
 
 
 def _rich_open_call(call: dict[str, Any]) -> list[str]:
-    """One open-call table row ``[asset, dir, horizon, entry, resolves]``.
+    """One open-call table row ``[call, horizon, resolves, entry]``.
 
-    Mirrors :func:`_render_open_call` field-for-field. The entry column
-    reuses the adaptive-decimal USD format; the resolves column is a
-    live ``tg://time`` countdown.
+    Mirrors :func:`_render_open_call` field-for-field. ``call`` folds the
+    asset symbol + direction into one cell ("GOLD long"); the resolves
+    column is a live ``tg://time`` countdown shown before the entry
+    column; the entry column reuses the adaptive-decimal USD format.
     """
     asset = rich.escape_cell(str(call.get("asset_symbol") or "?").upper())
     direction = rich.escape_cell(_direction_human(str(call.get("direction") or "")))
     horizon = rich.escape_cell(_horizon_human(call.get("horizon_seconds")))
     return [
-        asset,
-        direction,
+        f"{asset} {direction}",
         horizon,
-        _entry_cell(call.get("entry_price_usd")),
         _resolves_cell(str(call.get("resolves_at") or "")),
+        _entry_cell(call.get("entry_price_usd")),
     ]
 
 

@@ -397,8 +397,9 @@ def test_render_history_rich_builds_table_with_emoji_and_button() -> None:
     }
     text, keyboard = _render_history_rich(payload)
     assert text.startswith("# Your resolved calls")
-    assert "|  | Asset | Call | Horizon | Return | Resolved |" in text
-    assert "| 🙂‍↔️ | TON | Short | 24 hours | -7.6% | Apr 28 |" in text
+    assert "| Call | Horizon | Return | Resolved |" in text
+    # Emoji + asset + direction folded into one "Call" cell ("TON short 🙂‍↔️").
+    assert "| TON short 🙂‍↔️ | 24 hours | -7.6% | Apr 28 |" in text
     assert "/tickers for your per-ticker view" in text
     assert isinstance(keyboard, InlineKeyboardMarkup)
     assert keyboard.inline_keyboard[0][0].callback_data == f"history:page:{_PIN_EPOCH}:30"
