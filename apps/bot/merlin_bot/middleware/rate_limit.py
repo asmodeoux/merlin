@@ -208,5 +208,14 @@ async def alpha_cooldown(
 
 
 def build_handler() -> TypeHandler[Update, ContextTypes.DEFAULT_TYPE, None]:
-    """Return the ``TypeHandler`` ready to register at ``group=-1``."""
-    return TypeHandler(Update, alpha_cooldown)
+    """Return the ``TypeHandler`` ready to register at ``group=-1``.
+
+    ``block=True`` is load-bearing: the app's global ``Defaults`` sets
+    ``block=False``, which would run this handler concurrently as a task
+    — so PTB would dispatch the group-0 ``/alpha`` ConversationHandler
+    *before* this handler's ``raise ApplicationHandlerStop`` resolved,
+    and the throttled call would still draft (the user sees the cooldown
+    warning AND a fresh draft). Forcing this one handler to block makes
+    PTB await it and honour the stop, gating the conversation as intended.
+    """
+    return TypeHandler(Update, alpha_cooldown, block=True)

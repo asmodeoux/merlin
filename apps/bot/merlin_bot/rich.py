@@ -239,25 +239,32 @@ async def edit_rich(
     await bot._post("editMessageText", data)
 
 
-#: Rich-message HTML for the animated "Thinking…" placeholder. The
-#: ``<tg-thinking>`` tag is Bot API 10.1's ``RichBlockThinking`` — the
-#: only block that renders the AI "Thinking…" indicator, and it's valid
-#: ONLY inside ``sendRichMessageDraft``. An *empty* plain draft instead
-#: renders as a literal "[]" on the client (empty blocks array), so the
-#: explicit thinking block is required.
-_THINKING_DRAFT_HTML: str = "<tg-thinking>Thinking…</tg-thinking>"
+#: Text streamed into the "Thinking…" draft bubble.
+#:
+#: We deliberately stream *non-empty* text via the plain
+#: ``sendMessageDraft``. Two dead ends ruled out by live testing:
+#: an *empty* draft renders as a literal "[]" on the client (not the
+#: documented placeholder), and the rich ``<tg-thinking>``
+#: (``RichBlockThinking``) block's ``text`` is a RichText that only
+#: renders custom emoji (from the AIActions pack) — plain inner text via
+#: the ``html`` field is dropped, leaving the block empty ("[]"). Since
+#: we have no custom-emoji id, an explicit plain-text draft is the
+#: reliable way to show a "Thinking…" bubble.
+_THINKING_DRAFT_TEXT: str = "Thinking…"
 
 
 async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
-    """Show a transient native "Thinking…" bubble (Bot API 10.1).
+    """Show a transient "Thinking…" bubble (Bot API 10.1 message draft).
 
-    Streams a ``sendRichMessageDraft`` carrying a single ``<tg-thinking>``
-    block (``RichBlockThinking``) — Telegram renders it as the animated
-    "Thinking…" placeholder while the bot works on a slow step (e.g. the
-    ``/alpha`` freeform LLM extraction). The draft is ephemeral (~30s)
-    and is superseded by the next real message the bot sends to the chat,
-    so callers just fire this before the slow step and then send their
-    actual reply as usual — no explicit dismissal needed.
+    Streams a ``sendMessageDraft`` carrying the literal text "Thinking…"
+    — Telegram renders it as a partial/streamed draft bubble while the
+    bot works on a slow step (e.g. the ``/alpha`` freeform LLM
+    extraction). The draft is ephemeral (~30s) and is superseded by the
+    next real message the bot sends to the chat, so callers just fire
+    this before the slow step and then send their actual reply as usual
+    — no explicit dismissal needed. (See ``_THINKING_DRAFT_TEXT`` for why
+    we stream plain text rather than an empty draft or a rich
+    ``<tg-thinking>`` block.)
 
     Best-effort and non-fatal: message drafts are a brand-new Bot API
     10.1 feature with no typed PTB support, render only on updated
@@ -271,15 +278,11 @@ async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
     """
     try:
         await bot._post(
-            "sendRichMessageDraft",
-            {
-                "chat_id": chat_id,
-                "draft_id": draft_id,
-                "rich_message": {"html": _THINKING_DRAFT_HTML},
-            },
+            "sendMessageDraft",
+            {"chat_id": chat_id, "draft_id": draft_id, "text": _THINKING_DRAFT_TEXT},
         )
     except TelegramError as exc:
-        _log.debug("sendRichMessageDraft (thinking bubble) failed: %s", exc)
+        _log.debug("sendMessageDraft (thinking bubble) failed: %s", exc)
 
 
 def _rich_payload(

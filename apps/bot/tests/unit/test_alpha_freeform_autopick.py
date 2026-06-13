@@ -233,10 +233,10 @@ async def test_handle_text_skips_autofill_on_ambiguous_match() -> None:
 
 @pytest.mark.asyncio
 async def test_handle_text_shows_thinking_bubble_before_llm_call() -> None:
-    """Before the (several-second) LLM extraction, the handler fires a
-    native "Thinking…" draft (Bot API 10.1 ``sendRichMessageDraft`` with
-    a ``<tg-thinking>`` block) targeting the caller's chat, keyed by the
-    triggering message id."""
+    """Before the (several-second) LLM extraction, the handler streams a
+    "Thinking…" draft (Bot API 10.1 ``sendMessageDraft`` with non-empty
+    text) targeting the caller's chat, keyed by the triggering message
+    id."""
     client = MagicMock()
     client.draft_claim = AsyncMock(
         return_value=_draft_response(asset_query="ETH", candidates=_ETH_CANDIDATES)
@@ -247,12 +247,8 @@ async def test_handle_text_shows_thinking_bubble_before_llm_call() -> None:
     await step_freeform._handle_text(update, ctx, "ETH long 2 weeks")
 
     ctx.bot._post.assert_awaited_once_with(
-        "sendRichMessageDraft",
-        {
-            "chat_id": 555,
-            "draft_id": 1234,
-            "rich_message": {"html": "<tg-thinking>Thinking…</tg-thinking>"},
-        },
+        "sendMessageDraft",
+        {"chat_id": 555, "draft_id": 1234, "text": "Thinking…"},
     )
 
 

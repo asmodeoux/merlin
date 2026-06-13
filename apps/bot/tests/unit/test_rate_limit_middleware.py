@@ -330,3 +330,13 @@ def test_build_handler_returns_type_handler() -> None:
     handler = build_handler()
     assert isinstance(handler, TypeHandler)
     assert handler.callback is alpha_cooldown
+
+
+def test_build_handler_is_blocking() -> None:
+    """The limiter MUST block. The app's global ``Defaults(block=False)``
+    would otherwise run it concurrently with the group-0 handlers, so
+    its ``raise ApplicationHandlerStop`` would lose the race and a
+    throttled ``/alpha`` would still draft. ``block=True`` forces PTB to
+    await it and honour the stop before dispatching the conversation."""
+    handler = build_handler()
+    assert handler.block is True
