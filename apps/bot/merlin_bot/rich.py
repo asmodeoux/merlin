@@ -239,7 +239,7 @@ async def edit_rich(
     await bot._post("editMessageText", data)
 
 
-#: Text streamed into the "Thinking…" draft bubble.
+#: Text streamed into the "Thinking" draft bubble.
 #:
 #: We deliberately stream *non-empty* text via the plain
 #: ``sendMessageDraft``. Two dead ends ruled out by live testing:
@@ -249,14 +249,14 @@ async def edit_rich(
 #: renders custom emoji (from the AIActions pack) — plain inner text via
 #: the ``html`` field is dropped, leaving the block empty ("[]"). Since
 #: we have no custom-emoji id, an explicit plain-text draft is the
-#: reliable way to show a "Thinking…" bubble.
-_THINKING_DRAFT_TEXT: str = "Thinking…"
+#: reliable way to show a "Thinking" bubble.
+_THINKING_DRAFT_TEXT: str = "Thinking"
 
 
 async def send_thinking_draft(bot: Bot, chat_id: int, *, draft_id: int) -> None:
-    """Show a transient "Thinking…" bubble (Bot API 10.1 message draft).
+    """Show a transient "Thinking" bubble (Bot API 10.1 message draft).
 
-    Streams a ``sendMessageDraft`` carrying the literal text "Thinking…"
+    Streams a ``sendMessageDraft`` carrying the literal text "Thinking"
     — Telegram renders it as a partial/streamed draft bubble while the
     bot works on a slow step (e.g. the ``/alpha`` freeform LLM
     extraction). The draft is ephemeral (~30s) and is superseded by the

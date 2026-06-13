@@ -231,14 +231,14 @@ async def test_edit_rich_posts_edit_message_text_with_ids() -> None:
 
 
 async def test_send_thinking_draft_streams_thinking_text() -> None:
-    """The 'Thinking…' bubble streams non-empty text via a plain
+    """The 'Thinking' bubble streams non-empty text via a plain
     ``sendMessageDraft`` — an empty draft renders as a literal "[]" on
     the client, and the rich ``<tg-thinking>`` block needs a custom
     emoji to show text."""
     bot = _FakeBot()
     await rich.send_thinking_draft(bot, chat_id=7, draft_id=42)  # type: ignore[arg-type]
     assert bot.posts == [
-        ("sendMessageDraft", {"chat_id": 7, "draft_id": 42, "text": "Thinking…"}),
+        ("sendMessageDraft", {"chat_id": 7, "draft_id": 42, "text": "Thinking"}),
     ]
 
 

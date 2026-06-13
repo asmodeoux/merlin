@@ -173,7 +173,7 @@ def _context(*, client: MagicMock) -> MagicMock:
     ctx.user_data = {}
     ctx.bot = MagicMock()
     ctx.bot.send_message = AsyncMock(return_value=MagicMock())
-    # The freeform handler fires a "Thinking…" draft via ``bot._post``
+    # The freeform handler fires a "Thinking" draft via ``bot._post``
     # (Bot API 10.1) before the LLM call; the real ExtBot has ``_post``,
     # so the mock must expose an awaitable one too.
     ctx.bot._post = AsyncMock()
@@ -234,7 +234,7 @@ async def test_handle_text_skips_autofill_on_ambiguous_match() -> None:
 @pytest.mark.asyncio
 async def test_handle_text_shows_thinking_bubble_before_llm_call() -> None:
     """Before the (several-second) LLM extraction, the handler streams a
-    "Thinking…" draft (Bot API 10.1 ``sendMessageDraft`` with non-empty
+    "Thinking" draft (Bot API 10.1 ``sendMessageDraft`` with non-empty
     text) targeting the caller's chat, keyed by the triggering message
     id."""
     client = MagicMock()
@@ -248,7 +248,7 @@ async def test_handle_text_shows_thinking_bubble_before_llm_call() -> None:
 
     ctx.bot._post.assert_awaited_once_with(
         "sendMessageDraft",
-        {"chat_id": 555, "draft_id": 1234, "text": "Thinking…"},
+        {"chat_id": 555, "draft_id": 1234, "text": "Thinking"},
     )
 
 

@@ -70,7 +70,7 @@ async def _handle_text(
 
     client: MerlinClient = context.bot_data[BOT_DATA_KEY]
     # The LLM extraction (``POST /claims/draft``) takes a few seconds, so
-    # show a native "Thinking…" bubble while we wait. Best-effort and
+    # show a native "Thinking" bubble while we wait. Best-effort and
     # superseded by the preview card we send next — see
     # ``rich.send_thinking_draft``.
     await rich.send_thinking_draft(
