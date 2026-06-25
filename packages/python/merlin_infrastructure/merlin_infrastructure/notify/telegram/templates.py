@@ -35,6 +35,7 @@ __all__ = [
     "board_fell_out_top10",
     "board_lost_throne",
     "board_took_throne",
+    "first_call_nudge",
     "invitee_joined",
     "outcome_flat",
     "outcome_lost",
@@ -173,6 +174,32 @@ def resolution_failed_final(*, asset_symbol: str) -> str:
     return (
         f"We're still trying to settle your {asset_symbol} call — "
         f"market data is taking longer than usual. We'll keep at it."
+    )
+
+
+def first_call_nudge() -> str:
+    """Activation DM for an onboarded, named user who hasn't bet yet (Q-031).
+
+    Sent by the worker's first-call nudge cron to testers who signed up
+    and picked a name but have zero calls. Plain text — the notifier
+    sends with no ``parse_mode``, so ``/board`` auto-links and needs no
+    MarkdownV2 escaping (same as the board-change templates below).
+
+    The example bet doubles as the instruction: any plain-text reply
+    from an idle user is piped straight through the bot's freeform
+    extractor to the preview (the ``/alpha`` ConversationHandler's
+    text entry point), so "just reply with your bet" works verbatim.
+    "call" / "bet" are the public nouns; no internal model terms, no
+    version markers, no label-colons (MVP §15 invariant 16).
+    """
+    return (
+        "📈 You're in — time to make your first call! "
+        "Just reply with your bet in plain English, for example:"
+        "\n\n"
+        '"BTC long 5 days, recovery after the geopolitical news"'
+        "\n\n"
+        "I'll lock it in and track how it plays out. "
+        "Curious how everyone else is doing? Check /board."
     )
 
 

@@ -17,6 +17,7 @@ from merlin_infrastructure.notify.telegram.templates import (
     board_fell_out_top10,
     board_lost_throne,
     board_took_throne,
+    first_call_nudge,
     invitee_joined,
     outcome_flat,
     outcome_lost,
@@ -105,6 +106,18 @@ def test_rejected_asset_mutation_template_is_user_friendly() -> None:
 def test_resolution_failed_final_template() -> None:
     text = resolution_failed_final(asset_symbol="ETH")
     assert "ETH" in text
+    _assert_bot_voice(text)
+
+
+def test_first_call_nudge_template() -> None:
+    """Q-031 activation DM: an example bet, a /board hook, bot-voice clean."""
+    text = first_call_nudge()
+    # The example doubles as the instruction the freeform handler accepts.
+    assert "BTC long 5 days" in text
+    assert "first call" in text.lower()
+    # /board hook so the reader can see how others are doing (auto-links;
+    # plain-text send, no escaping).
+    assert "/board" in text
     _assert_bot_voice(text)
 
 

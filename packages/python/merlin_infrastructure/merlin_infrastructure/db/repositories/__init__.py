@@ -12,6 +12,10 @@ See MVP §15 invariants 7/8/10/12 and
 """
 
 from merlin_infrastructure.db.repositories.claim_repository import ClaimRepository
+from merlin_infrastructure.db.repositories.engagement_repository import (
+    FIRST_CALL_NUDGE_KIND,
+    EngagementRepository,
+)
 from merlin_infrastructure.db.repositories.invite_repository import InviteRepository
 from merlin_infrastructure.db.repositories.outcome_repository import OutcomeRepository
 from merlin_infrastructure.db.repositories.source_identity_repository import (
@@ -23,7 +27,9 @@ from merlin_infrastructure.db.repositories.source_reputation_repository import (
 )
 
 __all__ = [
+    "FIRST_CALL_NUDGE_KIND",
     "ClaimRepository",
+    "EngagementRepository",
     "InviteRepository",
     "OutcomeRepository",
     "SourceIdentityRepository",

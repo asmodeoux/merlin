@@ -43,25 +43,40 @@ _MIN_SLEEP_SECONDS = 1.0
 
 
 def build_cron_scheduler(*, connection: Redis, settings: Settings) -> CronScheduler:
-    """Build a ``CronScheduler`` with the resolution sweep registered.
+    """Build a ``CronScheduler`` with each enabled recurring job registered.
 
-    The sweep job runs on the ``default`` queue (the worker already
-    drains it); the sweep itself re-enqueues ``resolve_outcome`` onto
-    the ``resolution`` queue. ``job_timeout`` mirrors the worker's
-    default so a slow DB scan doesn't trip RQ's timeout.
+    Two jobs, each gated by its own ``*_enabled`` flag so they can be
+    toggled independently:
+
+    * ``sweep_unresolved_claims`` (Q-030) — the resolution backstop.
+    * ``send_first_call_nudges`` (Q-031) — the activation nudge.
+
+    Both run on the ``default`` queue (the worker already drains it) and
+    do their real fan-out (re-enqueue / DM) from there. ``job_timeout``
+    mirrors the worker's default so a slow scan doesn't trip RQ. The
+    returned scheduler may have zero jobs if both flags are off — the
+    caller checks ``get_jobs()`` before starting the loop.
     """
     # Lazy import: keeps the heavy ``jobs`` import graph (SQLAlchemy etc.)
     # off the module-import path and mirrors the worker's lazy-import
     # discipline.
-    from merlin_worker.jobs import sweep_unresolved_claims
+    from merlin_worker.jobs import send_first_call_nudges, sweep_unresolved_claims
 
-    scheduler = CronScheduler(connection=connection, name="merlin-resolution-sweep")
-    scheduler.register(
-        sweep_unresolved_claims,
-        queue_name=DEFAULT_QUEUE_NAME,
-        interval=settings.resolution_sweep_interval_s,
-        job_timeout=settings.rq_default_timeout_s,
-    )
+    scheduler = CronScheduler(connection=connection, name="merlin-cron")
+    if settings.resolution_sweep_enabled:
+        scheduler.register(
+            sweep_unresolved_claims,
+            queue_name=DEFAULT_QUEUE_NAME,
+            interval=settings.resolution_sweep_interval_s,
+            job_timeout=settings.rq_default_timeout_s,
+        )
+    if settings.first_call_nudge_enabled:
+        scheduler.register(
+            send_first_call_nudges,
+            queue_name=DEFAULT_QUEUE_NAME,
+            interval=settings.first_call_nudge_interval_s,
+            job_timeout=settings.rq_default_timeout_s,
+        )
     return scheduler
 
 

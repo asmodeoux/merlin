@@ -14,9 +14,11 @@ def test_jobs_module_exports_all_jobs() -> None:
     assert hasattr(jobs, "resolve_outcome")
     assert hasattr(jobs, "recompute_source_reputation")
     assert hasattr(jobs, "sweep_unresolved_claims")
+    assert hasattr(jobs, "send_first_call_nudges")
     assert callable(jobs.resolve_outcome)
     assert callable(jobs.recompute_source_reputation)
     assert callable(jobs.sweep_unresolved_claims)
+    assert callable(jobs.send_first_call_nudges)
 
 
 def test_schedules_exposes_the_resolution_sweep_cron() -> None:
@@ -86,3 +88,18 @@ def test_config_resolution_sweep_defaults() -> None:
     # Grace matches MVP §12.1's "more than 6 h in the past".
     assert s.resolution_sweep_grace_s == 21_600
     assert s.resolution_sweep_max_batch == 500
+
+
+def test_config_first_call_nudge_defaults() -> None:
+    """Q-031 nudge knobs encode the three rules: weekly, max 2, named-only."""
+    from merlin_worker.config import Settings
+
+    s = Settings()
+    assert s.first_call_nudge_enabled is True
+    assert s.first_call_nudge_interval_s == 86_400
+    # Rule 2: at most once a week per user.
+    assert s.first_call_nudge_cooldown_s == 604_800
+    # Rule 3: at most twice ever per user.
+    assert s.first_call_nudge_max_sends == 2
+    # Settle-in guard: don't nudge accounts younger than a day.
+    assert s.first_call_nudge_min_account_age_s == 86_400

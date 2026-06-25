@@ -674,3 +674,55 @@ class OverrideLog(Base):
     )
 
     __table_args__ = (Index("ix_override_log_actor_recorded", "actor_source_id", "recorded_at"),)
+
+
+# ---------------------------------------------------------------------------
+# engagement_nudges — outbound activation DMs we've sent (Q-031).
+# ---------------------------------------------------------------------------
+
+
+class EngagementNudge(Base):
+    """One row per engagement nudge DM sent to a source (Q-031).
+
+    Backs the first-call nudge cron's per-user limits without trusting
+    Redis (the same durability lesson as the Q-030 resolution sweep):
+
+    * ``COUNT(*)`` per ``(source_id, nudge_kind)`` enforces the lifetime
+      cap (max 2 first-call nudges per user).
+    * ``MAX(sent_at)`` enforces the cooldown (at most one nudge per week
+      per user).
+
+    Operational table — NOT one of the MVP §15 append-only invariant
+    tables, so it ships without the UPDATE/DELETE-rejecting trigger.
+    The repository still treats it append-only (insert + read only),
+    which is enough for an audit trail of who we've pinged.
+
+    Stores the opaque ``source_id`` only — never a raw Telegram id
+    (MVP §15 invariant 9). The cron maps ``source_id`` -> ``tg_user_id``
+    through ``source_identity`` at send time and logs only the hash.
+    """
+
+    __tablename__ = "engagement_nudges"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sources.source_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Discriminates nudge campaigns so a future "you have an unresolved
+    # bet" or "you've gone quiet" nudge tracks its own cap/cooldown
+    # independently. v0 only writes ``'first_call'``.
+    nudge_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (Index("ix_engagement_nudges_source_kind", "source_id", "nudge_kind"),)

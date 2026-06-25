@@ -22,6 +22,11 @@ RQ-based background worker. Runs:
   Defends against RQ scheduled jobs lost from Redis (Upstash eviction /
   worker OOM / Redis restart) — the failure mode that silently dropped
   bets before Q-030. Idempotent on top of the resolver's own guard.
+- **First-call engagement nudge (Q-031)** — second `CronScheduler` job.
+  DMs onboarded testers (named, `kind='user'`) with zero calls,
+  prompting their first bet. Per-user limits — once a week, twice ever
+  (`FIRST_CALL_NUDGE_*`) — are tracked in the durable `engagement_nudges`
+  table, not Redis. Record-then-send, so a crash never double-DMs.
 - **Retry policy** — RQ's built-in `Retry(max=3, interval=[60,300,900])`
   on every resolution enqueue. Failed jobs land in RQ's failed-job
   registry; operator rerun via `make admin-rerun CLAIM_ID=…` (one bet)

@@ -15,20 +15,62 @@ import pytest
 from merlin_worker.config import Settings
 from merlin_worker.schedules import cron as cron_mod
 
+_SWEEP_FN = "merlin_worker.jobs.sweep_unresolved.sweep_unresolved_claims"
+_NUDGE_FN = "merlin_worker.jobs.first_call_nudge.send_first_call_nudges"
 
-def test_build_cron_scheduler_registers_the_sweep_on_default_queue() -> None:
-    settings = Settings(environment="test", sentry_dsn="", resolution_sweep_interval_s=123)
+
+def test_build_cron_scheduler_registers_both_jobs_when_enabled() -> None:
+    settings = Settings(
+        environment="test",
+        sentry_dsn="",
+        resolution_sweep_interval_s=123,
+        first_call_nudge_interval_s=456,
+    )
     scheduler = cron_mod.build_cron_scheduler(connection=MagicMock(), settings=settings)
 
-    jobs = scheduler.get_jobs()
-    assert len(jobs) == 1
-    job = jobs[0]
-    # RQ enqueues by import path; the func must resolve to the sweep job.
-    assert job.func_name == "merlin_worker.jobs.sweep_unresolved.sweep_unresolved_claims"
-    # Sweep runs on the queue the worker already drains; it re-enqueues
-    # resolve_outcome onto the resolution queue itself.
-    assert job.queue_name == "default"
-    assert job.interval == 123
+    jobs = {job.func_name: job for job in scheduler.get_jobs()}
+    assert set(jobs) == {_SWEEP_FN, _NUDGE_FN}
+    # Both run on the queue the worker already drains; each carries its
+    # own configured interval.
+    assert jobs[_SWEEP_FN].queue_name == "default"
+    assert jobs[_SWEEP_FN].interval == 123
+    assert jobs[_NUDGE_FN].queue_name == "default"
+    assert jobs[_NUDGE_FN].interval == 456
+
+
+def test_build_cron_scheduler_registers_only_enabled_jobs() -> None:
+    sweep_only = cron_mod.build_cron_scheduler(
+        connection=MagicMock(),
+        settings=Settings(
+            environment="test",
+            sentry_dsn="",
+            first_call_nudge_enabled=False,
+        ),
+    )
+    assert [j.func_name for j in sweep_only.get_jobs()] == [_SWEEP_FN]
+
+    nudge_only = cron_mod.build_cron_scheduler(
+        connection=MagicMock(),
+        settings=Settings(
+            environment="test",
+            sentry_dsn="",
+            resolution_sweep_enabled=False,
+        ),
+    )
+    assert [j.func_name for j in nudge_only.get_jobs()] == [_NUDGE_FN]
+
+
+def test_build_cron_scheduler_registers_nothing_when_all_disabled() -> None:
+    scheduler = cron_mod.build_cron_scheduler(
+        connection=MagicMock(),
+        settings=Settings(
+            environment="test",
+            sentry_dsn="",
+            resolution_sweep_enabled=False,
+            first_call_nudge_enabled=False,
+        ),
+    )
+    assert scheduler.get_jobs() == []
 
 
 def test_run_cron_forever_enqueues_then_sleeps_at_floor(

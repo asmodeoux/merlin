@@ -110,6 +110,49 @@ class Settings(BaseSettings):
     )
 
     # -------------------------------------------------------------------
+    # First-call engagement nudge cron (Q-031).
+    #
+    # DMs onboarded testers who have a name but zero calls, prompting
+    # their first bet. Per-user limits live in Postgres
+    # (``engagement_nudges``), not Redis. See
+    # ``jobs/first_call_nudge.py`` + ``schedules/cron.py``.
+    # -------------------------------------------------------------------
+    first_call_nudge_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the worker runs the first-call nudge cron. Set "
+            "false to silence activation DMs (e.g. on a dev box)."
+        ),
+    )
+    first_call_nudge_interval_s: int = Field(
+        default=86_400,
+        gt=0,
+        description="Seconds between nudge sweeps (default daily).",
+    )
+    first_call_nudge_cooldown_s: int = Field(
+        default=604_800,
+        gt=0,
+        description=(
+            "Minimum seconds between nudges to the same user (default "
+            "7 days) — the 'no more than once a week' rule."
+        ),
+    )
+    first_call_nudge_max_sends: int = Field(
+        default=2,
+        gt=0,
+        description="Lifetime cap on first-call nudges per user.",
+    )
+    first_call_nudge_min_account_age_s: int = Field(
+        default=86_400,
+        ge=0,
+        description=(
+            "Don't nudge an account younger than this (default 1 day) "
+            "— a settle-in guard so we never ping someone mid-first-"
+            "call seconds after they set their name. Set 0 to disable."
+        ),
+    )
+
+    # -------------------------------------------------------------------
     # External APIs (market data)
     #
     # CoinGecko is the single market-data source per Q-026.
