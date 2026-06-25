@@ -149,24 +149,89 @@ fly machine list    -a merlin-worker
 fly machine restart <id> -a merlin-worker
 ```
 
-## 4. Resolution-failed sweep
+## 4. Unresolved / stranded bets (Q-030 resolution sweep)
 
-Reference: MVP §12.1 (retry policy).
+Reference: MVP §12.1.
 
-When to use: outcomes marked `resolution_failed` after the automatic
-retry window.
+When to use: a user reports a bet that expired but never resolved (no
+outcome notification), or you suspect RQ scheduled jobs were lost
+(Upstash eviction, a worker OOM-SIGKILL, or a Redis restart).
 
-**TODO Sprint 4:**
+The durable source of truth is Postgres, not Redis: a bet "never
+fired" iff its `claims` row is past `resolves_at` and has **no** row in
+the append-only `outcomes` table.
 
-- Query the outstanding set:
-  `SELECT * FROM events WHERE status = 'resolution_failed' AND t_resolve < now() - interval '24 hours';`
-- Manual re-enqueue (post-RQ-Retry exhaustion):
-  `make admin-rerun CLAIM_ID=<id>` — single one-shot enqueue, no sweeper.
-- Document the criteria for permanent failure (admin override required).
-- Note: there is no periodic "resolution-failed sweep" worker (Q-029
-  PROPOSED). RQ's built-in `Retry(max=3, interval=[60,300,900])` handles
-  the automatic retries; this section is for the human-driven rerun path
-  after those exhaust.
+**1. Quantify the damage** (connect to prod Postgres — cluster id
+pinned in §1):
+
+```bash
+fly mpg connect zp2wjre68v90dn4q
+```
+
+```sql
+-- How many bets silently never resolved
+SELECT count(*) AS bets_that_never_fired
+FROM claims c
+LEFT JOIN outcomes o ON o.claim_id = c.id
+WHERE c.resolves_at < now() AND o.id IS NULL;
+
+-- The list, worst-overdue first (the reported bet will be in here)
+SELECT c.id AS claim_id, c.asset_symbol, c.direction,
+       c.resolves_at, now() - c.resolves_at AS overdue_by,
+       c.horizon_seconds
+FROM claims c
+LEFT JOIN outcomes o ON o.claim_id = c.id
+WHERE c.resolves_at < now() AND o.id IS NULL
+ORDER BY c.resolves_at;
+```
+
+**2. Recover.** The automatic backstop (the Q-030 sweep) re-fires
+anything older than the 6 h grace within `RESOLUTION_SWEEP_INTERVAL_S`
+(15 min) — and it runs immediately on every worker boot, so a worker
+restart forces a catch-up pass. To recover *now* by hand:
+
+```bash
+# Every overdue, unresolved bet (runs the sweep once):
+fly ssh console -a merlin-worker \
+  -C "uv run --package merlin-worker python -m merlin_worker.admin backfill"
+
+# A single specific bet:
+fly ssh console -a merlin-worker \
+  -C "uv run --package merlin-worker python -m merlin_worker.admin rerun <claim_id>"
+```
+
+Both are idempotent: `resolve_outcome` short-circuits if an outcome
+already exists, and resolution uses *historical* CoinGecko prices at
+the claim's original `t0` / `t_resolve`, so a late re-fire is still
+correct — just delayed. Locally the same targets are `make
+admin-backfill` and `make admin-rerun CLAIM_ID=<id>`.
+
+**3. Stop the bleeding at the source (eviction).** The root cause is
+the prod Upstash Redis being created with `--enable-eviction`
+(`deploy/fly/README.md`): it is allowed to drop the long-lived
+`rq:scheduled` / `rq:job` keys under memory pressure. The sweep makes
+us resilient to this, but eviction should still be **disabled** so the
+queue isn't fighting the bot's PTB persistence (co-tenant in the same
+Upstash DB 0) for memory. This is NOT doable via `flyctl` (`fly redis
+update` only changes plan / replica regions). Disable it via:
+
+- **Upstash console** — open the `merlin-redis` database (Fly
+  dashboard → Upstash integration), Configuration → Eviction →
+  Disable; or
+- **Upstash Developer API**:
+  `curl -u "$UPSTASH_EMAIL:$UPSTASH_API_KEY" -X POST https://api.upstash.com/v2/redis/disable-eviction/<database_id>`
+
+With eviction off, a full Redis *rejects writes* (loud — a failed
+`enqueue` rolls the claim back at submit, no silent loss) instead of
+dropping pending work. If you hit that ceiling, bump the Redis plan or
+split RQ onto its own Upstash instance (separate from PTB persistence).
+
+**4. Resolution-failed (retries exhausted).** Distinct from the above:
+bets that DID fire but failed every RQ retry land an `outcomes` row
+with `status='resolution_failed_final'`. RQ's built-in
+`Retry(max=3, interval=[60,300,900])` handles the automatic retries;
+re-run the human path with `make admin-rerun CLAIM_ID=<id>` once the
+upstream issue (e.g. CoinGecko outage) clears.
 
 ## 5. Override audit trail walkthrough
 

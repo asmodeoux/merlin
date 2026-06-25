@@ -28,7 +28,7 @@ Append-only invariant (MVP §15 invariant 7): no ``update()`` /
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -36,9 +36,9 @@ from merlin_core.application.ports import (
     ClaimRecord,
     ClaimRepositoryPort,
 )
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 
-from merlin_infrastructure.db.models import Claim
+from merlin_infrastructure.db.models import Claim, Outcome
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,6 +142,61 @@ class ClaimRepository(ClaimRepositoryPort):
         )
         scalar = result.scalar()
         return int(scalar) if scalar is not None else 0
+
+    async def list_unresolved_overdue(
+        self,
+        *,
+        grace_seconds: int,
+        limit: int,
+    ) -> list[UUID]:
+        """Claim ids past ``resolves_at + grace`` that still have no outcome.
+
+        The reconciliation backstop (Q-030). The ``POST /claims`` path
+        schedules resolution as an RQ ``enqueue_at`` job in Redis; if
+        that job is ever lost (Upstash eviction of the long-lived
+        ``rq:scheduled`` / ``rq:job`` keys, a worker OOM-SIGKILL that
+        orphans the in-flight job, a Redis restart without persistence),
+        the durable ``claims`` row is the only surviving record that a
+        resolution is owed. This query is how the sweep finds those
+        stranded bets so it can re-enqueue ``resolve_outcome`` for each.
+
+        SQL contract:
+
+        .. code-block:: sql
+
+            SELECT c.id
+            FROM claims c
+            WHERE c.resolves_at < now() - (:grace_seconds * interval '1 second')
+              AND NOT EXISTS (
+                SELECT 1 FROM outcomes o WHERE o.claim_id = c.id
+              )
+            ORDER BY c.resolves_at ASC
+            LIMIT :limit
+
+        Notes:
+        * ``grace_seconds`` keeps the sweep off bets that have only
+          *just* come due — RQ's own ``enqueue_at`` + ``Retry(max=3)``
+          window gets first crack. MVP §12.1 sets this at 6 h.
+        * ``NOT EXISTS`` (not a ``LEFT JOIN ... IS NULL``) so a claim
+          with *any* outcome row — ``resolved`` / ``rejected_asset_mutation``
+          / ``resolution_failed_final`` — is considered handled and is
+          never re-enqueued. The resolver is also idempotent on top of
+          this (it short-circuits when ``latest_for_claim`` is non-NULL),
+          so a row landing between this read and the re-enqueue is
+          harmless.
+        * ``ORDER BY resolves_at ASC`` drains the most-overdue bets
+          first; ``LIMIT`` bounds one sweep so a large backlog doesn't
+          enqueue tens of thousands of jobs in a single tick.
+        """
+        cutoff = datetime.now(tz=UTC) - timedelta(seconds=grace_seconds)
+        no_outcome = ~exists().where(Outcome.claim_id == Claim.id)
+        result = await self._session.execute(
+            select(Claim.id)
+            .where(Claim.resolves_at < cutoff, no_outcome)
+            .order_by(Claim.resolves_at.asc())
+            .limit(limit),
+        )
+        return [row[0] for row in result.all()]
 
     async def count_open_global(self) -> tuple[int, int]:
         """Platform-wide ``(open_calls, distinct_sources)`` over ``resolves_at > now()``.

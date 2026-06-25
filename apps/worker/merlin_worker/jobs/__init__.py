@@ -21,12 +21,28 @@ There is **no asset-catalog sync job** at v0. Assets are materialised
 lazily by the API (``POST /assets/resolve``) during the bot's
 ``/alpha`` flow — Q-027.
 
+Sprint 2 adds one periodic job (Q-030):
+
+- ``sweep_unresolved_claims()`` — the durable resolution backstop.
+  Driven by the RQ ``CronScheduler`` (see ``merlin_worker.schedules``),
+  it scans Postgres for claims past ``resolves_at + grace`` with no
+  outcome row and re-enqueues ``resolve_outcome`` for each. Defends
+  against RQ scheduled jobs lost to Redis eviction / worker OOM /
+  Redis restart — the failure mode that silently dropped bets before
+  Q-030. Idempotent on top of ``resolve_outcome``'s own guard.
+
 Failed jobs (after the 3-retry RQ policy: 60s / 5min / 15min) land in
 RQ's failed-jobs registry. An operator runs ``make admin-rerun
-CLAIM_ID=...`` to retry. No periodic sweeper.
+CLAIM_ID=...`` (single bet) or ``make admin-backfill`` (every stranded
+bet) to retry — both INSERT nothing themselves; they just re-enqueue.
 """
 
 from merlin_worker.jobs.recompute_source_reputation import recompute_source_reputation
 from merlin_worker.jobs.resolve_outcome import resolve_outcome
+from merlin_worker.jobs.sweep_unresolved import sweep_unresolved_claims
 
-__all__ = ["recompute_source_reputation", "resolve_outcome"]
+__all__ = [
+    "recompute_source_reputation",
+    "resolve_outcome",
+    "sweep_unresolved_claims",
+]

@@ -11,6 +11,7 @@
         deps-audit gitleaks pip-audit dep-review db-migrate db-revision \
         db-reset seed dev dev-up dev-down dev-logs dev-rebuild docker-test \
         dev-verify docs-check ci ci-fast clean \
+        admin-rerun admin-backfill \
         fly-deploy-api fly-deploy-bot fly-deploy-worker fly-deploy-all \
         fly-secrets-sync fly-db-restore db-pull-from-fly
 
@@ -178,6 +179,19 @@ docker-test: ## Build prod images + run integration suite (compose.test.yml).
 
 dev-verify: ## One-button "is the stack alive" — boot compose + poll /health + /ready + log greps.
 	@scripts/dev_verify.sh
+
+##@ Admin / recovery
+# Manual resolution recovery (Q-030). Re-enqueue lost resolution jobs;
+# both are idempotent (resolve_outcome short-circuits on an existing
+# outcome, and resolution uses historical prices so a late re-fire is
+# still correct). Run against prod via:
+#   fly ssh console -a merlin-worker -C "uv run --package merlin-worker python -m merlin_worker.admin backfill"
+admin-rerun: ## Re-enqueue resolution for ONE claim. Usage: make admin-rerun CLAIM_ID=<uuid>
+	@test -n "$(CLAIM_ID)" || { echo "Usage: make admin-rerun CLAIM_ID=<uuid>"; exit 1; }
+	uv run --package merlin-worker python -m merlin_worker.admin rerun $(CLAIM_ID)
+
+admin-backfill: ## Re-enqueue EVERY overdue, unresolved claim (the Q-030 sweep, run once).
+	uv run --package merlin-worker python -m merlin_worker.admin backfill
 
 ##@ Docs parity
 docs-check: ## rg-based grep gate — fail on forbidden tokens in current docs/code.

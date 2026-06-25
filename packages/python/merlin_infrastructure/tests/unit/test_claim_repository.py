@@ -388,6 +388,68 @@ async def test_count_open_global_defends_against_null_columns() -> None:
     assert await repo.count_open_global() == (0, 0)
 
 
+async def _all_returning(rows: list[Any]) -> MagicMock:
+    """Build a Result-shaped mock that returns ``rows`` via ``.all()``."""
+    result = MagicMock()
+    result.all.return_value = rows
+    return result
+
+
+async def test_list_unresolved_overdue_projects_claim_ids() -> None:
+    """``list_unresolved_overdue`` returns the bare claim ids from the rows.
+
+    The sweep (Q-030) only needs ids — it re-enqueues ``resolve_outcome``
+    by id. The query selects ``Claim.id`` so each result row is a
+    1-tuple; the repo unwraps ``row[0]``.
+    """
+    sess = _fake_session()
+    id_a, id_b = uuid4(), uuid4()
+    sess.execute.return_value = await _all_returning([(id_a,), (id_b,)])
+
+    repo = ClaimRepository(sess)
+    ids = await repo.list_unresolved_overdue(grace_seconds=21_600, limit=500)
+
+    sess.execute.assert_awaited_once()
+    assert ids == [id_a, id_b]
+
+
+async def test_list_unresolved_overdue_query_shape() -> None:
+    """Pin the SQL contract: past-due claims with NO outcome row, bounded.
+
+    A regression that drops the ``NOT EXISTS (... outcomes ...)`` anti-join
+    would re-enqueue already-resolved bets (double work, though the
+    resolver's idempotency guard would still no-op); dropping the
+    ``LIMIT`` would let one sweep enqueue an unbounded backlog.
+    """
+    sess = _fake_session()
+    sess.execute.return_value = await _all_returning([])
+
+    repo = ClaimRepository(sess)
+    result = await repo.list_unresolved_overdue(grace_seconds=21_600, limit=500)
+    assert result == []
+
+    stmt = sess.execute.call_args[0][0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": False})).lower()
+    assert "claims" in compiled
+    assert "resolves_at <" in compiled
+    # The anti-join against outcomes is the whole point — keep both the
+    # NOT and the EXISTS subquery referencing the outcomes table.
+    assert "not" in compiled
+    assert "exists" in compiled
+    assert "outcomes" in compiled
+    assert "order by" in compiled
+    assert "limit" in compiled
+
+
+async def test_list_unresolved_overdue_empty_is_empty_list() -> None:
+    """No stranded bets → empty list (the healthy steady state)."""
+    sess = _fake_session()
+    sess.execute.return_value = await _all_returning([])
+
+    repo = ClaimRepository(sess)
+    assert await repo.list_unresolved_overdue(grace_seconds=0, limit=10) == []
+
+
 async def test_claim_repository_has_no_leaderboard_method() -> None:
     """The leaderboard read moved to ``SourceReputationRepository``.
 

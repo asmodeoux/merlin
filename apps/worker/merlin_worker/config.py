@@ -71,6 +71,45 @@ class Settings(BaseSettings):
         return raw
 
     # -------------------------------------------------------------------
+    # Resolution-sweep cron (Q-030) — durable backstop for lost RQ jobs.
+    #
+    # The ``POST /claims`` path schedules resolution as a single RQ
+    # ``enqueue_at`` job parked in Redis for the whole horizon. Prod
+    # Redis (Upstash) is eviction-enabled, so that key can be dropped
+    # under memory pressure (and an OOM-SIGKILL / Redis restart can lose
+    # it too). The durable ``claims`` row is the only surviving record;
+    # this cron periodically reconciles Postgres against the queue and
+    # re-fires anything stranded. See ``schedules/cron.py``.
+    # -------------------------------------------------------------------
+    resolution_sweep_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the worker starts the resolution-reconciliation "
+            "cron thread. Default on — the durable backstop (Q-030). "
+            "Set false only to silence the sweep on a dev box."
+        ),
+    )
+    resolution_sweep_interval_s: int = Field(
+        default=900,
+        gt=0,
+        description="Seconds between resolution sweeps (default 15 min).",
+    )
+    resolution_sweep_grace_s: int = Field(
+        default=21_600,
+        ge=0,
+        description=(
+            "How far past ``resolves_at`` a claim must be before the "
+            "sweep re-enqueues it (default 6h — MVP §12.1). Keeps the "
+            "sweep off bets RQ's own enqueue_at + Retry window still owns."
+        ),
+    )
+    resolution_sweep_max_batch: int = Field(
+        default=500,
+        gt=0,
+        description="Max claims re-enqueued per single sweep tick.",
+    )
+
+    # -------------------------------------------------------------------
     # External APIs (market data)
     #
     # CoinGecko is the single market-data source per Q-026.
