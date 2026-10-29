@@ -159,7 +159,7 @@ class OpenRouterClaimDrafter:
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://merlin.example",
+                    "HTTP-Referer": "https://github.com/asmodeoux/merlin",
                     "X-Title": "Merlin",
                 },
                 json=body,

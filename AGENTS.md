@@ -16,8 +16,8 @@ the file wins:
   (Sprint 4 fills in the recovery commands pre-launch).
 - **[`docs/REPO_SETTINGS.md`](docs/REPO_SETTINGS.md)** — GitHub bootstrap
   checklist.
-- **[`SECURITY.md`](SECURITY.md)** — vuln disclosure + v0 security
-  baseline.
+- **[`SECURITY.md`](SECURITY.md)** — how to report issues + the
+  security measures in the codebase.
 
 ## 2. Monorepo map
 

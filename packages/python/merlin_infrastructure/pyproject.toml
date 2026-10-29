@@ -20,7 +20,7 @@ description = "Merlin infrastructure adapters — DB, market data, RQ, observabi
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Merlin Team" }]
+authors = [{ name = "asmodeoux" }]
 dependencies = [
     "merlin-core",
     # Database

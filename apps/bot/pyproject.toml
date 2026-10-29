@@ -17,7 +17,7 @@ description = "Merlin Telegram bot — PTB v21 + merlin_client + merlin_core.con
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Merlin Team" }]
+authors = [{ name = "asmodeoux" }]
 dependencies = [
     "merlin-core",
     "merlin-client",

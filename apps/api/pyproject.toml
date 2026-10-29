@@ -15,7 +15,7 @@ description = "Merlin API — FastAPI server, the canonical /v1 surface."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Merlin Team" }]
+authors = [{ name = "asmodeoux" }]
 dependencies = [
     "merlin-core",
     "merlin-infrastructure",

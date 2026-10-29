@@ -17,7 +17,7 @@ description = "Merlin background worker — RQ + merlin_core + merlin_infrastruc
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Merlin Team" }]
+authors = [{ name = "asmodeoux" }]
 dependencies = [
     "merlin-core",
     "merlin-infrastructure",

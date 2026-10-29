@@ -1226,7 +1226,8 @@
   },
   "info": {
     "contact": {
-      "name": "Merlin Team"
+      "name": "asmodeoux",
+      "url": "https://github.com/asmodeoux/merlin"
     },
     "description": "The canonical Merlin API. The Telegram bot is one client; future surfaces (React frontend, Pro Dashboard) hit the same flat routes. See docs/ARCHITECTURE.md.",
     "license": {

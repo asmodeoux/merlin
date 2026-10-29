@@ -64,7 +64,7 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
         ),
         routes=app.routes,
         tags=TAGS_METADATA,
-        contact={"name": "Merlin Team"},
+        contact={"name": "asmodeoux", "url": "https://github.com/asmodeoux/merlin"},
         license_info={"name": "MIT"},
     )
 

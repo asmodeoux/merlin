@@ -21,7 +21,7 @@ description = "Merlin pure-Python core — domain, application, contracts."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Merlin Team" }]
+authors = [{ name = "asmodeoux" }]
 dependencies = [
     # pydantic is the only third-party dep — used in contracts/ for wire
     # schemas. domain/ and application/ remain stdlib-only (enforced by
