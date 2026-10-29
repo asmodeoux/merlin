@@ -29,8 +29,10 @@ if config.config_file_name is not None:
 
 # Override the alembic.ini DSN with $DATABASE_URL when present (so CI
 # and dev compose can point at their own DBs without editing the .ini).
+# Only for CLI runs that load alembic.ini: callers that build their own
+# Config() and set sqlalchemy.url (the integration tests) keep their URL.
 database_url = os.environ.get("DATABASE_URL")
-if database_url:
+if database_url and config.config_file_name is not None:
     config.set_main_option("sqlalchemy.url", database_url)
 
 

@@ -127,7 +127,7 @@ env-check: ## Assert every apps/*/.env.example matches its Settings.model_fields
 deps-audit: pip-audit ## Alias.
 
 pip-audit: ## Scan installed deps for known advisories.
-	uv export --format requirements-txt --no-hashes --all-extras | uv run pip-audit -r /dev/stdin
+	uv export --format requirements-txt --no-hashes --all-extras --no-emit-workspace | uv run pip-audit -r /dev/stdin
 
 dep-review: ## Local Dependency Review simulation (runs the action's diff logic locally).
 	@echo "Dependency Review runs in CI on PR diff. Locally: inspect uv.lock changes."
@@ -174,8 +174,8 @@ dev-logs: ## Tail dev compose logs.
 dev-rebuild: ## Force rebuild dev images.
 	docker compose -f deploy/docker-compose.dev.yml build --no-cache
 
-docker-test: ## Build prod images + run integration suite (compose.test.yml).
-	docker compose -f deploy/docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from runner
+docker-test: ## Build the prod images for api/bot/worker (compose.test.yml).
+	docker compose -f deploy/docker-compose.test.yml build
 
 dev-verify: ## One-button "is the stack alive" — boot compose + poll /health + /ready + log greps.
 	@scripts/dev_verify.sh

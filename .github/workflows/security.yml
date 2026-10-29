@@ -47,7 +47,7 @@ jobs:
       - run: uv sync --frozen --all-extras
       - name: Audit installed packages
         run: |
-          uv export --format requirements-txt --no-hashes --all-extras \
+          uv export --format requirements-txt --no-hashes --all-extras --no-emit-workspace \
             | uv run pip-audit -r /dev/stdin --strict
 
   # ---------------------------------------------------------------------

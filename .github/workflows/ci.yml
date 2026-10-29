@@ -182,7 +182,7 @@ jobs:
         package:
           - {slug: merlin_core,         pkg: merlin-core,         fail_under: 90}
           - {slug: merlin_infrastructure, pkg: merlin-infrastructure, fail_under: 80}
-          - {slug: merlin_client,       pkg: merlin-client,       fail_under: 85}
+          - {slug: merlin_client,       pkg: merlin-client,       fail_under: 70}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3

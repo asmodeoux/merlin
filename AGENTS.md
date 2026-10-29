@@ -163,7 +163,7 @@ one pot dilutes the signal.
 make install-frozen     # uv sync --frozen --all-extras
 make dev-up             # postgres + redis + api/bot/worker, hot reload + debugpy
 make dev-logs           # tail
-make docker-test        # prod images + integration suite
+make docker-test        # build the prod images
 ```
 
 Hot reload + debugpy ports:

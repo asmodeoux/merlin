@@ -28,11 +28,11 @@ without rebuilds. `.env.example` per app is the `env_file:` (override
 with your own `.env` next to the `.env.example` when you need real
 secrets).
 
-## `docker-compose.test.yml` — integration suite against prod images
+## `docker-compose.test.yml` — prod image build check
 
-`make docker-test` builds the **prod** target for api/bot/worker, brings
-them up, and runs `pytest -m integration` in a `runner` sidecar. The
-runner's exit code is the compose exit code (`--exit-code-from runner`).
+`make docker-test` builds the **prod** target for api/bot/worker so a
+broken Dockerfile fails fast. The integration tests run in the main CI
+workflow, where they start their own Postgres via testcontainers.
 
 CI hooks: `.github/workflows/docker-test.yml`.
 
