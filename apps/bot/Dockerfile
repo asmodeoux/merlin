@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON=/usr/local/bin/python3.12
 
-COPY --from=ghcr.io/astral-sh/uv:0.5.7 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /usr/local/bin/uv
 
 WORKDIR /app
 

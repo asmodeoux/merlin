@@ -220,7 +220,7 @@ app.
 ## 12. Stack pins
 
 - Python **3.12** (`.python-version`).
-- uv **0.5.7** (pinned in Dockerfiles + CI; bump in one PR).
+- uv **0.11.16** (pinned in Dockerfiles + CI; bump in one PR).
 - FastAPI **>=0.115,<1**, uvicorn **>=0.32,<1**.
 - python-telegram-bot **>=21.6,<22** with extras
   `[rate-limiter, callback-data, job-queue, webhooks]`.

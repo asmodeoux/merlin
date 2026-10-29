@@ -21,7 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # uv installed via the official binary — pinned via the digest on a real
 # build. Slim layer; no apt deps needed for FastAPI itself.
-COPY --from=ghcr.io/astral-sh/uv:0.5.7 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
