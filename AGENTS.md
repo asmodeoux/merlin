@@ -8,14 +8,11 @@ human contributors working in this repo. Read this first.
 Treat these files as canonical. If they disagree with what you "know",
 the file wins:
 
-- **[`docs/MVP_SPEC.md`](docs/MVP_SPEC.md)** — product spec; what we
-  build and what the invariants are.
+- **[`docs/DECISIONS.md`](docs/DECISIONS.md)** — product and
+  architecture decisions referenced as `Q-NNN`.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — how the repo is
   laid out and why. Layer rules, ADRs, the multi-frontend strategy.
-- **[`docs/RUNBOOK.md`](docs/RUNBOOK.md)** — operational procedures
-  (Sprint 4 fills in the recovery commands pre-launch).
-- **[`docs/REPO_SETTINGS.md`](docs/REPO_SETTINGS.md)** — GitHub bootstrap
-  checklist.
+- **[`docs/RUNBOOK.md`](docs/RUNBOOK.md)** — operational procedures.
 - **[`SECURITY.md`](SECURITY.md)** — how to report issues + the
   security measures in the codebase.
 
@@ -27,9 +24,9 @@ packages/    python/ merlin_core/         ← shared Python libs
                      merlin_infrastructure/
                      merlin_client/
 deploy/      docker-compose dev + test, custom postgres-dev image
-scripts/     env_check.py, bootstrap_github_settings.sh
-docs/        ARCHITECTURE, MVP_SPEC, RUNBOOK, REPO_SETTINGS, openapi.json
-.github/     workflows, CODEOWNERS, dependabot, PR template
+scripts/     env_check.py, dev_verify.sh, docs_check.sh
+docs/        ARCHITECTURE, DECISIONS, RUNBOOK, openapi.json
+.github/     workflows, CODEOWNERS, PR template
 .vscode/     launch.json (3 groups), tasks.json (label-prefixed)
 ```
 
@@ -74,11 +71,9 @@ Skipping steps creates drift between the spec and the code.
 
 - **OpenAPI** — `make openapi` regenerates `docs/openapi.json`. CI runs
   `make openapi-check` and fails on drift.
-- **Coverage gates** — per-package, ramped:
-  - Sprint 1–2: domain 90% / contracts 95% / application 85% /
-    api.routes 85% / client 85% / db.repositories 80% / worker 80% /
-    bot 70%.
-  - Sprint 3+: 100% / 100% / 95% / 95% / 95% / 90% / 90% / 80%.
+- **Coverage gates** — per-package floors enforced by `make ci`
+  (`COV_FAIL_*` in the Makefile); long-term targets live in
+  `pyproject.toml` under `[tool.coverage.targets]`.
 - **mypy --strict** scope: `merlin_core`, `merlin_api`, `merlin_client`,
   `merlin_worker`. Soft strict on `merlin_infrastructure` and
   `merlin_bot` (heavy I/O glue; the disruptive flags are off).
@@ -137,17 +132,14 @@ Bot handlers must follow the patterns in
   docstring that explains the layer rule.
 - **Repository docstrings** flag append-only invariants for AI code
   generators (`merlin_core.application.ports.__init__`).
-- **Sprint 1 TODOs** are inline in stubs — the agent can find what's
-  unfinished by grep.
 - **One Makefile target per workflow**. If you find yourself running a
   long shell pipeline twice, it belongs in the Makefile.
 
 ## 8. Security baseline (summary)
 
-Full text in `SECURITY.md` and `docs/REPO_SETTINGS.md`. Highlights:
+Full text in `SECURITY.md`. Highlights:
 
 - `uv.lock` committed; CI runs `uv lock --check`.
-- Dependabot 7d cooldown default (30d major, 7d minor, 3d patch).
 - gitleaks (pre-commit + CI) + pip-audit (CI + daily) + Dependency
   Review (PR).
 - GitHub Secret Scanning + Push Protection on.
@@ -183,15 +175,6 @@ Hot reload + debugpy ports:
 The `.vscode/launch.json` has "Attach to API/Bot/Worker (Docker debugpy
 NNNN)" entries for each. Compound config attaches to all three.
 
-## 11. Repo settings (pointer)
-
-`docs/REPO_SETTINGS.md` is the canonical list. To reproduce on a fresh
-clone:
-
-```bash
-GH_REPO=org/repo ./scripts/bootstrap_github_settings.sh
-```
-
 ## 11.1. Fly deploys
 
 Always use the `make` targets — they pin the right `--config` +
@@ -226,7 +209,7 @@ app.
   `[rate-limiter, callback-data, job-queue, webhooks]`.
 - SQLAlchemy **>=2.0,<3**, asyncpg **>=0.30,<1**, alembic **>=1.14,<2**.
 - pgvector Python package **>=0.3,<1**; Postgres image
-  `pgvector/pgvector:pg16` (no `pg_cron` at v0 — Q-029 [PROPOSED]
+  `pgvector/pgvector:pg16` (no `pg_cron` at v0 — Q-029
   drops the daily reputation cron in favour of reactive on-outcome
   enqueues. All scheduling is Redis-only via RQ Scheduler `enqueue_at`).
 - RQ **>=2.0,<3** + redis **>=5.2,<6**.
@@ -263,20 +246,20 @@ Example: "show users their last claim's outcome."
 10. **Docs** — if the feature touches DX (new make target, new docker
     flow), update README + ARCHITECTURE.
 
-## 14. What NOT to do (cites MVP §15 invariants)
+## 14. What NOT to do (see ARCHITECTURE §16)
 
 - **Never UPDATE** rows in `claims` (except the `edits` JSONB +
   `soft_deleted_at` columns), `outcomes`, `source_reputation_history`,
-  `attribution_ledger`, or `override_log`. MVP §15 invariants 7/8/10/12.
+  `attribution_ledger`, or `override_log`. ARCHITECTURE §16 invariants 7/8/10/12.
 - **Never log raw Telegram handles.** Use the `source_id` opaque hash
-  from `merlin_core.domain.source_id.make_source_id`. MVP §15 invariant 9.
+  from `merlin_core.domain.source_id.make_source_id`. ARCHITECTURE §16 invariant 9.
 - **Never store `regret_usd`** as a canonical column. It is derived
-  (`pnl_if_followed - pnl_if_ignored`). MVP §15 invariant 3.
+  (`pnl_if_followed - pnl_if_ignored`). ARCHITECTURE §16 invariant 3.
 - **Never bypass the supersedes chain** on outcome corrections. INSERT
   a new outcome row with `supersedes_outcome_id` pointing at the old
-  head; do not UPDATE the old row. MVP §15 invariant 6.
+  head; do not UPDATE the old row. ARCHITECTURE §16 invariant 6.
 - **Never default `pnl_if_ignored_usd` to NULL.** It is `0` until
-  resolution sets a real value. MVP §15 invariant 3.
+  resolution sets a real value. ARCHITECTURE §16 invariant 3.
 - **Never run integration tests on a non-pgvector Postgres.** The
   custom image at `deploy/postgres-dev/Dockerfile` is used everywhere;
   the upstream `pgvector/pgvector:pg16` alone is the right base. We
@@ -288,8 +271,9 @@ Example: "show users their last claim's outcome."
   `make openapi-check` will fail CI; the bot/web frontend will drift.
 - **Never use `PicklePersistence`** in the bot prod image. Doesn't
   survive horizontal scaling.
-- **Never add a top-level `tests/` directory.** Tests live with the app
-  or package they test.
+- **Tests live with the app or package they test.** The root `tests/`
+  directory holds only cross-service checks (`tests/preflight/`,
+  `tests/e2e/`).
 - **Never put Python-specific tooling in the root that isn't shared
   across all Python services** (per the polyglot-monorepo convention —
   see `docs/ARCHITECTURE.md` §4).

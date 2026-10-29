@@ -1,7 +1,6 @@
 """End-to-end stub: ``/start`` → invite → freeform claim → time-travel → resolved.
 
-This file is the placeholder for the full-flow test described in the
-bot-flow plan §"Sprint 1 acceptance criteria" #1. The first half — the
+This file is the placeholder for the full-flow test. The first half — the
 ``/start`` → invite-redeem → ``source`` rows landed in Postgres path —
 is **already covered** at the integration tier in
 ``apps/api/tests/integration/test_invite_flow.py`` (live testcontainer

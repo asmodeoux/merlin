@@ -66,7 +66,7 @@ test-snapshot: ## Snapshot tests (syrupy — OpenAPI, formatting).
 	uv run pytest -m snapshot
 
 # ---------------------------------------------------------------------------
-# Per-package coverage gates. Sprint 1 floors per the bot-flow plan; the
+# Per-package coverage gates. Starting floors; the
 # steady-state targets in pyproject.toml (`[tool.coverage.targets]`) are
 # tracked but not yet enforced. `make ci` invokes each `test-*` target
 # below, so a regression in any single package fails CI precisely.

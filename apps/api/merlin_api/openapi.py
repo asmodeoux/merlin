@@ -6,8 +6,8 @@ what we actually validate today — the OpenAPI document stays honest.
 
 Versioning policy: no URL prefix at v0. The OpenAPI ``info.version``
 field is the canonical API version marker — bumped manually when the
-contract changes; CI's snapshot diff catches drift. See the bot-flow
-plan §6 and ADR (s) in ``docs/ARCHITECTURE.md``.
+contract changes; CI's snapshot diff catches drift. See
+ADR (s) in ``docs/ARCHITECTURE.md``.
 """
 
 from __future__ import annotations

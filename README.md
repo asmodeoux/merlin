@@ -79,7 +79,7 @@ Full details in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), including the 
 - **LLM as UX, not a dependency.** Freeform `/alpha` is one schema-constrained LLM call (≈ $0.0003). On failure, or once the monthly budget cap is hit, the bot falls back to the button flow.
 - **Self-healing scheduling.** Resolution jobs live in Redis, but Postgres is the source of truth: a cron sweep re-fires any bet whose job was evicted. This was added after an incident where jobs silently disappeared ([ADR v / Q-030](./docs/DECISIONS.md)).
 - **Preflight tests** for config drift between Compose, Dockerfiles, `.env.example`, Fly configs and Settings classes. Each one was added after a deploy-time bug that unit tests missed (see [`AGENTS.md`](./AGENTS.md) §5.1).
-- **Quality gates:** `mypy --strict`, ruff, per-package coverage floors, ~880 tests, gitleaks, pip-audit, and Dependabot with cooldowns.
+- **Quality gates:** `mypy --strict`, ruff, per-package coverage floors, ~880 tests, gitleaks and pip-audit.
 - **Privacy:** raw Telegram handles are never logged; sources are identified by an opaque hash.
 
 ## Tech stack
@@ -107,7 +107,6 @@ The API serves at `http://localhost:8000` (`/docs` for Swagger). Deployment to F
 
 | Document | Contents |
 | --- | --- |
-| [`docs/MVP_SPEC.md`](./docs/MVP_SPEC.md) | Product spec, data model, full Postgres DDL, invariants, ML-readiness review |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | Runtime topology, layer model, ADRs |
 | [`docs/DECISIONS.md`](./docs/DECISIONS.md) | Product and architecture decision log (`Q-NNN`) |
 | [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) | Operational procedures |

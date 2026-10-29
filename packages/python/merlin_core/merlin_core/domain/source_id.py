@@ -1,4 +1,4 @@
-"""Source-ID opacity helper — MVP_SPEC §15 invariant 9.
+"""Source-ID opacity helper — ARCHITECTURE §16 invariant 9.
 
 Across the platform we identify a Telegram user by an opaque
 ``source_id = 'tg:' + sha256(...)`` handle. The raw ``tg_user_id`` only

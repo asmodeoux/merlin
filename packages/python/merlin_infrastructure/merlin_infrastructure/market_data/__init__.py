@@ -6,7 +6,7 @@ The ``CoinGeckoAdapter`` wraps three endpoints:
 - ``GET /api/v3/search?query=<text>`` — fuzzy search returning candidate
   coins. Drives the bot's lazy asset resolution during the ``/alpha``
   flow (Q-027). The API exposes this
-  through ``GET /assets/search`` (no URL versioning — see plan §6).
+  through ``GET /assets/search`` (no URL versioning).
 - ``GET /api/v3/coins/{id}/market_chart/range`` — resolution price
   points at arbitrary historical timestamps. The adapter records both
   the **requested** and the **actually-returned** timestamps for every

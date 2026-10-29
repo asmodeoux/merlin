@@ -11,10 +11,9 @@ These were in place while the project was live and are still useful as
 a reference. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §10
 for the rationale.
 
-- **Dependencies** — `uv.lock` is committed; Dependabot runs with a
-  cooldown (30 days for major, 7 for minor, 3 for patch updates).
-- **Scanners** — `gitleaks` (pre-commit + CI), `pip-audit` (CI + daily
-  cron), and `actions/dependency-review-action` on pull requests.
+- **Dependencies** — `uv.lock` is committed and checked in CI.
+- **Scanners** — `gitleaks` (pre-commit + CI), `pip-audit` (CI), and
+  `actions/dependency-review-action` on pull requests.
 - **Secrets** — nothing is committed. Each app reads its secrets from
   environment variables (`fly secrets set` in production, `.env`
   locally):
@@ -32,4 +31,4 @@ for the rationale.
 - **CI permissions** — every workflow starts with
   `permissions: contents: read` and widens per job only where needed.
 - **Privacy** — raw Telegram handles are never logged; sources are
-  identified by an opaque hash (MVP §15 invariant 9).
+  identified by an opaque hash (ARCHITECTURE §16 invariant 9).

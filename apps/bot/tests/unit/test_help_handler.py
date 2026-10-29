@@ -19,7 +19,7 @@ def test_help_text_mentions_every_user_command() -> None:
 
 
 def test_help_text_avoids_internal_terms() -> None:
-    """Bot voice (plan §6) — no internal jargon leaks in the help."""
+    """Bot voice — no internal jargon leaks in the help."""
     text = _help_text().lower()
     forbidden = (
         "source",

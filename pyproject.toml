@@ -120,7 +120,7 @@ indent-style = "space"
 docstring-code-format = true
 
 # ---------------------------------------------------------------------------
-# mypy — type checking. --strict on merlin_core/api/client/worker (MVP §8.1
+# mypy — type checking. --strict on merlin_core/api/client/worker (
 # mandates strict on /score + /resolve; resolution math lives in the worker).
 # Soft strict on merlin_infrastructure + merlin_bot (heavy I/O glue).
 # ---------------------------------------------------------------------------

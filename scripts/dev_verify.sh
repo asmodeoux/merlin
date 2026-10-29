@@ -5,7 +5,7 @@
 #   * `make dev-verify`
 #   * `.vscode/tasks.json` → "🚀 Verify Dev Stack (full launch + healthcheck)"
 #
-# Flow (bot-flow plan §"Sprint 1 acceptance criteria" #2):
+# Flow:
 #   1. `docker compose up --build -d`
 #   2. wait for postgres + redis healthchecks
 #   3. poll /health every 1s up to TIMEOUT_S

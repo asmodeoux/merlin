@@ -12,7 +12,7 @@ Layout:
 - `/openapi.json`, `/docs`,
   `/redoc`                      — schema + UIs
 
-No URL versioning at v0 — see the bot-flow plan §6 and ADR (s) in
+No URL versioning at v0 — see ADR (s) in
 ``docs/ARCHITECTURE.md``. The OpenAPI ``info.version`` field
 (``Settings.api_version``) is the canonical version marker; bumped
 manually when the contract changes; CI's snapshot diff catches drift.

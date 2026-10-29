@@ -7,7 +7,7 @@
 # Build:
 #   docker build -t merlin-postgres-dev:pg16 deploy/postgres-dev
 #
-# Q-029 proposal (plan §4): no ``pg_cron``. Scheduling lives in
+# Q-029 proposal: no ``pg_cron``. Scheduling lives in
 # Redis (RQ Scheduler ``enqueue_at``) and reputation recompute is
 # reactive on outcome. One less postgres extension, simpler image,
 # fewer Fly machine permissions.

@@ -2,7 +2,7 @@
 
 Talks to the API over HTTP with an HMAC bearer token (read from the
 caller's environment as ``MERLIN_API_INTERNAL_TOKEN``). Routes are
-flat — no URL versioning (plan §6); the OpenAPI ``info.version``
+flat — no URL versioning; the OpenAPI ``info.version``
 field is the canonical version marker, surfaced via ``GET /openapi.json``.
 
 Per-resource methods:

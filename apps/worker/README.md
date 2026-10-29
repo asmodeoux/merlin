@@ -3,13 +3,13 @@
 RQ-based background worker. Runs:
 
 - **Resolution jobs** — fetch CoinGecko price-series points at `t0` and
-  `t_resolve`, compute outcome PnL, insert an outcome row (MVP §11.1.D).
+  `t_resolve`, compute outcome PnL, insert an outcome row.
   Single market-data source per Q-026.
   No background catalog sync — assets resolve lazily during the bot's
   `/alpha` flow (Q-027) so this
   worker only ever sees CoinGecko ids that already exist in the local
   `assets` table.
-- **Reputation recompute** — **reactive, not scheduled** (Q-029 PROPOSED).
+- **Reputation recompute** — **reactive, not scheduled** (Q-029).
   The resolver enqueues `recompute_source_reputation(source_id)` the
   moment a new outcome lands; this worker drains the `reputation` queue
   and appends a `source_reputation_history` row per outcome. The MVP

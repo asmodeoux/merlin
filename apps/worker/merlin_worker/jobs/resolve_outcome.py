@@ -1,4 +1,4 @@
-"""``resolve_outcome(claim_id)`` — passive worker job (plan §3).
+"""``resolve_outcome(claim_id)`` — passive worker job.
 
 Fires at ``t_resolve`` (RQ Scheduler held the job). Steps:
 

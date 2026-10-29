@@ -4,7 +4,7 @@ Pure orchestration. Imports only from ``merlin_core.domain`` and
 ``merlin_core.application.ports`` — never from ``merlin_infrastructure``,
 ``merlin_api``, ``merlin_bot``, or any third-party adapter.
 
-Per the bot-flow plan §2 "Bet capture":
+By design:
 
 1. Confirm the asset exists upstream (defence vs. forged ids).
 2. INSERT-or-fetch the local ``assets`` row by ``coingecko_id``.
@@ -178,7 +178,7 @@ class SubmitClaim:
             resolves_at=resolves_at,
         )
 
-        # 7. Schedule the resolver. Deterministic job_id (plan §3) lets
+        # 7. Schedule the resolver. Deterministic job_id lets
         #    operators cancel + rerun by natural key. RQ's
         #    ``validate_job_id`` rejects ``:`` (allows only
         #    ``[A-Za-z0-9_-]``); use a dash separator.

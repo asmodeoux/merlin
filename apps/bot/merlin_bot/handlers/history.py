@@ -7,7 +7,7 @@ button's callback re-fetches the accumulated window, edits the existing
 message in place to show the full table, and re-renders (or drops) the
 button with the new offset.
 
-Bot-voice rules (plan §6):
+Bot-voice rules:
 
 * Table rows carry the same outcome emojis the live resolution
   notifications use — won (🎉), flat (📝), lost (🙂‍↔️). The

@@ -5,7 +5,7 @@ v0 — the OpenAPI `info.version` is the canonical version marker). Used
 today by `merlin_bot`; future internal Python services (analytics jobs,
 batch importers) will use the same client.
 
-Methods (Sprint 1):
+Methods:
 
 - `redeem_invite(code, tg_user_id, tg_handle)` → `POST /invites/redeem`
 - `get_me()` / `update_me(display_name)` → `GET` / `PATCH /me`

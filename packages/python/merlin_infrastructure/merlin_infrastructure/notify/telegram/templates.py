@@ -1,6 +1,6 @@
 """Outbound notification templates.
 
-Every string follows the bot-voice rules from the end-to-end plan §6:
+Every string follows the bot-voice rules (ARCHITECTURE §16 invariant 16):
 
 - No version markers (``v0``, ``MVP``, ``Sprint``).
 - No internal model nouns (``claim``, ``hypothesis``, ``regret``,

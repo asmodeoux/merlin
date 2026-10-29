@@ -14,14 +14,13 @@ See `docs/ARCHITECTURE.md` §9 for the full PTB v21 patterns. Highlights:
 - `ConversationHandler` with explicit `IntEnum` states for `/alpha`.
 - `CallbackQueryHandler` with PTB's typed `CallbackData` (no string parsing).
 - `set_my_commands` on startup via `post_init`, with admin-scoped variant.
-- `add_error_handler` → Sentry with PII stripped (MVP §15 invariant 9).
+- `add_error_handler` → Sentry with PII stripped (ARCHITECTURE §16 invariant 9).
 - Webhook + secret token in prod, polling in dev.
 - `bot_data["merlin_client"]` carries the `MerlinClient` (no globals).
 
 ## `/alpha` — freeform-first
 
-The `/alpha` command (and *any* non-command text message — Q-028
-PROPOSED) sends the user's words to `POST /claims/draft`. The API runs
+The `/alpha` command (and *any* non-command text message — Q-028) sends the user's words to `POST /claims/draft`. The API runs
 a single LLM call (`temperature=0`, JSON-schema constrained,
 OpenRouter), comes back with a prefilled `ClaimDraft`, and the bot
 renders the preview message + Confirm / Edit / Cancel keyboard.
@@ -38,8 +37,7 @@ user sees no "fallback" message — the bot just asks "Which asset?" as
 if that were the intended first step. LLM is UX acceleration, never
 a system dependency.
 
-**Bot voice.** All user-facing strings follow the bot-voice rules in
-`docs/MVP_SPEC.md` §15 invariant 16: no
+**Bot voice.** User-facing strings follow a few rules: no
 version markers, no internal data-model nouns, no raw ISO timestamps,
 no enum literals, no limitation hedges.
 

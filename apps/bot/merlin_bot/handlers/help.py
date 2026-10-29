@@ -6,7 +6,7 @@ the draft they're working on. PTB routes the command to this handler
 before the ConversationHandler matchers because ``CommandHandler``
 sits in the default group and ConversationHandlers gate on state.
 
-Strings follow the bot-voice rules (plan §6): no version markers, no
+Strings follow the bot-voice rules: no version markers, no
 internal terminology, confident present-tense framing.
 """
 

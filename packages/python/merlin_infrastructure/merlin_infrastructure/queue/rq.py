@@ -4,7 +4,7 @@ Wraps ``rq.Queue`` and uses its native ``enqueue_at`` for scheduled
 dispatch. No separate ``rq-scheduler`` dependency at v0 — the modern
 RQ release embeds scheduling.
 
-Per plan §3:
+Design:
 
 - ``job_id`` is deterministic (``f"resolve-{claim_id}"``,
   ``f"reputation-{source_id}"``). Lets ``cancel(job_id)`` and the
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("merlin.infrastructure.queue.rq")
 
-# Match plan §3 retry policy. Tuned for CoinGecko Demo's failure modes:
+# Retry policy. Tuned for CoinGecko Demo's failure modes:
 # rate-limit recoveries land within seconds; transient 5xxs typically
 # clear inside 5 minutes; the 15-minute final retry catches longer
 # upstream incidents before we surface a "couldn't be settled" message.

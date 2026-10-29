@@ -88,8 +88,7 @@ class ParseMetadata:
 
     ``raw_user_turns[0]`` is the original immutable freeform message
     that triggered the LLM extraction. Never overwritten even if the
-    user later edits the thesis on preview. See "Original-message
-    preservation" in the bot-flow plan.
+    user later edits the thesis on preview.
     """
 
     parsed_via: ParsedVia

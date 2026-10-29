@@ -1,9 +1,7 @@
 # Merlin Runbook
 
-Operational procedures for the on-call engineer. **Stub — Sprint 4
-fills the procedures with real commands and verified recovery times
-pre-launch.** Each section header below maps to a MVP §12 scenario; the
-TODO callouts list the gaps Sprint 4 must close.
+Operational procedures from when Merlin ran on Fly.io. Sections marked
+**Not done** were planned before a wider launch and never written.
 
 ## 0. "Is the dev stack alive?" — `make dev-verify`
 
@@ -31,8 +29,6 @@ BotFather for dev, drop the token into `apps/{bot,api,worker}/.env`,
 and re-run `make dev-up`.
 
 ## 1. DB restore from Fly Managed Postgres snapshot
-
-Reference: MVP §12.8.
 
 When to use: data corruption, accidental drop, ransomware, or a failed
 migration we couldn't fix forward.
@@ -84,15 +80,13 @@ Acceptable only when the data delta between local and prod is small or
 when you've just pulled prod down via `make db-pull-from-fly`
 beforehand and are restoring what was prod-as-of-pull.
 
-**TODO Sprint 4:**
+**Not done:**
 
 - Capture the verified RTO (target ≤ 60 min) + RPO (target ≤ 24 h, Fly
   daily snapshots).
 - Test a `fly mpg backups restore` end-to-end on a scratch cluster.
 
 ## 2. Bot down recovery
-
-Reference: MVP §12.8.
 
 When to use: `merlin-tg-bot` (Fly app slug — `merlin-bot` was taken
 globally on first provision) exited or stuck, no Telegram replies.
@@ -114,7 +108,7 @@ fly machine restart <id> -a merlin-tg-bot
 # 4. Token rotation (BotFather /revoke first, then):
 echo "TELEGRAM_BOT_TOKEN=<new>" | fly secrets import -a merlin-tg-bot
 echo "TELEGRAM_BOT_TOKEN=<new>" | fly secrets import -a merlin-api      # the API also calls TG (admin notifier)
-echo "TELEGRAM_BOT_TOKEN=<new>" | fly secrets import -a merlin-worker   # the worker calls bot API directly per plan §3
+echo "TELEGRAM_BOT_TOKEN=<new>" | fly secrets import -a merlin-worker   # the worker calls bot API directly
 fly machine restart -a merlin-tg-bot --select all
 ```
 
@@ -123,8 +117,6 @@ secret-token round-trip with
 `curl -s "https://api.telegram.org/bot$TOKEN/getWebhookInfo"`.
 
 ## 3. Worker stuck / lag triage
-
-Reference: MVP §12.8.
 
 When to use: resolution backlog, RQ queue depth growing.
 
@@ -150,8 +142,6 @@ fly machine restart <id> -a merlin-worker
 ```
 
 ## 4. Unresolved / stranded bets (Q-030 resolution sweep)
-
-Reference: MVP §12.1.
 
 When to use: a user reports a bet that expired but never resolved (no
 outcome notification), or you suspect RQ scheduled jobs were lost
@@ -235,11 +225,9 @@ upstream issue (e.g. CoinGecko outage) clears.
 
 ## 5. Override audit trail walkthrough
 
-Reference: MVP §12.
-
 When to use: a user disputes an outcome; need to inspect override history.
 
-**TODO Sprint 4:**
+**Not done:**
 
 - `SELECT * FROM override_log WHERE source_id = $1 ORDER BY created_at;`
   — append-only.
@@ -248,26 +236,15 @@ When to use: a user disputes an outcome; need to inspect override history.
 
 ## 6. Backup / DR posture (v0)
 
-Reference: MVP §12.8.
-
 - **Daily** — Fly Postgres automatic snapshots, 7-day retention.
 - **Off-Fly external backup** — explicitly **deferred to Phase 2**. v0
   accepts loss of up to one Fly region's worth of data in the
   worst-case-Fly-outage scenario.
-- **Restore drill cadence** — Sprint 4 establishes; pre-launch sets
-  the cadence.
+- **Restore drill cadence** — never set.
 
-**TODO Sprint 4:**
+**Not done:**
 
 - Run a restore drill against a scratch app.
 - Document the verified restore time in the table above.
 - Pick a cadence (monthly? quarterly?) and add to the team's recurring
   ops calendar.
-
-## 7. Incident communication
-
-**TODO Sprint 4:**
-
-- Internal channel name + escalation list.
-- User-facing comms template (Telegram /announcement command).
-- Postmortem template + storage location.

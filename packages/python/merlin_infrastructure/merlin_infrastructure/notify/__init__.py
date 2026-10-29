@@ -1,7 +1,7 @@
 """Notification adapters — concrete implementations of ``NotifierPort``.
 
 The worker calls these directly to send outcome notifications to users
-(plan §3 — the bot service is not involved in outbound messaging at
+(the bot service is not involved in outbound messaging at
 v0; one less hop, one less coupling).
 
 Sub-modules:

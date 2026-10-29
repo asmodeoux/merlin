@@ -7,7 +7,7 @@ pass in-memory fakes from `merlin_infrastructure` test fixtures.
 Sprint 1 use cases:
 
 - ``submit_claim.SubmitClaim`` — atomic claim commit + scheduled
-  resolution (plan §2). Composes ``MarketDataPort`` +
+  resolution. Composes ``MarketDataPort`` +
   ``ClaimWriterPort`` + ``JobQueuePort``.
 - ``resolve_outcome.ResolveOutcome`` (Sprint 1, worker side) —
   fetches t0 + t_resolve prices, writes outcome, enqueues reputation.

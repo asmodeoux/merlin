@@ -22,7 +22,7 @@ Two responsibilities:
   before any classification, so we never compute or look up identities
   for the deep field. The elite movement band is the **top-3**.
 
-Scope (locked in the plan §1/§5):
+Scope:
 
 * ``entered_top10`` / ``fell_out_top10`` — top-10 boundary crossings.
   Gated: only emitted when the board has ``>= min_board_size_for_top10``

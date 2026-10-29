@@ -4,7 +4,7 @@ Stateless. Hits ``GET /me/tickers?tg_user_id=...`` and renders each
 ticker on its own bullet row using the same chunk order as the
 leaderboard (PnL primary, hit rate secondary, call count).
 
-Bot-voice rules (plan §6):
+Bot-voice rules:
 
 * Honest empty-state. Zero resolved calls reads "Tracking your first
   resolutions" rather than a blank list — the API only returns

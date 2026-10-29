@@ -6,7 +6,7 @@
 
 ## Why
 
-<!-- Link the issue / spec section / MVP_SPEC reference. -->
+<!-- Link the issue or decision (Q-NNN) this relates to. -->
 
 ## How
 
@@ -26,11 +26,11 @@
 - [ ] **Security** — no secrets in code/tests; no new third-party
   dependency without justification; new dependency reviewed in
   `Dependency Review` step.
-- [ ] **Append-only invariants** (MVP §15 7/8/10/12) — UPDATE on
+- [ ] **Append-only invariants** (ARCHITECTURE §16 invariants 7/8/10/12) — UPDATE on
   `claims`/`outcomes`/`source_reputation_history`/`attribution_ledger`/
   `override_log` not introduced (or covered by a new repository test +
   migration trigger).
-- [ ] **PII** (MVP §15 invariant 9) — no raw Telegram handles in logs /
+- [ ] **PII** (ARCHITECTURE §16 invariant 9) — no raw Telegram handles in logs /
   Sentry / API responses.
 - [ ] **Tests** — new code has unit tests; touched repository code has
   an integration test.

@@ -1,5 +1,5 @@
 # Dev compose — hot reload + debugpy on api/bot/worker, custom postgres
-# (pgvector only — Q-029 [PROPOSED] drops pg_cron), redis. Volume mounts
+# (pgvector only — Q-029 drops pg_cron), redis. Volume mounts
 # for source so edits land without rebuilds. `make dev-up` is the entry
 # point; `make dev-verify` boots this compose then polls /health + /ready
 # and greps bot+worker logs for the startup line.

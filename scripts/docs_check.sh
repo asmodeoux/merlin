@@ -6,8 +6,7 @@
 #   * `make ci`
 #   * `.github/workflows/ci.yml` (transitively via `make ci`)
 #
-# Per the bot-flow plan §"Sprint 1 acceptance criteria" #3
-# ("Documentation parity"). Catches drift between the current
+# Catches drift between the current
 # architecture and stale references that survive a search-and-replace.
 #
 # A line is allowed if any of:

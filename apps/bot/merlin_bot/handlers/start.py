@@ -12,7 +12,7 @@ Three states:
    entry). The user replies; bot calls ``MerlinClient.update_me`` and
    greets them.
 
-Strings follow the bot-voice rules (plan §6): no version markers, no
+Strings follow the bot-voice rules: no version markers, no
 internal terminology, calendar-friendly time references where they
 appear, confident present-tense framing.
 """

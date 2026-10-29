@@ -171,8 +171,7 @@ def test_leaderboard_query_orders_by_sort_score_first() -> None:
     assert sort_score_pos >= 0, (
         "leaderboard ORDER BY no longer contains `sort_score DESC` — "
         "the locked Bayesian-shrunk ranking key. /board has silently "
-        "reverted to accuracy-only ordering. See "
-        "docs/MVP_SPEC.md + the design conversation pinning k=5."
+        "reverted to accuracy-only ordering (shrinkage k=5, Q-012)."
     )
     # accuracy_pct may stay in the chain as a final tiebreaker, but
     # ONLY after sort_score (not as the leading key).

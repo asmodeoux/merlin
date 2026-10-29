@@ -1,6 +1,6 @@
 """Per-resource route modules — flat routes (no URL versioning).
 
-Versioning policy (plan §6): the OpenAPI ``info.version`` field is the
+Versioning policy: the OpenAPI ``info.version`` field is the
 canonical API version marker. No ``/v1/`` URL prefix at v0 (Q-027).
 When/if a public, partner-facing surface ever lands, a
 ``v1.include_router`` mount can be added without disturbing the

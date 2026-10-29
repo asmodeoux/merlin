@@ -1,6 +1,6 @@
 # merlin-worker — RQ worker for resolution + background work.
 #
-# Sync (RQ); MVP §8.1 ADR (e) — simpler than async dramatiq/arq, sufficient
+# Sync (RQ) — simpler than async dramatiq/arq, sufficient
 # for v0.
 #
 # Forbidden imports (enforced by [tool.importlinter]): `fastapi`,

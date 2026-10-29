@@ -28,7 +28,7 @@ The dev DB ships with one Postgres extension:
 
 - **`vector`** (pgvector) — used for the `vector(384)` similarity column
   on `claims` (embedding from
-  `sentence-transformers/all-MiniLM-L6-v2`, 384-dim per MVP §8.1).
+  `sentence-transformers/all-MiniLM-L6-v2`, 384-dim per).
 
 Q-029 drops `pg_cron` from the v0
 stack. Resolution scheduling is `RQ Queue.enqueue_at(t_resolve, …)`
@@ -40,7 +40,7 @@ moment an outcome lands). The custom image at
 
 ## Append-only invariants
 
-Several tables are append-only (MVP §15 invariants 7/8/10/12):
+Several tables are append-only (ARCHITECTURE §16 invariants 7/8/10/12):
 
 - `claims` (except the `edits` JSONB column and `soft_deleted_at`)
 - `outcomes`
@@ -66,8 +66,8 @@ table references the source by `source_id`
 (`'tg:' + sha256(tg_user_id)[:32]`, see
 `merlin_core.domain.source_id.make_source_id`). Repositories that need
 to look up a source by Telegram ID accept a `source_id` — they don't
-take a raw ID and call `make_source_id` themselves. MVP §15 invariant 9,
-MVP §13.
+take a raw ID and call `make_source_id` themselves. See ARCHITECTURE §16
+invariant 9.
 
 ## Layout
 

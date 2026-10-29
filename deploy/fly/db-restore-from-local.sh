@@ -3,7 +3,7 @@
 #
 # One-shot snapshot of the local dev Postgres (docker compose, port
 # 5433) -> Fly Managed Postgres. Used during the initial Fly bootstrap
-# (plan §1.4) to seed the prod DB with whatever the user has been
+# to seed the prod DB with whatever the user has been
 # building against locally.
 #
 # Requires:

@@ -8,7 +8,7 @@ users).
 The single concrete entry point is ``TelegramNotifier``. Notification
 templates (``outcome_won``, ``outcome_lost``, ``outcome_flat``,
 ``rejected_asset_mutation``, ``resolution_failed_final``) live in
-``templates.py`` and follow the bot-voice rules (plan §6):
+``templates.py`` and follow the bot-voice rules:
 
 - No version markers (``v0`` / ``MVP``).
 - No internal model nouns (``hypothesis``, ``regret``, ``simulated``).

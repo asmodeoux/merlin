@@ -7,7 +7,7 @@
 > directly. A future React frontend plugs into the same flat API
 > surface via OpenAPI-generated TypeScript types — no URL versioning
 > at v0, the OpenAPI `info.version` field is the canonical version
-> marker (plan §6, ADR (s) below). Hexagonal layering is enforced by
+> marker (ADR (s) below). Hexagonal layering is enforced by
 > `import-linter`. Dev loop is docker-compose with hot reload and
 > debugpy on every service.
 
@@ -140,18 +140,16 @@ CI runs `lint-imports` as a hard gate.
 │   └── README.md
 ├── scripts/
 │   ├── env_check.py
-│   └── bootstrap_github_settings.sh
+│   ├── dev_verify.sh
+│   └── docs_check.sh
 ├── docs/
 │   ├── ARCHITECTURE.md         # ← this file
-│   ├── MVP_SPEC.md
 │   ├── DECISIONS.md            # Q-NNN decision log
 │   ├── RUNBOOK.md
-│   ├── REPO_SETTINGS.md
 │   └── openapi.json            # snapshot
 ├── .github/
 │   ├── workflows/{ci,security,docker-test}.yml
 │   ├── CODEOWNERS
-│   ├── dependabot.yml
 │   └── pull_request_template.md
 ├── .vscode/{launch,tasks,settings,extensions}.json
 ├── AGENTS.md
@@ -219,7 +217,7 @@ Today the bot is the only frontend. Tomorrow there will be three:
 The constant: **the API is the contract**. Every client builds on top
 of `docs/openapi.json`. We never branch the schema for a frontend.
 
-## 7. /alpha sequence diagram (Sprint 1 reference)
+## 7. /alpha sequence diagram
 
 ```
 User                Bot              merlin_client    API              DB
@@ -274,20 +272,18 @@ Patterns we follow (`merlin_bot/`):
 - **`set_my_commands`** on startup via `post_init`, with admin-scoped
   variant via `BotCommandScopeChat(chat_id=admin_id)`.
 - **`add_error_handler`** → Sentry with PII stripped (raw Telegram
-  handles never leave the process; MVP §15 invariant 9).
+  handles never leave the process; §16 invariant 9).
 - **`run_webhook(secret_token=...)`** in prod; `run_polling()` in dev.
 - **`bot_data["merlin_client"]`** holds the `MerlinClient` — no globals,
   single httpx connection pool.
 
 ## 10. Security baseline (v0)
 
-Full details in `SECURITY.md` and `docs/REPO_SETTINGS.md`. Summary:
+Full details in `SECURITY.md`. Summary:
 
 - **Lockfile** — `uv.lock` committed; `uv lock --check` in CI.
-- **Cooldowns** — Dependabot 7-day default / 30d major / 7d minor / 3d
-  patch.
-- **Scanners** — gitleaks (pre-commit + CI), pip-audit (CI + daily
-  cron), Dependency Review (PR diff, blocks moderate+).
+- **Scanners** — gitleaks (pre-commit + CI), pip-audit (CI),
+  Dependency Review (PR diff, blocks moderate+).
 - **GitHub Secret Scanning + Push Protection** — both enabled at the
   repo level.
 - **Workflow permissions** — top-of-file `contents: read`; widened
@@ -295,9 +291,9 @@ Full details in `SECURITY.md` and `docs/REPO_SETTINGS.md`. Summary:
 - **Service tokens** — `fly secrets set`; never committed.
 - **AI disclosure** — required in the PR template; CI applies the same
   gates to AI-generated code.
-- **Append-only DB tables** (MVP §15 7/8/10/12) — Postgres triggers +
+- **Append-only DB tables** (§16 invariants 7/8/10/12) — Postgres triggers +
   repository pattern + `tests/integration/test_append_only_invariants.py`.
-- **Source-ID opacity** (MVP §15 9) — raw Telegram IDs live only in
+- **Source-ID opacity** (§16 invariant 9) — raw Telegram IDs live only in
   `source_identity` table; everything else uses `source_id`.
 
 ## 11. Docker-first build / deploy
@@ -326,8 +322,7 @@ Full details in `SECURITY.md` and `docs/REPO_SETTINGS.md`. Summary:
 `AGENTS.md` is the authoritative pointer for AI agents working in this
 repo. Key conventions:
 
-- **Source of truth** — `MVP_SPEC.md`, this doc, `RUNBOOK.md`,
-  `REPO_SETTINGS.md`.
+- **Source of truth** — this doc, `DECISIONS.md`, `RUNBOOK.md`.
 - **5-step ritual** for adding a feature that touches the bot: route →
   schema → client method → openapi snapshot → handler.
 - **Layer rules** — `import-linter` rejects violations in CI.
@@ -345,13 +340,13 @@ repo. Key conventions:
 | b   | Three Python apps, three shared packages. No `src/` layer in apps; flat single-layer pkgs.     | 2026-05  |
 | c   | `import-linter` enforces hexagonal layers. Hard CI gate.                                       | 2026-05  |
 | d   | `merlin_core` is one package (not three). Internal submodules; same boundaries via importer.   | 2026-05  |
-| e   | RQ for background jobs (not arq / dramatiq). MVP §8.1 — simpler glue for v0.                   | 2026-05  |
+| e   | RQ for background jobs (not arq / dramatiq).— simpler glue for v0.                   | 2026-05  |
 | f   | HMAC bearer auth for service-to-service in v0. JWT added as a second scheme in Phase 2.        | 2026-05  |
 | g   | OpenAPI snapshot committed at `docs/openapi.json`. Snapshot test + `make openapi-check`.        | 2026-05  |
 | h   | Per-app .env.example; no root one. `scripts/env_check.py` enforces parity with Settings.       | 2026-05  |
 | i   | Three Dockerfile targets per app: base / dev / prod. Fly pins TARGET=prod via `[build.args]`.  | 2026-05  |
 | j   | Tests live with the app/package they test. No top-level `tests/` directory.                    | 2026-05  |
-| k   | ~~pg_cron required for daily reputation recompute (MVP §8.1).~~ **Superseded by Q-029 (PROPOSED):** drop `pg_cron`, recompute reputation reactively on outcome write, schedule resolution via RQ Scheduler `enqueue_at`. Custom postgres-dev image keeps `pgvector` only. | 2026-05  |
+| k   | ~~pg_cron required for daily reputation recompute.~~ **Superseded by Q-029:** drop `pg_cron`, recompute reputation reactively on outcome write, schedule resolution via RQ Scheduler `enqueue_at`. Custom postgres-dev image keeps `pgvector` only. | 2026-05  |
 | l   | Alembic migrations co-located with `merlin_infrastructure`. The package that owns the models. | 2026-05  |
 | m   | uv (not Poetry / pip-tools). Speed + native workspace support.                                 | 2026-05  |
 | n   | Dependabot cooldown 7-day default. Catches first-week regressions before our auto-PRs land.    | 2026-05  |
@@ -359,10 +354,10 @@ repo. Key conventions:
 | p   | Renovate noted as Dependabot fallback. Only flip if Dependabot's cooldown story regresses.    | 2026-05  |
 | q   | Two-layer flat package layout (`packages/python/merlin_X/merlin_X/`). Single-layer rejected — see long form. | 2026-05  |
 | r   | **No URL versioning at v0.** Bot and API are co-deployed by the same team; the OpenAPI `info.version` is the canonical version marker. Add `/v1/` only when a partner-facing surface lands. | 2026-05  |
-| s   | **Freeform-LLM claim ingest (Q-028 PROPOSED).** Default `/alpha` path: one OpenRouter call per draft, `temperature=0`, JSON-schema constrained. Domain dataclass `ClaimDraft` + ports `ClaimDrafterPort` / `JobQueuePort` / `NotifierPort`. Three new JSONB columns on `claims` (`parsed_via` / `extracted_fields` / `parse_metadata`); §15 invariant 17 freezes `extracted_fields` at commit. | 2026-05  |
-| t   | **Reactive reputation, Redis-only scheduling (Q-029 PROPOSED).** Drop `pg_cron`. Resolution = `queue.enqueue_at(t_resolve, …)`. Reputation = enqueued by the resolver on outcome write. Invite expiry = check at redeem time. `apps/worker/merlin_worker/schedules/` is intentionally empty at v0. | 2026-05  |
+| s   | **Freeform-LLM claim ingest (Q-028).** Default `/alpha` path: one OpenRouter call per draft, `temperature=0`, JSON-schema constrained. Domain dataclass `ClaimDraft` + ports `ClaimDrafterPort` / `JobQueuePort` / `NotifierPort`. Three new JSONB columns on `claims` (`parsed_via` / `extracted_fields` / `parse_metadata`); §15 invariant 17 freezes `extracted_fields` at commit. | 2026-05  |
+| t   | **Reactive reputation, Redis-only scheduling (Q-029).** Drop `pg_cron`. Resolution = `queue.enqueue_at(t_resolve, …)`. Reputation = enqueued by the resolver on outcome write. Invite expiry = check at redeem time. `apps/worker/merlin_worker/schedules/` is intentionally empty at v0. | 2026-05  |
 | u   | **`/board` Day / Swing / Position Traders filter computed on-the-fly.** `source_reputation_history` stays horizon-agnostic (one snapshot per source, collapsed across all horizons). The `?horizon=day|swing|position` slice on `GET /board` bypasses the snapshot and recomputes per request by joining `outcomes ⋈ claims`, bucketing on `claims.horizon_seconds` against `HORIZON_DAY_TRADER_MAX_SECONDS` (24h = 86_400s) and `HORIZON_SWING_TRADER_MAX_SECONDS` (21d = 1_814_400s), and folding via the same `merlin_core.domain.scoring` helpers the worker recompute job uses. Cheaper than a `horizon_class` snapshot column at v0's ~100 claims/day; revisit if `EXPLAIN ANALYZE` ever justifies a snapshot dimension. The two thresholds are the canonical day-trader / swing-trader / position-trader splits — widening either is a one-line constant change. Initially shipped as a two-bucket `short`/`long` filter and extended to three buckets shortly after; the wire-level rename to `day` / `swing` / `position` was safe because the only consumer was the in-repo bot and the feature was hours old when the rename landed. | 2026-06  |
-| v   | **Durable resolution-reconciliation sweep (Q-030).** Partially reverses ADR (t) / Q-029's "`schedules/` is intentionally empty". RQ scheduled resolution jobs live only in Redis (Upstash, eviction-enabled) and are parked for up to 90 days — under memory pressure (worsened by PTB persistence co-tenant in the same DB 0), a worker OOM-SIGKILL, or a Redis restart, that key can vanish and the bet silently never resolves. Postgres `claims` is the only durable record. A recurring sweep (RQ 2.5+ `CronScheduler` in `apps/worker/merlin_worker/schedules/cron.py`, run in a daemon thread by the worker) re-fires any claim past `resolves_at + grace` (6h, MVP §12.1) with no `outcomes` row. Idempotent on top of `resolve_outcome`'s existing guard. Reactive reputation (Q-029) is unchanged — only resolution gains a backstop. Reinstates the MVP §12.1 stale-job sweep that Q-029 dropped; `make admin-rerun` / `make admin-backfill` are the manual one-shots. | 2026-06  |
+| v   | **Durable resolution-reconciliation sweep (Q-030).** Partially reverses ADR (t) / Q-029's "`schedules/` is intentionally empty". RQ scheduled resolution jobs live only in Redis (Upstash, eviction-enabled) and are parked for up to 90 days — under memory pressure (worsened by PTB persistence co-tenant in the same DB 0), a worker OOM-SIGKILL, or a Redis restart, that key can vanish and the bet silently never resolves. Postgres `claims` is the only durable record. A recurring sweep (RQ 2.5+ `CronScheduler` in `apps/worker/merlin_worker/schedules/cron.py`, run in a daemon thread by the worker) re-fires any claim past `resolves_at + grace` (6h) with no `outcomes` row. Idempotent on top of `resolve_outcome`'s existing guard. Reactive reputation (Q-029) is unchanged — only resolution gains a backstop. Reinstates the stale-job sweep that Q-029 dropped; `make admin-rerun` / `make admin-backfill` are the manual one-shots. | 2026-06  |
 | w   | **First-call engagement nudge cron (Q-031).** Second recurring job on the same worker `CronScheduler` (per inv-15, a further periodic job needs a fresh ADR). DMs onboarded testers (`sources.display_name IS NOT NULL`, `kind='user'`) with zero `claims` rows, prompting their first call. Per-user limits — at most once a week, at most twice ever — are enforced in one SQL anti-join against a new durable `engagement_nudges` table (one row per DM sent), NOT in evictable Redis (the Q-030 durability lesson). Record-then-send ordering: a crash costs one missed nudge, never a duplicate. Worker-hosted because the bot can't import `merlin_infrastructure`; sends via the existing `TelegramNotifier`. New table forces an API-first deploy (migration via `release_command`). | 2026-06  |
 
 ADR (q) — long form:
@@ -429,4 +424,29 @@ ADR (q) — long form:
   thresholds to steady-state (domain & contracts 100% / application &
   api.routes & client 95% / db.repositories & worker 90% / bot 80%).
 - **Off-Fly external backup** — Phase 2. v0 relies on Fly Postgres
-  daily snapshots only (MVP §12.8).
+  daily snapshots only.
+
+## 16. Data invariants
+
+Rules the system relies on. Each one is testable, and breaking one is a
+regression. Code comments cite them as `MVP §15 invariant N`, after the
+internal spec they came from (not included in this repo); the numbering
+here matches.
+
+1. **`t_resolve > submitted_at`** for every Event. Enforced by a DB `CHECK` constraint and by the ingest service.
+2. **`pnl_if_ignored_usd = 0`** for every v0 Outcome. The "ignored" baseline is flat. If it ever changes, the migration must backfill, not silently change the default.
+3. **`regret_usd = pnl_if_followed_usd - pnl_if_ignored_usd`** is **derived**, never stored. The leaderboard query computes it, so if the sizing rule changes the leaderboard can be recomputed deterministically.
+4. **Horizons are exact seconds.** `24h = 86400 s`, `30d = 2592000 s`, `90d = 7776000 s`. No business-day, calendar or DST math.
+5. **All timestamps are UTC** in storage and computation.
+6. **One Outcome per Event.** Re-resolution writes a *new* Outcome row with `supersedes_outcome_id` pointing at the old one; the leaderboard reads only the latest non-superseded Outcome.
+7. **Claims are append-only.** No `UPDATE` on `claims` outside the `edits` JSONB array and the `soft_deleted_at` flag.
+8. **Reputation history is append-only.** Never `UPDATE source_reputation_history`; current reputation is the latest row by `effective_at`.
+9. **`source_id` is opaque.** PII (Telegram handle, email) lives only in `source_identity`. Raw handles are never logged.
+10. **The append-only audit log is the canonical record.** A Claim's original payload is the row at insert time; edits append to `claims.edits` with timestamps.
+11. **The `originator` role is unique per Hypothesis**, enforced by a partial unique index. Trivially true at v0 (one Hypothesis per Claim, Q-007).
+12. **No hard DELETE** on tables in the scoring loop (`sources`, `claims`, `events`, `outcomes`, `attribution_ledger`, `hypotheses`). Soft-delete only; hard DELETE is allowed only for unredeemed or revoked `invites`.
+13. **`asset_id` is immutable.** Renames get a new `asset_id`; `asset_aliases` carries the old symbol forward.
+14. **The leaderboard query is deterministic** given the tables: no randomness and no `now()` dependence except the rolling-window cutoff.
+15. **Scheduling is Redis-only.** No `pg_cron`. Resolution uses `queue.enqueue_at(t_resolve, …)`, reputation recomputes when an outcome lands, and invite expiry is checked at redemption. The worker's `CronScheduler` runs exactly two recurring jobs: the resolution sweep (ADR v / Q-030) and the first-call nudge (ADR w / Q-031). Any new periodic job needs an ADR.
+16. **User-facing strings use plain language** (Q-028). No internal terms (`source`, `claim`, `outcome`, `regret`, `hypothesis`), version markers (`v0`, `MVP`), enum literals, raw ISO timestamps or limitation hedges. Admin commands are exempt. Checked in review and by `make docs-check`.
+17. **`extracted_fields` is frozen at claim commit.** Later verifiers may read it but never change it; re-resolution goes through the supersedes chain (invariant 6). Enforced in the repository layer and by a column-level trigger (Q-028).

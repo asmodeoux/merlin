@@ -1,7 +1,7 @@
 """Preview step — central hub of the ``/alpha`` flow.
 
 Renders the prefilled fields as a single message + Confirm / Edit /
-Cancel inline keyboard. Two voice rules still apply (plan §6): no
+Cancel inline keyboard. Two voice rules still apply: no
 internal nouns (no "v0", no "$5 simulated", no "scored" / "unscored"),
 and no target-price echoes beyond what the user's own thesis already
 says.
@@ -370,7 +370,7 @@ def _clear(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bot-voice formatting (plan §6).
+# Bot-voice formatting.
 # ---------------------------------------------------------------------------
 
 

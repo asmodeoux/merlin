@@ -1,6 +1,6 @@
 """Ports — Protocol definitions for the adapters in merlin_infrastructure.
 
-Append-only invariants (MVP_SPEC §15 invariants 7/8/10/12):
+Append-only invariants (ARCHITECTURE §16 invariants 7/8/10/12):
 
    Repository implementations for `claims` (except `edits` JSONB +
    `soft_deleted_at`), `outcomes`, `source_reputation_history`,

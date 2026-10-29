@@ -131,7 +131,7 @@ def _is_alpha_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
 
 
 # ---------------------------------------------------------------------------
-# Replies — kept friendly; bot voice rules (plan §6) avoid MarkdownV2 so
+# Replies — kept friendly; bot voice rules avoid MarkdownV2 so
 # we don't have to escape user-visible punctuation.
 # ---------------------------------------------------------------------------
 

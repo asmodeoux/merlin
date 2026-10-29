@@ -70,7 +70,7 @@ def build_application(settings: Settings) -> Application:
         .token(settings.telegram_bot_token)
         .rate_limiter(AIORateLimiter())
         .defaults(
-            # Plain-text by default. The bot voice rules (plan §6) keep
+            # Plain-text by default. The bot voice rules keep
             # every user-facing string formatting-free; opting into
             # MarkdownV2 globally would force every `.`, `(`, `)`, `-`,
             # `!` to be escaped per the Telegram Bot API spec, and any

@@ -1,6 +1,6 @@
 """Unit tests for the pure board-change classifier.
 
-Contracts pinned here (plan §1/§5/§6):
+Contracts pinned here:
 
 * ``rank_board`` orders by the canonical ``/board`` key with a
   deterministic ``source_id`` tiebreaker and 1-indexes.

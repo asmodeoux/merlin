@@ -1,6 +1,6 @@
 """``recompute_source_reputation(source_id)`` — reactive reputation update.
 
-Per Q-029 proposal (plan §4): no daily cron, no ``pg_cron``. The
+Per Q-029 proposal: no daily cron, no ``pg_cron``. The
 resolver enqueues this job the moment an outcome lands, and the worker
 recomputes that source's reputation against all their resolved
 outcomes. Writes one new ``source_reputation_history`` row per

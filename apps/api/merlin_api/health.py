@@ -80,8 +80,7 @@ async def ready(
 ) -> ReadyResponse:
     """Probe DB + Redis; flip to 503 on failure so Fly drains traffic.
 
-    Per the bot-flow plan §"Sprint 1 acceptance criteria" #2: no external
-    API checks here — OpenRouter / CoinGecko / Telegram outages don't
+    No external API checks here — OpenRouter / CoinGecko / Telegram outages don't
     make us "not ready"; the LLM circuit-breaker and resolver retries
     handle them at request time.
     """

@@ -1,6 +1,6 @@
 """JobQueuePort — schedule deferred work.
 
-The whole point of the passive worker design (bot-flow plan, principle
+The whole point of the passive worker design (principle
 #2): we never poll an "events to resolve" table. Instead, when a claim
 commits we call ``enqueue_at(t_resolve, "merlin_worker.jobs.resolve_outcome",
 claim_id)`` and forget about it. RQ Scheduler fires at the wall-clock

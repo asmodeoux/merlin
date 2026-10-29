@@ -1,8 +1,8 @@
 """Leaderboard + ``/me`` wire schemas.
 
 User-facing strings (display name, asset symbol, plain percent moves)
-only. No internal scoring fields, no version markers — see bot-voice
-rules in the bot-flow plan.
+only. No internal scoring fields, no version markers — see ARCHITECTURE
+§16 invariant 16.
 """
 
 from __future__ import annotations

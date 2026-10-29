@@ -3,7 +3,7 @@
 Implemented by ``merlin_infrastructure.llm.openrouter.OpenRouterClaimDrafter``
 (real LLM) and ``merlin_infrastructure.llm.fake.FakeClaimDrafter`` (tests).
 
-Per the bot-flow plan: a single call, ``temperature=0``, JSON-schema
+By design: a single call, ``temperature=0``, JSON-schema
 constrained. The port doesn't know which model, which prompt, or which
 provider — those are adapter concerns.
 """

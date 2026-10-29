@@ -14,7 +14,7 @@ services:
       POSTGRES_USER: merlin
       POSTGRES_PASSWORD: merlin
       POSTGRES_DB: merlin
-    # Q-029 [PROPOSED]: pgvector only, no pg_cron extension.
+    # Q-029: pgvector only, no pg_cron extension.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U merlin -d merlin"]
       interval: 5s

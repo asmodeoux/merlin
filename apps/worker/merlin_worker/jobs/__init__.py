@@ -1,6 +1,6 @@
 """RQ-registered job functions.
 
-The worker is fully passive (plan §3): no periodic scans, no sweeps.
+The worker is fully passive: no periodic scans, no sweeps.
 Every job here fires because something specific happened — a claim
 committed (resolve), or an outcome landed (recompute reputation).
 

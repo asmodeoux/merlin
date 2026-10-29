@@ -4,7 +4,7 @@ Stateless. Hits ``GET /me?tg_user_id=...`` and renders the result in
 the same one-field-per-line shape as the /alpha receipt so the user
 can scan their open positions without parsing dense prose.
 
-Bot-voice rules (plan §6):
+Bot-voice rules:
 
 * Honest empty-state. Zero open calls reads "No open calls yet" rather
   than a blank list.

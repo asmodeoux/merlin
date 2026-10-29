@@ -172,7 +172,7 @@ class Settings(BaseSettings):
     )
 
     # -------------------------------------------------------------------
-    # Telegram (worker sends outcome notifications directly — plan §3)
+    # Telegram (worker sends outcome notifications directly)
     # -------------------------------------------------------------------
     telegram_bot_token: str = Field(
         default="",

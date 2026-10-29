@@ -1,6 +1,6 @@
 """Job-queue adapters — concrete implementations of ``JobQueuePort``.
 
-The whole passive-worker design (plan §3) flows through this package.
+The whole passive-worker design flows through this package.
 The API enqueues at claim-commit time; the worker pulls jobs at their
 scheduled time; no table ever gets scanned for "what's due".
 

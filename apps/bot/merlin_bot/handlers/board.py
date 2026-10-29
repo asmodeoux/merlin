@@ -17,7 +17,7 @@ Self-positioning rules:
   showing rank "—" or skipping silently both feel worse than telling
   them what unlocks a spot.
 
-Bot-voice rules (plan §6):
+Bot-voice rules:
 
 * No "v0" / "Phase 2" / "coming soon" markers. The empty-state reads
   "Leaderboard unlocks after the first resolutions." — present tense,

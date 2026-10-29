@@ -20,7 +20,7 @@ Configuration (all wired through ``Settings``):
   consulting the running spend and short-circuiting before calling.
   This adapter does not enforce the cap.
 
-Per the bot-flow plan: the LLM is UX acceleration, never a system
+By design: the LLM is UX acceleration, never a system
 dependency. Every exception raised here becomes a ``ClaimDrafterError``,
 the use case catches it, the bot falls back to the button form. No
 retry, no second LLM attempt — speed matters more than perfection on
