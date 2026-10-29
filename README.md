@@ -4,19 +4,13 @@
 
 Post a call like *"ETH long, two weeks, strong conviction"*. Merlin opens a virtual position at the price at that moment, closes it when the horizon ends, and scores you on how much following your call would have made or lost. Everyone ends up on a public leaderboard built from verified, timestamped, append-only records: no edited tweets, no deleted bad calls.
 
-[![CI](https://github.com/asmodeoux/merlin/actions/workflows/ci.yml/badge.svg)](https://github.com/asmodeoux/merlin/actions/workflows/ci.yml)
+![CI](https://github.com/asmodeoux/merlin/actions/workflows/ci.yml/badge.svg)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-<!-- Screenshots: add docs/assets/alpha.png, board.png, me.png and uncomment.
-<p align="center">
-  <img src="docs/assets/alpha.png" width="260" alt="/alpha freeform call">
-  <img src="docs/assets/board.png" width="260" alt="/board leaderboard">
-  <img src="docs/assets/me.png" width="260" alt="/me stats">
-</p>
--->
 
-> **Status:** built as a startup MVP in 2026, ran with a small invite-only group of testers, and is no longer maintained. Published as a reference for the architecture and the scoring model.
+
+> **Status:** built as an MVP in 2026, ran with a small invite-only group of testers, and is no longer maintained. Published as a reference for the architecture and the scoring model.
 
 ## How it works
 
