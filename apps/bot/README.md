@@ -39,7 +39,7 @@ if that were the intended first step. LLM is UX acceleration, never
 a system dependency.
 
 **Bot voice.** All user-facing strings follow the bot-voice rules in
-`PLAN.md` §"Bot voice" and `docs/MVP_SPEC.md` §15 invariant 16: no
+`docs/MVP_SPEC.md` §15 invariant 16: no
 version markers, no internal data-model nouns, no raw ISO timestamps,
 no enum literals, no limitation hedges.
 

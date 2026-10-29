@@ -1230,7 +1230,7 @@
     },
     "description": "The canonical Merlin API. The Telegram bot is one client; future surfaces (React frontend, Pro Dashboard) hit the same flat routes. See docs/ARCHITECTURE.md.",
     "license": {
-      "name": "Proprietary"
+      "name": "MIT"
     },
     "title": "Merlin API",
     "version": "0.2.0"

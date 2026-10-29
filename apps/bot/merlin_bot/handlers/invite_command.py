@@ -8,9 +8,8 @@ callers hit a friendly "send /start first" nudge from the 403 path.
 
 No admin allowlist. No quota at v0 — every onboarded source can mint
 unlimited codes. Sybil-resistance lives entirely in the chain-of-trust
-property (you have to be invited to mint invites). The Q-030 quota
-proposal in DECISIONS tracks the follow-up if the chain alone proves
-insufficient.
+property (you have to be invited to mint invites). A per-source quota
+is the follow-up if the chain alone proves insufficient.
 
 The code returned is the only thing the user shares with the
 invitee — pasting it into the bot from a different Telegram account

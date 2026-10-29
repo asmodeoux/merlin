@@ -65,7 +65,7 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
         routes=app.routes,
         tags=TAGS_METADATA,
         contact={"name": "Merlin Team"},
-        license_info={"name": "Proprietary"},
+        license_info={"name": "MIT"},
     )
 
     # Components → securitySchemes — add ours; preserve anything FastAPI generated.

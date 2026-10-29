@@ -144,6 +144,7 @@ CI runs `lint-imports` as a hard gate.
 ├── docs/
 │   ├── ARCHITECTURE.md         # ← this file
 │   ├── MVP_SPEC.md
+│   ├── DECISIONS.md            # Q-NNN decision log
 │   ├── RUNBOOK.md
 │   ├── REPO_SETTINGS.md
 │   └── openapi.json            # snapshot
@@ -154,6 +155,7 @@ CI runs `lint-imports` as a hard gate.
 │   └── pull_request_template.md
 ├── .vscode/{launch,tasks,settings,extensions}.json
 ├── AGENTS.md
+├── LICENSE                     # MIT
 ├── SECURITY.md
 ├── README.md
 ├── pyproject.toml              # workspace coordinator (no [project] table)

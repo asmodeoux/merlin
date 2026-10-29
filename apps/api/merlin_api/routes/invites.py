@@ -32,8 +32,8 @@ was removed once invite-gated onboarding was robust enough that
 a safety property. The sybil-resistance argument for the original
 admin-only design now lives entirely in "you have to be invited to
 mint invites" (chain-of-trust) rather than in a server-side
-allowlist — see Q-030 [PROPOSED] in DECISIONS for the quota-based
-follow-up plan if the chain alone proves insufficient.
+allowlist. A per-source quota is the follow-up plan if the chain
+alone proves insufficient.
 """
 
 from __future__ import annotations
